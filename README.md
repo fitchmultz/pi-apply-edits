@@ -39,6 +39,8 @@ Ladder (cheapest correct choice first):
 
 1. **Whole file / most of file / new file** → `rewrite` with full contents (`onMissing: "create"` only when creating). No `oldText` matching.
 2. **Small unique substring** → `edits` with short exact `oldText`
+3. **Insert at an anchor** → `edits` with `insert: "before"` or `insert: "after"`
+4. **Several files together** → `files: [{ path, edits|rewrite }, ...]` (planned atomically before any write)
 
 Provide exactly one of `edits` or `rewrite`:
 

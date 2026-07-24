@@ -10,10 +10,14 @@ import {
   throwIfAborted,
 } from "./file-system.ts";
 
+export type InsertPosition = "before" | "after";
+
 export interface TargetedEdit {
   oldText: string;
   newText: string;
   all?: boolean;
+  /** When set, insert newText before/after the matched oldText instead of replacing it. */
+  insert?: InsertPosition;
 }
 
 export interface ApplyEditsInput {
@@ -21,6 +25,15 @@ export interface ApplyEditsInput {
   edits?: TargetedEdit[];
   rewrite?: string;
   onMissing?: "error" | "create";
+}
+
+/** Tool args: one file (path + edits|rewrite) or an atomic multi-file batch. */
+export interface ApplyEditsRequest {
+  path?: string;
+  edits?: TargetedEdit[];
+  rewrite?: string;
+  onMissing?: "error" | "create";
+  files?: ApplyEditsInput[];
 }
 
 export type MatchStrategy = "exact" | "normalized" | "indent-normalized";
@@ -48,9 +61,15 @@ export interface ApplyEditsDetails {
   warnings: string[];
 }
 
+export interface ApplyEditsBatchDetails {
+  files: ApplyEditsDetails[];
+}
+
+export type ApplyEditsToolDetails = ApplyEditsDetails | ApplyEditsBatchDetails;
+
 export interface ApplyEditsExecution {
   summary: string;
-  details: ApplyEditsDetails;
+  details: ApplyEditsToolDetails;
 }
 
 interface TextEditResult {
@@ -149,6 +168,9 @@ export function applyTargetedEdits(
     if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
       throw new Error(`edits[${index}] must contain string oldText and newText fields`);
     }
+    if (edit.insert !== undefined && edit.insert !== "before" && edit.insert !== "after") {
+      throw new Error(`edits[${index}].insert must be "before" or "after"`);
+    }
     const oldText = convertLineEndings(stripBomCharacter(edit.oldText), lineEnding);
     const newText = convertLineEndings(edit.newText, lineEnding);
     if (oldText.length === 0) {
@@ -160,11 +182,15 @@ export function applyTargetedEdits(
     if (hasUnpairedSurrogate(oldText) || hasUnpairedSurrogate(newText)) {
       throw new Error(`edits[${index}] must contain valid Unicode text`);
     }
-    if (oldText === newText) {
+    if (edit.insert) {
+      if (newText.length === 0) {
+        throw new Error(`edits[${index}].newText must not be empty when insert is set`);
+      }
+    } else if (oldText === newText) {
       throw new Error(`edits[${index}] would make no change because oldText and newText are identical`);
     }
 
-    const match = findMatch(current, oldText, newText);
+    const match = findMatch(current, oldText, newText, edit.insert);
     if (!match) {
       throw new Error(missingEditMessage(current, oldText, newText, displayPath, index));
     }
@@ -210,106 +236,254 @@ export function applyTargetedEdits(
 }
 
 export async function applyEditsToFile(
-  input: ApplyEditsInput,
+  input: ApplyEditsRequest,
   cwd: string,
   signal?: AbortSignal,
 ): Promise<ApplyEditsExecution> {
-  validateInput(input);
-  const inputPath = resolveInputPath(input.path, cwd);
+  validateRequest(input);
+  if (input.files) return applyEditsBatch(input.files, cwd, signal);
 
+  const single = input as ApplyEditsInput;
+  const inputPath = resolveInputPath(single.path, cwd);
   return withFileMutationQueue(inputPath, async () => {
-    throwIfAborted(signal);
-    let snapshot = await captureSnapshot(inputPath);
-    const displayPath = displayPathFor(inputPath, cwd);
+    const planned = await planFileMutation(single, inputPath, cwd, signal);
+    return commitPlannedMutation(planned, signal);
+  });
+}
 
-    if (!snapshot && input.edits) {
+interface PlannedMutation {
+  inputPath: string;
+  displayPath: string;
+  snapshot: Awaited<ReturnType<typeof captureSnapshot>>;
+  nextBytes: Buffer;
+  originalText: string;
+  nextText: string;
+  matches: AppliedEditDetail[];
+  operation: ApplyEditsDetails["operation"];
+  editsRequested: number;
+  needsWrite: boolean;
+}
+
+async function applyEditsBatch(
+  files: ApplyEditsInput[],
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<ApplyEditsExecution> {
+  if (files.length === 0) throw new Error("files must contain at least one entry");
+  for (const [index, file] of files.entries()) {
+    try {
+      validateInput(file);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`files[${index}]: ${reason}`);
+    }
+  }
+
+  const resolved = files.map((file) => ({
+    file,
+    inputPath: resolveInputPath(file.path, cwd),
+  }));
+  const seen = new Map<string, number>();
+  for (const [index, item] of resolved.entries()) {
+    const prior = seen.get(item.inputPath);
+    if (prior !== undefined) {
       throw new Error(
-        `Cannot edit missing file ${displayPath}. Use rewrite with onMissing: "create" to create it.`,
+        `files[${index}] resolves to the same path as files[${prior}] (${item.inputPath}). ` +
+          "Combine edits for one path into a single entry.",
       );
     }
-    if (!snapshot && input.onMissing !== "create") {
-      throw new Error(
-        `File does not exist: ${displayPath}. Set onMissing: "create" with rewrite to create it.`,
-      );
+    seen.set(item.inputPath, index);
+  }
+
+  const lockPaths = [...seen.keys()].sort();
+  return withOrderedFileLocks(lockPaths, async () => {
+    const planned: PlannedMutation[] = [];
+    for (const item of resolved) {
+      planned.push(await planFileMutation(item.file, item.inputPath, cwd, signal));
     }
 
-    let originalText = "";
-    let originalBody = "";
-    let hadBom = false;
-    if (snapshot) {
-      const decoded = decodeText(snapshot.bytes, displayPath);
-      originalText = decoded.text;
-      originalBody = decoded.body;
-      hadBom = decoded.hadBom;
+    // ponytail: plan fully before any write; mid-publish FS failure can leave earlier files written.
+    const detailsList: ApplyEditsDetails[] = [];
+    let written = 0;
+    for (const [index, plan] of planned.entries()) {
+      try {
+        detailsList.push((await commitPlannedMutation(plan, signal)).details as ApplyEditsDetails);
+        if (plan.needsWrite) written += 1;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Multi-file batch failed while writing files[${index}] (${plan.displayPath}) ` +
+            `after ${written} successful write${written === 1 ? "" : "s"}. ${reason}`,
+        );
+      }
     }
 
-    let nextText: string;
-    let matches: AppliedEditDetail[] = [];
-    let operation: ApplyEditsDetails["operation"];
-
-    if (input.edits) {
-      const result = applyTargetedEdits(originalBody, input.edits, displayPath);
-      nextText = `${hadBom ? "\uFEFF" : ""}${stripBomCharacter(result.text)}`;
-      matches = result.matches;
-      operation = "edit";
-    } else {
-      const rewrite = input.rewrite ?? "";
-      const body = snapshot ? convertLineEndings(rewrite, detectLineEnding(originalBody)) : rewrite;
-      nextText = `${snapshot && hadBom && !body.startsWith("\uFEFF") ? "\uFEFF" : ""}${body}`;
-      operation = snapshot ? "rewrite" : "create";
-    }
-
-    const nextBytes = Buffer.from(nextText, "utf8");
-    if (snapshot && nextBytes.equals(snapshot.bytes)) {
-      const details = buildDetails(
-        displayPath,
-        "no_change",
-        input.edits?.length ?? 1,
-        0,
-        matches,
-        originalText,
-        nextText,
-        [],
-      );
+    const changed = detailsList.filter((item) => item.operation !== "no_change");
+    const added = detailsList.reduce((sum, item) => sum + item.addedLines, 0);
+    const deleted = detailsList.reduce((sum, item) => sum + item.deletedLines, 0);
+    const counts = added + deleted > 0 ? ` (+${added}/-${deleted})` : "";
+    if (changed.length === 0) {
       return {
-        summary: `No change: ${displayPath} already matches the requested content.`,
-        details,
+        summary: `No change: ${detailsList.length} file${detailsList.length === 1 ? "" : "s"} already match.`,
+        details: { files: detailsList },
       };
     }
-
-    throwIfAborted(signal);
-    const editsApplied = input.edits?.length ?? 1;
-    const details = buildDetails(
-      displayPath,
-      operation,
-      editsApplied,
-      editsApplied,
-      matches,
-      originalText,
-      nextText,
-      [],
-    );
-    throwIfAborted(signal);
-    const warnings = snapshot
-      ? await publishReplacement(snapshot, nextBytes, signal)
-      : await publishNewFile(inputPath, nextBytes, signal);
-    details.warnings.push(...warnings);
-    const corrected = matches.filter((item) => item.strategy !== "exact").length;
-    const counts = details.addedLines + details.deletedLines > 0
-      ? ` (+${details.addedLines}/-${details.deletedLines})`
-      : "";
-    const correction = corrected > 0
-      ? `; ${corrected} edit${corrected === 1 ? "" : "s"} matched safely after normalization`
-      : "";
-    const warningText = warnings.length > 0 ? ` Warning: ${warnings.join(" ")}` : "";
-    const verb = operation === "create" ? "Created" : operation === "rewrite" ? "Rewrote" : "Edited";
-    const unit = input.edits ? `${editsApplied} ordered edit${editsApplied === 1 ? "" : "s"}` : "full content";
-
+    const names = changed.map((item) => item.path).join(", ");
     return {
-      summary: `${verb} ${displayPath}: ${unit}${counts}${correction}.${warningText}`,
-      details,
+      summary: `Updated ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}.`,
+      details: { files: detailsList },
     };
   });
+}
+
+async function withOrderedFileLocks<T>(paths: string[], fn: () => Promise<T>): Promise<T> {
+  const run = async (index: number): Promise<T> => {
+    if (index >= paths.length) return fn();
+    return withFileMutationQueue(paths[index]!, () => run(index + 1));
+  };
+  return run(0);
+}
+
+async function planFileMutation(
+  input: ApplyEditsInput,
+  inputPath: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<PlannedMutation> {
+  throwIfAborted(signal);
+  const snapshot = await captureSnapshot(inputPath);
+  const displayPath = displayPathFor(inputPath, cwd);
+
+  if (!snapshot && input.edits) {
+    throw new Error(
+      `Cannot edit missing file ${displayPath}. Use rewrite with onMissing: "create" to create it.`,
+    );
+  }
+  if (!snapshot && input.onMissing !== "create") {
+    throw new Error(
+      `File does not exist: ${displayPath}. Set onMissing: "create" with rewrite to create it.`,
+    );
+  }
+
+  let originalText = "";
+  let originalBody = "";
+  let hadBom = false;
+  if (snapshot) {
+    const decoded = decodeText(snapshot.bytes, displayPath);
+    originalText = decoded.text;
+    originalBody = decoded.body;
+    hadBom = decoded.hadBom;
+  }
+
+  let nextText: string;
+  let matches: AppliedEditDetail[] = [];
+  let operation: ApplyEditsDetails["operation"];
+
+  if (input.edits) {
+    const result = applyTargetedEdits(originalBody, input.edits, displayPath);
+    nextText = `${hadBom ? "\uFEFF" : ""}${stripBomCharacter(result.text)}`;
+    matches = result.matches;
+    operation = "edit";
+  } else {
+    const rewrite = input.rewrite ?? "";
+    const body = snapshot ? convertLineEndings(rewrite, detectLineEnding(originalBody)) : rewrite;
+    nextText = `${snapshot && hadBom && !body.startsWith("\uFEFF") ? "\uFEFF" : ""}${body}`;
+    operation = snapshot ? "rewrite" : "create";
+  }
+
+  const nextBytes = Buffer.from(nextText, "utf8");
+  const needsWrite = !(snapshot && nextBytes.equals(snapshot.bytes));
+  return {
+    inputPath,
+    displayPath,
+    snapshot,
+    nextBytes,
+    originalText,
+    nextText,
+    matches,
+    operation: needsWrite ? operation : "no_change",
+    editsRequested: input.edits?.length ?? 1,
+    needsWrite,
+  };
+}
+
+async function commitPlannedMutation(
+  plan: PlannedMutation,
+  signal?: AbortSignal,
+): Promise<ApplyEditsExecution> {
+  if (!plan.needsWrite) {
+    const details = buildDetails(
+      plan.displayPath,
+      "no_change",
+      plan.editsRequested,
+      0,
+      plan.matches,
+      plan.originalText,
+      plan.nextText,
+      [],
+    );
+    return {
+      summary: `No change: ${plan.displayPath} already matches the requested content.`,
+      details,
+    };
+  }
+
+  throwIfAborted(signal);
+  const editsApplied = plan.editsRequested;
+  const details = buildDetails(
+    plan.displayPath,
+    plan.operation,
+    editsApplied,
+    editsApplied,
+    plan.matches,
+    plan.originalText,
+    plan.nextText,
+    [],
+  );
+  throwIfAborted(signal);
+  const warnings = plan.snapshot
+    ? await publishReplacement(plan.snapshot, plan.nextBytes, signal)
+    : await publishNewFile(plan.inputPath, plan.nextBytes, signal);
+  details.warnings.push(...warnings);
+  const corrected = plan.matches.filter((item) => item.strategy !== "exact").length;
+  const counts = details.addedLines + details.deletedLines > 0
+    ? ` (+${details.addedLines}/-${details.deletedLines})`
+    : "";
+  const correction = corrected > 0
+    ? `; ${corrected} edit${corrected === 1 ? "" : "s"} matched safely after normalization`
+    : "";
+  const warningText = warnings.length > 0 ? ` Warning: ${warnings.join(" ")}` : "";
+  const verb = plan.operation === "create"
+    ? "Created"
+    : plan.operation === "rewrite"
+      ? "Rewrote"
+      : "Edited";
+  const unit = plan.matches.length > 0 || plan.operation === "edit"
+    ? `${editsApplied} ordered edit${editsApplied === 1 ? "" : "s"}`
+    : "full content";
+
+  return {
+    summary: `${verb} ${plan.displayPath}: ${unit}${counts}${correction}.${warningText}`,
+    details,
+  };
+}
+
+function validateRequest(input: ApplyEditsRequest): void {
+  if (!input || typeof input !== "object") throw new Error("apply_edits input must be an object");
+  const hasFiles = Array.isArray(input.files);
+  const hasTopLevel =
+    input.path !== undefined ||
+    input.edits !== undefined ||
+    input.rewrite !== undefined ||
+    input.onMissing !== undefined;
+  if (hasFiles === hasTopLevel) {
+    throw new Error('Provide either files: [...] or a single-file path with edits/rewrite');
+  }
+  if (hasFiles) {
+    if (!input.files || input.files.length === 0) throw new Error("files must contain at least one entry");
+    return;
+  }
+  validateInput(input as ApplyEditsInput);
 }
 
 function validateInput(input: ApplyEditsInput): void {
@@ -337,7 +511,12 @@ function validateInput(input: ApplyEditsInput): void {
   }
 }
 
-function findMatch(content: string, oldText: string, newText: string): MatchResult | undefined {
+function findMatch(
+  content: string,
+  oldText: string,
+  newText: string,
+  insert?: InsertPosition,
+): MatchResult | undefined {
   const exactOffsets = findOccurrences(content, oldText, MAX_REPLACEMENTS + 1);
   if (exactOffsets.length > MAX_REPLACEMENTS) {
     throw new Error(
@@ -346,21 +525,30 @@ function findMatch(content: string, oldText: string, newText: string): MatchResu
     );
   }
   const exactLines = lineNumbersAt(content, exactOffsets);
-  const exact = exactOffsets.map((start, index) => ({
-    start,
-    end: start + oldText.length,
-    text: newText,
-    line: exactLines[index] ?? 1,
-  }));
+  const exact = exactOffsets.map((start, index) =>
+    toReplacement(start, start + oldText.length, newText, exactLines[index] ?? 1, insert),
+  );
   if (exact.length > 0) return { strategy: "exact", replacements: exact };
 
-  const normalized = findLineBlockMatches(content, oldText, newText, false);
+  const normalized = findLineBlockMatches(content, oldText, newText, false, insert);
   if (normalized.length > 0) return { strategy: "normalized", replacements: normalized };
 
-  const indentation = findLineBlockMatches(content, oldText, newText, true);
+  const indentation = findLineBlockMatches(content, oldText, newText, true, insert);
   if (indentation.length > 0) return { strategy: "indent-normalized", replacements: indentation };
 
   return undefined;
+}
+
+function toReplacement(
+  start: number,
+  end: number,
+  text: string,
+  line: number,
+  insert?: InsertPosition,
+): Replacement {
+  if (insert === "before") return { start, end: start, text, line };
+  if (insert === "after") return { start: end, end, text, line };
+  return { start, end, text, line };
 }
 
 function findOccurrences(content: string, search: string, limit = Number.POSITIVE_INFINITY): number[] {
@@ -380,6 +568,7 @@ function findLineBlockMatches(
   search: string,
   replacement: string,
   ignoreBaseIndent: boolean,
+  insert?: InsertPosition,
 ): Replacement[] {
   if (Buffer.byteLength(search) > FUZZY_SEARCH_LIMIT_BYTES) return [];
   const searchLines = splitLines(search);
@@ -416,15 +605,13 @@ function findLineBlockMatches(
     const first = window[0];
     const last = window.at(-1);
     if (!first || !last) continue;
-    const text = ignoreBaseIndent
-      ? reindentReplacement(replacement, baseIndent(bodies))
-      : replacement;
-    matches.push({
-      start: first.start,
-      end: includeFinalEnding ? last.end : last.bodyEnd,
-      text,
-      line: first.number,
-    });
+    const matchStart = first.start;
+    const matchEnd = includeFinalEnding ? last.end : last.bodyEnd;
+    // Insert keeps the caller's text; only full replacements reindent with the anchor.
+    const text = insert || !ignoreBaseIndent
+      ? replacement
+      : reindentReplacement(replacement, baseIndent(bodies));
+    matches.push(toReplacement(matchStart, matchEnd, text, first.number, insert));
     if (matches.length > MAX_REPLACEMENTS) {
       throw new Error(
         `Corrected oldText matched more than ${MAX_REPLACEMENTS.toLocaleString()} locations. ` +

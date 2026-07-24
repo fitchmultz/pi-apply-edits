@@ -4,27 +4,42 @@ import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import {
   applyEditsToFile,
-  type ApplyEditsDetails,
-  type ApplyEditsInput,
+  type ApplyEditsBatchDetails,
+  type ApplyEditsRequest,
+  type ApplyEditsToolDetails,
 } from "../src/apply-edits.ts";
 
 const editSchema = Type.Object({
   oldText: Type.String({
-    description: "Current text to replace. Include enough surrounding text to identify one location.",
+    description:
+      "Anchor text to find. For replace, this is the text to remove. " +
+      "For insert, this is the unique nearby text to insert before/after.",
   }),
-  newText: Type.String({ description: "Replacement text. May be empty to delete oldText." }),
+  newText: Type.String({
+    description:
+      "Replacement text, or the text to insert when insert is set. May be empty only for replace (delete).",
+  }),
   all: Type.Optional(
-    Type.Boolean({ description: "Replace every non-overlapping match. Default false; unique match required." }),
+    Type.Boolean({
+      description: "Apply at every non-overlapping match. Default false; unique match required.",
+    }),
+  ),
+  insert: Type.Optional(
+    StringEnum(["before", "after"] as const, {
+      description:
+        'Insert newText before or after the matched oldText instead of replacing it. ' +
+        'Example: insert an import after "import fs from \\"node:fs\\";".',
+    }),
   ),
 });
 
-export const applyEditsSchema = Type.Object({
+const fileSchema = Type.Object({
   path: Type.String({ description: "File path, relative to the session working directory or absolute." }),
   edits: Type.Optional(
     Type.Array(editSchema, {
       minItems: 1,
       description:
-        "Ordered replacements. Each edit sees the result of prior edits. " +
+        "Ordered replacements/inserts. Each edit sees the result of prior edits. " +
         "The file is committed only if all succeed.",
     }),
   ),
@@ -36,6 +51,38 @@ export const applyEditsSchema = Type.Object({
   onMissing: Type.Optional(
     StringEnum(["error", "create"] as const, {
       description: 'Missing-file behavior for rewrite. Use "create" only when creating a file. Default "error".',
+    }),
+  ),
+});
+
+export const applyEditsSchema = Type.Object({
+  path: Type.Optional(
+    Type.String({ description: "Single-file path. Omit when using files for a multi-file batch." }),
+  ),
+  edits: Type.Optional(
+    Type.Array(editSchema, {
+      minItems: 1,
+      description:
+        "Single-file ordered replacements/inserts. Each edit sees the result of prior edits. " +
+        "The file is committed only if all succeed.",
+    }),
+  ),
+  rewrite: Type.Optional(
+    Type.String({
+      description: "Single-file complete content. Use instead of edits. Preserves BOM and line endings.",
+    }),
+  ),
+  onMissing: Type.Optional(
+    StringEnum(["error", "create"] as const, {
+      description: 'Missing-file behavior for single-file rewrite. Use "create" only when creating. Default "error".',
+    }),
+  ),
+  files: Type.Optional(
+    Type.Array(fileSchema, {
+      minItems: 1,
+      description:
+        "Atomic multi-file batch. Every file is planned first; nothing is written unless every file " +
+        "mutation can be computed. Prefer this when changing several files together.",
     }),
   ),
 });
@@ -53,68 +100,76 @@ export function prepareApplyEditsArguments(raw: unknown): ApplyEditsParameters {
   }
   if (!isRecord(value)) return value as ApplyEditsParameters;
 
-  const path = readAlias(value, ["path", "file_path", "filePath"], "path");
-  let edits = value.edits;
-  const rewrite = readAlias(value, ["rewrite", "content"], "rewrite content");
-  const onMissing = readAlias(value, ["onMissing", "on_missing"], "onMissing");
-
-  if (typeof edits === "string") {
-    try {
-      edits = JSON.parse(edits);
-    } catch {
-      throw new Error("edits must be a JSON array, not malformed JSON text");
+  if (value.files !== undefined) {
+    if (
+      value.path !== undefined ||
+      value.edits !== undefined ||
+      value.rewrite !== undefined ||
+      value.content !== undefined ||
+      value.onMissing !== undefined ||
+      value.on_missing !== undefined
+    ) {
+      throw new Error("files cannot be combined with top-level path, edits, rewrite, content, or onMissing");
     }
+    let files = value.files;
+    if (typeof files === "string") {
+      try {
+        files = JSON.parse(files);
+      } catch {
+        throw new Error("files must be a JSON array, not malformed JSON text");
+      }
+    }
+    if (!Array.isArray(files)) throw new Error("files must be an array");
+    return {
+      files: files.map((file, index) => {
+        try {
+          return prepareSingleFileArguments(file);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(`files[${index}]: ${reason}`);
+        }
+      }),
+    } as ApplyEditsParameters;
   }
 
-  const oldText = readAlias(value, ["oldText", "old_string"], "top-level oldText");
-  const newText = readAlias(value, ["newText", "new_string"], "top-level newText");
-  const all = readAlias(value, ["all", "replace_all"], "top-level all");
-  const hasTopLevelEdit = oldText !== undefined || newText !== undefined || all !== undefined;
-  if (hasTopLevelEdit) {
-    if (edits !== undefined || rewrite !== undefined) {
-      throw new Error("Top-level edit fields cannot be combined with edits, rewrite, or content");
-    }
-    if (typeof oldText !== "string" || typeof newText !== "string") {
-      throw new Error("Top-level edit repair requires both string oldText and newText fields");
-    }
-    edits = [{ oldText, newText, all }];
-  }
-  if (Array.isArray(edits)) edits = edits.map(normalizeEditAliases);
-
-  return { path, edits, rewrite, onMissing } as ApplyEditsParameters;
+  return prepareSingleFileArguments(value) as ApplyEditsParameters;
 }
 
 export function createApplyEditsTool(): ToolDefinition<
   typeof applyEditsSchema,
-  ApplyEditsDetails
+  ApplyEditsToolDetails
 > {
   return {
     name: "apply_edits",
     label: "apply edits",
     description:
-      "Apply ordered text replacements, rewrite an existing UTF-8 text file, or create one file. " +
-      "Provide exactly one of edits or rewrite. rewrite is the easy whole-file path: pass the full " +
-      "new contents (onMissing: \"create\" only when creating). edits is for small unique patches. " +
-      "Ordered edits run sequentially in memory; nothing is written unless every edit succeeds. " +
-      "oldText matches exactly first, then tolerates only an unambiguous full-line typography, " +
-      "trailing-whitespace, or uniform-indentation difference. A repeated match is an error " +
+      "Apply ordered text replacements/inserts, rewrite a UTF-8 text file, create one file, or apply " +
+      "an atomic multi-file batch. Provide either files: [...] or a single-file path with exactly one of " +
+      "edits or rewrite. rewrite is the easy whole-file path: pass the full new contents " +
+      '(onMissing: "create" only when creating). edits is for small unique patches; set insert to ' +
+      '"before" or "after" to insert newText at an anchor without replacing it. Ordered edits run ' +
+      "sequentially in memory; nothing is written unless every edit (and every file in a batch) can be " +
+      "planned successfully. oldText matches exactly first, then tolerates only an unambiguous full-line " +
+      "typography, trailing-whitespace, or uniform-indentation difference. A repeated match is an error " +
       "unless all is true.",
     promptSnippet:
-      "File writes: rewrite for whole-file replace/create, edits for small unique patches; atomic and cheap.",
+      "File writes: rewrite whole files, edits/inserts for small patches, files:[] for atomic multi-file batches.",
     promptGuidelines: [
       "Use apply_edits for file mutations when available; it replaces built-in edit and write by default.",
       'Whole-file replace or new file: rewrite with the full contents (onMissing: "create" only when ' +
         "creating). One call, no oldText matching; ideal for large prompt/markdown/config rewrites.",
-      "Small surgical change: edits with a short unique oldText. Ordered edits apply in memory and " +
-        "commit together only after all succeed. On mismatch, retry with the nearby block from the " +
-        "error, or switch that file to rewrite.",
+      'Small surgical change: edits with a short unique oldText. Use insert: "before"|"after" to add ' +
+        "text at an anchor (imports, cases, list items) without restating surrounding code. Ordered " +
+        "edits apply in memory and commit together only after all succeed.",
+      "Multi-file change: pass files: [{path, edits|rewrite}, ...] so the whole batch is planned before " +
+        "any write. Prefer this over several separate apply_edits calls when the edits belong together.",
     ],
     parameters: applyEditsSchema,
     prepareArguments: prepareApplyEditsArguments,
     executionMode: "parallel",
 
     async execute(_toolCallId, params, signal, _onUpdate, context) {
-      const result = await applyEditsToFile(params as ApplyEditsInput, context.cwd, signal);
+      const result = await applyEditsToFile(params as ApplyEditsRequest, context.cwd, signal);
       return {
         content: [{ type: "text", text: result.summary }],
         details: result.details,
@@ -122,15 +177,10 @@ export function createApplyEditsTool(): ToolDefinition<
     },
 
     renderCall(args, theme) {
-      const editCount = Array.isArray(args.edits) ? args.edits.length : 0;
-      const mode = editCount > 0
-        ? `${editCount} edit${editCount === 1 ? "" : "s"}`
-        : args.onMissing === "create"
-          ? "create"
-          : "rewrite";
+      const label = callLabel(args);
       return new Text(
-        `${theme.fg("toolTitle", theme.bold("apply_edits "))}${theme.fg("accent", String(args.path ?? ""))}` +
-          theme.fg("dim", ` (${mode})`),
+        `${theme.fg("toolTitle", theme.bold("apply_edits "))}${theme.fg("accent", label.path)}` +
+          theme.fg("dim", ` (${label.mode})`),
         0,
         0,
       );
@@ -147,23 +197,32 @@ export function createApplyEditsTool(): ToolDefinition<
       }
 
       let text = theme.fg("success", `✓ ${message || "Applied"}`);
-      const diff = result.details?.diff;
-      if (!diff || !options.expanded) return new Text(text, 0, 0);
+      const diffs = collectDiffs(result.details);
+      if (diffs.length === 0 || !options.expanded) return new Text(text, 0, 0);
 
-      const lines = diff.split("\n");
       const limit = 200;
-      let inHunk = false;
-      for (const line of lines.slice(0, limit)) {
-        if (line.startsWith("@@")) inHunk = true;
-        const color = inHunk && line.startsWith("+")
-          ? "toolDiffAdded"
-          : inHunk && line.startsWith("-")
-            ? "toolDiffRemoved"
-            : "toolDiffContext";
-        text += `\n${theme.fg(color, line)}`;
+      let shown = 0;
+      for (const { path, diff } of diffs) {
+        if (shown >= limit) break;
+        if (diffs.length > 1) {
+          text += `\n${theme.fg("muted", `--- ${path}`)}`;
+          shown += 1;
+        }
+        let inHunk = false;
+        for (const line of diff.split("\n")) {
+          if (shown >= limit) break;
+          if (line.startsWith("@@")) inHunk = true;
+          const color = inHunk && line.startsWith("+")
+            ? "toolDiffAdded"
+            : inHunk && line.startsWith("-")
+              ? "toolDiffRemoved"
+              : "toolDiffContext";
+          text += `\n${theme.fg(color, line)}`;
+          shown += 1;
+        }
       }
-      if (lines.length > limit) {
-        text += `\n${theme.fg("muted", `... ${lines.length - limit} more diff lines`)}`;
+      if (shown >= limit) {
+        text += `\n${theme.fg("muted", "... more diff lines")}`;
       }
       return new Text(text, 0, 0);
     },
@@ -185,13 +244,90 @@ export default function applyEditsExtension(pi: ExtensionAPI): void {
   });
 }
 
+function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
+  if (!isRecord(raw)) throw new Error("file entry must be an object");
+
+  const path = readAlias(raw, ["path", "file_path", "filePath"], "path");
+  let edits = raw.edits;
+  const rewrite = readAlias(raw, ["rewrite", "content"], "rewrite content");
+  const onMissing = readAlias(raw, ["onMissing", "on_missing"], "onMissing");
+
+  if (typeof edits === "string") {
+    try {
+      edits = JSON.parse(edits);
+    } catch {
+      throw new Error("edits must be a JSON array, not malformed JSON text");
+    }
+  }
+
+  const oldText = readAlias(raw, ["oldText", "old_string"], "top-level oldText");
+  const newText = readAlias(raw, ["newText", "new_string"], "top-level newText");
+  const all = readAlias(raw, ["all", "replace_all"], "top-level all");
+  const insert = readAlias(raw, ["insert"], "top-level insert");
+  const hasTopLevelEdit =
+    oldText !== undefined || newText !== undefined || all !== undefined || insert !== undefined;
+  if (hasTopLevelEdit) {
+    if (edits !== undefined || rewrite !== undefined) {
+      throw new Error("Top-level edit fields cannot be combined with edits, rewrite, or content");
+    }
+    if (typeof oldText !== "string" || typeof newText !== "string") {
+      throw new Error("Top-level edit repair requires both string oldText and newText fields");
+    }
+    edits = [{ oldText, newText, all, insert }];
+  }
+  if (Array.isArray(edits)) edits = edits.map(normalizeEditAliases);
+
+  return { path, edits, rewrite, onMissing };
+}
+
 function normalizeEditAliases(value: unknown): unknown {
   if (!isRecord(value)) return value;
   return {
     oldText: readAlias(value, ["oldText", "old_string"], "edit oldText"),
     newText: readAlias(value, ["newText", "new_string"], "edit newText"),
     all: readAlias(value, ["all", "replace_all"], "edit all"),
+    insert: readAlias(value, ["insert"], "edit insert"),
   };
+}
+
+function callLabel(args: ApplyEditsParameters): { path: string; mode: string } {
+  if (Array.isArray(args.files)) {
+    const count = args.files.length;
+    return {
+      path: `${count} file${count === 1 ? "" : "s"}`,
+      mode: "batch",
+    };
+  }
+  const editCount = Array.isArray(args.edits) ? args.edits.length : 0;
+  const inserts = Array.isArray(args.edits)
+    ? args.edits.filter((edit) => edit && typeof edit === "object" && "insert" in edit && edit.insert).length
+    : 0;
+  const mode = editCount > 0
+    ? inserts === editCount
+      ? `${editCount} insert${editCount === 1 ? "" : "s"}`
+      : inserts > 0
+        ? `${editCount} edit${editCount === 1 ? "" : "s"}/${inserts} insert${inserts === 1 ? "" : "s"}`
+        : `${editCount} edit${editCount === 1 ? "" : "s"}`
+    : args.onMissing === "create"
+      ? "create"
+      : "rewrite";
+  return { path: String(args.path ?? ""), mode };
+}
+
+function collectDiffs(
+  details: ApplyEditsToolDetails | undefined,
+): Array<{ path: string; diff: string }> {
+  if (!details) return [];
+  if (isBatchDetails(details)) {
+    return details.files
+      .filter((file) => file.diff)
+      .map((file) => ({ path: file.path, diff: file.diff }));
+  }
+  return details.diff ? [{ path: details.path, diff: details.diff }] : [];
+}
+
+function isBatchDetails(details: ApplyEditsToolDetails): details is ApplyEditsBatchDetails {
+  return "files" in details && Array.isArray(details.files);
 }
 
 function readAlias(

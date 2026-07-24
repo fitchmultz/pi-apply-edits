@@ -9,6 +9,15 @@ import applyEditsExtension, {
   createApplyEditsTool,
   prepareApplyEditsArguments,
 } from "../extensions/apply-edits.ts";
+import type { ApplyEditsDetails } from "../src/apply-edits.ts";
+
+function singleDetails(details: unknown): ApplyEditsDetails {
+  if (!details || typeof details !== "object" || "files" in details) {
+    throw new Error("expected single-file details");
+  }
+  return details as ApplyEditsDetails;
+}
+
 
 interface ExtensionHarness {
   active: string[];
@@ -46,7 +55,7 @@ test("argument preparation repairs only common unambiguous edit and write shapes
     }),
     {
       path: "a.ts",
-      edits: [{ oldText: "before", newText: "after", all: true }],
+      edits: [{ oldText: "before", newText: "after", all: true, insert: undefined }],
       rewrite: undefined,
       onMissing: undefined,
     },
@@ -66,7 +75,7 @@ test("argument preparation repairs only common unambiguous edit and write shapes
     }),
     {
       path: "a.ts",
-      edits: [{ oldText: "a", newText: "b", all: false }],
+      edits: [{ oldText: "a", newText: "b", all: false, insert: undefined }],
       rewrite: undefined,
       onMissing: undefined,
     },
@@ -164,8 +173,8 @@ test("tool execution uses the session cwd and returns compact evidence", async (
     assert.equal(await readFile(path, "utf8"), "after\n");
     assert.equal(result.content[0]?.type, "text");
     assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /Edited file\.txt/);
-    assert.equal(result.details?.operation, "edit");
-    assert.match(result.details?.diff ?? "", /-before[\s\S]*\+after/);
+    assert.equal(singleDetails(result.details).operation, "edit");
+    assert.match(singleDetails(result.details).diff ?? "", /-before[\s\S]*\+after/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -205,14 +214,62 @@ test("renderer keeps collapsed output compact and exposes the diff when expanded
   for (const line of [...collapsedLines, ...expandedLines]) assert(visibleWidth(line) <= 80);
 });
 
-test("tool contract makes whole-file rewrite the easy path", () => {
+test("tool contract covers rewrite, insert, and multi-file batch", () => {
   const tool = createApplyEditsTool();
-  assert.match(tool.description, /sequentially in memory/);
-  assert.match(tool.description, /nothing is written unless every edit succeeds/);
+  assert.match(tool.description, /atomic multi-file batch/);
+  assert.match(tool.description, /insert/);
   assert.match(tool.description, /onMissing: "create"/);
   assert.match(tool.description, /easy whole-file path/);
-  assert.match(tool.promptSnippet ?? "", /rewrite for whole-file/);
+  assert.match(tool.promptSnippet ?? "", /files:\[\]/);
   assert(tool.promptGuidelines?.some((g) => /no oldText matching/.test(g)));
-  assert(tool.promptGuidelines?.some((g) => /short unique oldText/.test(g)));
-  assert.equal(tool.promptGuidelines?.some((g) => /bash|shell|cat|heredoc/i.test(g)), false);
+  assert(tool.promptGuidelines?.some((g) => /insert: "before"\|\"after"/.test(g)));
+  assert(tool.promptGuidelines?.some((g) => /files: \[\{path/.test(g)));
+});
+
+test("argument preparation accepts multi-file batches and insert", () => {
+  assert.deepEqual(
+    prepareApplyEditsArguments({
+      files: [
+        { path: "a.ts", old_string: "a", new_string: "b" },
+        { file_path: "b.ts", edits: [{ oldText: "x", newText: "\ny", insert: "after" }] },
+      ],
+    }),
+    {
+      files: [
+        { path: "a.ts", edits: [{ oldText: "a", newText: "b", all: undefined, insert: undefined }], rewrite: undefined, onMissing: undefined },
+        { path: "b.ts", edits: [{ oldText: "x", newText: "\ny", all: undefined, insert: "after" }], rewrite: undefined, onMissing: undefined },
+      ],
+    },
+  );
+  assert.throws(
+    () => prepareApplyEditsArguments({ path: "a.ts", files: [{ path: "b.ts", rewrite: "x" }] }),
+    /files cannot be combined/,
+  );
+});
+
+test("tool execution applies a multi-file batch from the session cwd", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-batch-extension-"));
+  try {
+    await writeFile(join(directory, "a.txt"), "a\n");
+    await writeFile(join(directory, "b.txt"), "b\n");
+    const tool = createApplyEditsTool();
+    const result = await tool.execute(
+      "call-batch",
+      {
+        files: [
+          { path: "a.txt", edits: [{ oldText: "a", newText: "A" }] },
+          { path: "b.txt", edits: [{ oldText: "b", newText: "!", insert: "after" }] },
+        ],
+      },
+      undefined,
+      undefined,
+      { cwd: directory } as never,
+    );
+    assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "A\n");
+    assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "b!\n");
+    assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /Updated 2 files/);
+    assert.equal("files" in (result.details ?? {}), true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

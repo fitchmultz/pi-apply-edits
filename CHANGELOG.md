@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 — 2026-07-24
+
+- `insert: "before" | "after"` on edits: add text at an anchor without replacing it.
+- Atomic multi-file batches via `files: [{ path, edits|rewrite }, ...]` (plan all, then write).
+
 ## 0.1.2 — 2026-07-24
 
 - Soften prompts: sell `rewrite` as easy whole-file path; do not ban shell.

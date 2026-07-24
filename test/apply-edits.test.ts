@@ -19,7 +19,15 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { applyEditsToFile, applyTargetedEdits, resolveInputPath } from "../src/apply-edits.ts";
+import { applyEditsToFile, applyTargetedEdits, resolveInputPath, type ApplyEditsDetails } from "../src/apply-edits.ts";
+
+function singleDetails(details: { files?: ApplyEditsDetails[] } | ApplyEditsDetails): ApplyEditsDetails {
+  if (details && typeof details === "object" && "files" in details) {
+    throw new Error("expected single-file details");
+  }
+  return details as ApplyEditsDetails;
+}
+
 import {
   captureSnapshot,
   publishNewFile,
@@ -273,7 +281,7 @@ test("rewrite creation is explicit and creates parent directories", async () => 
       directory,
     );
     assert.equal(await readFile(path, "utf8"), "hello\n");
-    assert.equal(result.details.operation, "create");
+    assert.equal(singleDetails(result.details).operation, "create");
     assert.match(result.summary, /^Created nested\/file\.txt/);
   });
 });
@@ -721,8 +729,8 @@ test("diff statistics count content that resembles patch headers", async () => {
 
     const result = await applyEditsToFile({ path, rewrite: "++after\n" }, directory);
 
-    assert.equal(result.details.addedLines, 1);
-    assert.equal(result.details.deletedLines, 1);
+    assert.equal(singleDetails(result.details).addedLines, 1);
+    assert.equal(singleDetails(result.details).deletedLines, 1);
   });
 });
 
@@ -736,8 +744,8 @@ test("many-line rewrites skip quadratic diff work even when byte size is small",
       directory,
     );
 
-    assert.equal(result.details.diffTruncated, true);
-    assert.match(result.details.diff, /Diff omitted/);
+    assert.equal(singleDetails(result.details).diffTruncated, true);
+    assert.match(singleDetails(result.details).diff, /Diff omitted/);
   });
 });
 
@@ -750,8 +758,8 @@ test("large rewrites skip expensive diff computation", async () => {
 
     const result = await applyEditsToFile({ path, rewrite: replacement }, directory);
 
-    assert.match(result.details.diff, /Diff omitted/);
-    assert.equal(result.details.diffTruncated, true);
+    assert.match(singleDetails(result.details).diff, /Diff omitted/);
+    assert.equal(singleDetails(result.details).diffTruncated, true);
     assert.equal(await readFile(path, "utf8"), replacement);
   });
 });
@@ -784,7 +792,7 @@ test("aborted calls and identical rewrites have explicit non-mutating outcomes",
     assert.equal(await readFile(path, "utf8"), "same\n");
 
     const result = await applyEditsToFile({ path, rewrite: "same\n" }, directory);
-    assert.equal(result.details.operation, "no_change");
+    assert.equal(singleDetails(result.details).operation, "no_change");
     assert.equal(await readFile(path, "utf8"), "same\n");
   });
 });
@@ -832,6 +840,111 @@ test("invalid file URLs use an existing literal path or return a normalized erro
     assert.throws(
       () => resolveInputPath("file://missing/y.txt", directory),
       /Invalid file URL path/,
+    );
+  });
+});
+
+test("insert before/after anchors without replacing them", () => {
+  const after = applyTargetedEdits(
+    'import fs from "node:fs";\n',
+    [{ oldText: 'import fs from "node:fs";', newText: '\nimport path from "node:path";', insert: "after" }],
+    "a.ts",
+  );
+  assert.equal(after.text, 'import fs from "node:fs";\nimport path from "node:path";\n');
+
+  const before = applyTargetedEdits(
+    "export function main() {}\n",
+    [{ oldText: "export function main()", newText: "// entry\n", insert: "before" }],
+    "a.ts",
+  );
+  assert.equal(before.text, "// entry\nexport function main() {}\n");
+});
+
+test("insert all applies at every match and empty insert text fails", () => {
+  const result = applyTargetedEdits(
+    "item\nitem\n",
+    [{ oldText: "item", newText: "!", insert: "after", all: true }],
+    "list.txt",
+  );
+  assert.equal(result.text, "item!\nitem!\n");
+
+  assert.throws(
+    () =>
+      applyTargetedEdits(
+        "item\n",
+        [{ oldText: "item", newText: "", insert: "after" }],
+        "list.txt",
+      ),
+    /newText must not be empty when insert is set/,
+  );
+});
+
+test("multi-file batch plans then writes all files", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "a.ts"), "const a = 1;\n");
+    await writeFile(join(directory, "b.ts"), "const b = 1;\n");
+
+    const result = await applyEditsToFile(
+      {
+        files: [
+          { path: "a.ts", edits: [{ oldText: "const a = 1;", newText: "const a = 2;" }] },
+          {
+            path: "b.ts",
+            edits: [{ oldText: "const b = 1;", newText: "\nexport {};", insert: "after" }],
+          },
+        ],
+      },
+      directory,
+    );
+
+    assert.match(result.summary, /Updated 2 files/);
+    assert.equal("files" in result.details, true);
+    if (!("files" in result.details)) throw new Error("expected batch details");
+    assert.equal(result.details.files.length, 2);
+    assert.equal(await readFile(join(directory, "a.ts"), "utf8"), "const a = 2;\n");
+    assert.equal(await readFile(join(directory, "b.ts"), "utf8"), "const b = 1;\nexport {};\n");
+  });
+});
+
+test("multi-file batch writes nothing when a later file cannot be planned", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "a.ts"), "const a = 1;\n");
+    await writeFile(join(directory, "b.ts"), "const b = 1;\n");
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "a.ts", edits: [{ oldText: "const a = 1;", newText: "const a = 2;" }] },
+              { path: "b.ts", edits: [{ oldText: "missing", newText: "x" }] },
+            ],
+          },
+          directory,
+        ),
+      /Could not find edits\[0\]\.oldText/,
+    );
+
+    assert.equal(await readFile(join(directory, "a.ts"), "utf8"), "const a = 1;\n");
+    assert.equal(await readFile(join(directory, "b.ts"), "utf8"), "const b = 1;\n");
+  });
+});
+
+test("multi-file batch rejects duplicate resolved paths", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "a.ts"), "x\n");
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "a.ts", edits: [{ oldText: "x", newText: "y" }] },
+              { path: "./a.ts", edits: [{ oldText: "y", newText: "z" }] },
+            ],
+          },
+          directory,
+        ),
+      /same path/,
     );
   });
 });
