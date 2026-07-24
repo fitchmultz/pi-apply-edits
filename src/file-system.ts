@@ -13,7 +13,7 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export interface FileSnapshot {
   inputPath: string;
@@ -35,7 +35,11 @@ export async function captureSnapshot(inputPath: string): Promise<FileSnapshot |
   try {
     inputStats = await lstat(inputPath, { bigint: true });
   } catch (error) {
-    if (isCode(error, "ENOENT") || isCode(error, "ENOTDIR")) return undefined;
+    // Only a true missing path is creatable. ENOTDIR means a parent is a non-directory.
+    if (isCode(error, "ENOENT")) return undefined;
+    if (isCode(error, "ENOTDIR")) {
+      throw new Error(`Cannot access ${inputPath}: a parent path is not a directory. No changes were written.`);
+    }
     throw error;
   }
 
@@ -96,8 +100,55 @@ export async function assertSafeToReplace(
       `Atomic metadata-preserving replacement is not supported on ${process.platform}. No changes were written.`,
     );
   }
+  await assertDirectoryWritableForPublish(dirname(snapshot.actualPath), snapshot.inputPath);
   if (process.platform === "linux") {
     await assertNoLinuxCapabilities(snapshot.actualPath, signal);
+  }
+}
+
+/** Plan-time create preflight: deepest existing ancestor must be a writable directory. */
+export async function assertSafeToCreate(targetPath: string): Promise<void> {
+  let current = dirname(resolve(targetPath));
+  while (true) {
+    try {
+      const stats = await lstat(current, { bigint: true });
+      const directoryPath = stats.isSymbolicLink() ? await realpath(current) : current;
+      const directoryStats = await stat(directoryPath, { bigint: true });
+      if (!directoryStats.isDirectory()) {
+        throw new Error(
+          `Cannot create ${targetPath}: a parent path is not a directory. No changes were written.`,
+        );
+      }
+      await assertDirectoryWritableForPublish(directoryPath, targetPath);
+      return;
+    } catch (error) {
+      if (isCode(error, "ENOENT")) {
+        const parent = dirname(current);
+        if (parent === current) {
+          throw new Error(
+            `Cannot create ${targetPath}: no existing parent directory. No changes were written.`,
+          );
+        }
+        current = parent;
+        continue;
+      }
+      if (isCode(error, "ENOTDIR")) {
+        throw new Error(
+          `Cannot create ${targetPath}: a parent path is not a directory. No changes were written.`,
+        );
+      }
+      throw error;
+    }
+  }
+}
+
+async function assertDirectoryWritableForPublish(directoryPath: string, labelPath: string): Promise<void> {
+  try {
+    await access(directoryPath, constants.W_OK | constants.X_OK);
+  } catch {
+    throw new Error(
+      `Directory must be writable to publish ${labelPath} (${directoryPath}). No changes were written.`,
+    );
   }
 }
 

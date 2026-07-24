@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
+  assertSafeToCreate,
   assertSafeToReplace,
   captureSnapshot,
   publishNewFile,
@@ -317,6 +318,7 @@ async function applyEditsBatch(
     }
     seen.set(item.lockKey, item.index);
   }
+  rejectAncestorPathConflicts(resolved);
 
   const lockPaths = [...seen.keys()].sort();
   return withOrderedFileLocks(lockPaths, async () => {
@@ -357,6 +359,24 @@ async function applyEditsBatch(
       details: { files: detailsList },
     };
   });
+}
+
+function rejectAncestorPathConflicts(
+  resolved: Array<{ lockKey: string; inputPath: string; index: number }>,
+): void {
+  const ordered = [...resolved].sort((left, right) => left.lockKey.localeCompare(right.lockKey));
+  for (let i = 0; i < ordered.length; i++) {
+    const ancestor = ordered[i]!;
+    const prefix = ancestor.lockKey.endsWith(sep) ? ancestor.lockKey : `${ancestor.lockKey}${sep}`;
+    for (let j = i + 1; j < ordered.length; j++) {
+      const descendant = ordered[j]!;
+      if (!descendant.lockKey.startsWith(prefix)) break;
+      throw new Error(
+        `files[${descendant.index}] (${descendant.inputPath}) is nested under files[${ancestor.index}] ` +
+          `(${ancestor.inputPath}). A batch cannot target a path and one of its ancestors.`,
+      );
+    }
+  }
 }
 
 async function withOrderedFileLocks<T>(paths: string[], fn: () => Promise<T>): Promise<T> {
@@ -417,7 +437,10 @@ async function planFileMutation(
   const nextBytes = Buffer.from(nextText, "utf8");
   const needsWrite = !(snapshot && nextBytes.equals(snapshot.bytes));
   // Fail closed during plan (before any multi-file write) for known-unsafe targets.
-  if (snapshot && needsWrite) await assertSafeToReplace(snapshot, signal);
+  if (needsWrite) {
+    if (snapshot) await assertSafeToReplace(snapshot, signal);
+    else await assertSafeToCreate(inputPath);
+  }
   return {
     inputPath,
     displayPath,

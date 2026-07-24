@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4 — 2026-07-24
+
+- Treat `ENOTDIR` as an invalid path (not a missing creatable file) during snapshot/plan.
+- Reject multi-file batches where one target is a path-ancestor of another before any write.
+- Plan-time checks that publication directories are writable (`W_OK|X_OK`) for replace and create.
+
 ## 0.2.3 — 2026-07-24
 
 - Batch lock/dedupe keys canonicalize missing paths via deepest existing ancestor (symlink parents + case-fold on macOS/Windows) so alias creates cannot partial-write.

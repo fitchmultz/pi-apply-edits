@@ -1173,3 +1173,86 @@ test("multi-file batch rejects case-alias creates of the same missing path", asy
     await assert.rejects(() => readFile(lower, "utf8"), /ENOENT/);
   });
 });
+
+test("multi-file batch rejects create under an existing file parent before any write", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const first = join(directory, "first.txt");
+    const blocker = join(directory, "blocker");
+    await writeFile(first, "old\n");
+    await writeFile(blocker, "file\n");
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "first.txt", rewrite: "new\n" },
+              { path: "blocker/child.txt", rewrite: "child\n", onMissing: "create" },
+            ],
+          },
+          directory,
+        ),
+      /not a directory/,
+    );
+
+    assert.equal(await readFile(first, "utf8"), "old\n");
+  });
+});
+
+test("multi-file batch rejects a path nested under another batch target before any write", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const first = join(directory, "first.txt");
+    await writeFile(first, "old\n");
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "first.txt", rewrite: "new\n" },
+              { path: "parent", rewrite: "file\n", onMissing: "create" },
+              { path: "parent/child.txt", rewrite: "child\n", onMissing: "create" },
+            ],
+          },
+          directory,
+        ),
+      /nested under/,
+    );
+
+    assert.equal(await readFile(first, "utf8"), "old\n");
+    await assert.rejects(() => readFile(join(directory, "parent"), "utf8"), /ENOENT/);
+  });
+});
+
+test("multi-file batch rejects unwritable target directories during plan", async () => {
+  if (process.platform === "win32") return;
+  await inTemporaryDirectory(async (directory) => {
+    const first = join(directory, "first.txt");
+    const lockedDir = join(directory, "locked");
+    const second = join(lockedDir, "second.txt");
+    await writeFile(first, "old\n");
+    await mkdir(lockedDir);
+    await writeFile(second, "second\n");
+    await chmod(lockedDir, 0o555);
+
+    try {
+      await assert.rejects(
+        () =>
+          applyEditsToFile(
+            {
+              files: [
+                { path: "first.txt", rewrite: "new\n" },
+                { path: "locked/second.txt", edits: [{ oldText: "second", newText: "changed" }] },
+              ],
+            },
+            directory,
+          ),
+        /Directory must be writable/,
+      );
+      assert.equal(await readFile(first, "utf8"), "old\n");
+      assert.equal(await readFile(second, "utf8"), "second\n");
+    } finally {
+      await chmod(lockedDir, 0o755);
+    }
+  });
+});
