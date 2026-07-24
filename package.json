@@ -1,0 +1,78 @@
+{
+  "name": "pi-apply-edits",
+  "version": "0.1.0",
+  "description": "A reliable, agent-friendly apply_edits tool for Pi.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "extension",
+    "apply-edits",
+    "edit",
+    "write",
+    "atomic",
+    "typescript"
+  ],
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/apply-edits.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "pack:check": "npm pack --dry-run",
+    "check": "npm run typecheck && npm test && npm run pack:check",
+    "prepublishOnly": "npm run check"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "npm@11.16.0",
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.82.0",
+    "@earendil-works/pi-coding-agent": "^0.82.0",
+    "@earendil-works/pi-tui": "^0.82.0",
+    "@types/node": "^24.12.0",
+    "typebox": "^1.1.38",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "author": "Mitch Fultz (https://github.com/fitchmultz)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fitchmultz/pi-apply-edits.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fitchmultz/pi-apply-edits/issues"
+  },
+  "homepage": "https://github.com/fitchmultz/pi-apply-edits#readme"
+}
