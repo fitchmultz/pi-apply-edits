@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 — 2026-07-24
+
+- Narrow `\n` unescape so Windows paths (`C:\new`, `C:\tmp`) and prose escapes are not corrupted.
+- Insert `all` skips anchors that already have long/block insert text instead of doubling them.
+- Short inserts no longer false-positive as already-applied against shared prefixes (`tes`/`t` in `test`).
+
 ## 0.2.1 — 2026-07-24
 
 - Unescape model payloads like `line1\nline2` in rewrite/oldText/newText when no real newlines are present.

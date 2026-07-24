@@ -1069,3 +1069,32 @@ test("missing text with no close match shows the file head", () => {
     /File starts with:\nalpha\nbeta\ngamma/,
   );
 });
+
+
+test("insert all skips anchors that already have block insert text", () => {
+  const result = applyTargetedEdits(
+    "x!\ny\nx\n",
+    [{ oldText: "x", newText: "!", insert: "after", all: true }],
+    "file.txt",
+  );
+  // short insert "!" is not treated as idempotent; both x get !
+  assert.equal(result.text, "x!!\ny\nx!\n");
+});
+
+test("insert all skips anchors that already have long insert text", () => {
+  const result = applyTargetedEdits(
+    "x<!--done-->\ny\nx\n",
+    [{ oldText: "x", newText: "<!--done-->", insert: "after", all: true }],
+    "file.txt",
+  );
+  assert.equal(result.text, "x<!--done-->\ny\nx<!--done-->\n");
+});
+
+test("short insert after shared prefix is not false-already-applied", () => {
+  const result = applyTargetedEdits(
+    "test\n",
+    [{ oldText: "tes", newText: "t", insert: "after" }],
+    "file.txt",
+  );
+  assert.equal(result.text, "testt\n");
+});

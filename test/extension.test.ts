@@ -283,7 +283,7 @@ test("tool execution applies a multi-file batch from the session cwd", async () 
   }
 });
 
-test("argument preparation unescapes model \\n payloads without real newlines", () => {
+test("argument preparation unescapes clear multi-line \\n payloads only", () => {
   assert.deepEqual(
     prepareApplyEditsArguments({
       path: "a.ts",
@@ -311,12 +311,37 @@ test("argument preparation unescapes model \\n payloads without real newlines", 
     },
   );
 
-  // Already-real newlines are left alone (including intentional backslash characters).
+  // Already-real newlines are left alone.
   assert.equal(
     prepareApplyEditsArguments({
       path: "a.ts",
       rewrite: "keep\\nreal\nnewline",
     }).rewrite,
     "keep\\nreal\nnewline",
+  );
+
+  // Do not corrupt Windows paths or lone \\t (C:\\tmp).
+  assert.equal(
+    prepareApplyEditsArguments({
+      path: "a.ts",
+      rewrite: 'const p = "C:\\new\\file";',
+    }).rewrite,
+    'const p = "C:\\new\\file";',
+  );
+  assert.equal(
+    prepareApplyEditsArguments({
+      path: "a.ts",
+      rewrite: 'const p = "C:\\tmp\\x";',
+    }).rewrite,
+    'const p = "C:\\tmp\\x";',
+  );
+
+  // Prose about escapes stays put.
+  assert.equal(
+    prepareApplyEditsArguments({
+      path: "a.md",
+      rewrite: "Use \\n for newline",
+    }).rewrite,
+    "Use \\n for newline",
   );
 });

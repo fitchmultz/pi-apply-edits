@@ -310,10 +310,14 @@ function normalizeEditAliases(value: unknown): unknown {
   };
 }
 
-/** Repair model-escaped payloads like "line1\nline2" when no real newlines are present. */
+/** Repair clear multi-line model payloads ("line1\nline2\n") without touching paths like C:\new. */
 function unescapeModelString(value: string): string {
   if (!value.includes("\\") || /[\n\r]/.test(value)) return value;
-  if (!value.includes("\\n") && !value.includes("\\r") && !value.includes("\\t")) return value;
+  if (!value.includes("\\n")) return value; // never lone \t (C:\tmp) or other escapes
+  if (/[A-Za-z]:\\/.test(value)) return value; // Windows drive path
+  // Single mid-string \n with surrounding spaces is usually prose ("Use \n for newline").
+  const nlCount = value.split("\\n").length - 1;
+  if (nlCount === 1 && !value.endsWith("\\n") && / \\n /.test(value)) return value;
   let out = "";
   for (let i = 0; i < value.length; i++) {
     if (value[i] === "\\" && i + 1 < value.length) {
@@ -328,26 +332,12 @@ function unescapeModelString(value: string): string {
         i++;
         continue;
       }
-      if (next === "t") {
-        out += "\t";
-        i++;
-        continue;
-      }
       if (next === "\\") {
         out += "\\";
         i++;
         continue;
       }
-      if (next === '"') {
-        out += '"';
-        i++;
-        continue;
-      }
-      if (next === "'") {
-        out += "'";
-        i++;
-        continue;
-      }
+      // Leave \t and unknown escapes intact.
     }
     out += value[i]!;
   }

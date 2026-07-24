@@ -217,21 +217,25 @@ export function applyTargetedEdits(
           "Add more surrounding text so matches do not overlap. No changes were written.",
       );
     }
+    let effective: Replacement[];
     if (edit.insert) {
-      const already = selected.filter((item) => insertAlreadyApplied(current, item, edit.insert!));
-      if (already.length === selected.length) {
+      // Only treat long/block inserts as idempotent; short inserts like "t" after "tes" in "test" are ambiguous.
+      const pending = selected.filter((item) => !insertAlreadyApplied(current, item, edit.insert!, edit.newText));
+      if (pending.length === 0) {
         throw new Error(
           `edits[${index}] already has the inserted text at its matched location in ${displayPath}. ` +
             "No changes were written.",
         );
       }
-    }
-    const effective = selected.filter((item) => current.slice(item.start, item.end) !== item.text);
-    if (effective.length === 0) {
-      throw new Error(
-        `edits[${index}] already produces the requested text at its matched location in ${displayPath}. ` +
-          "No changes were written.",
-      );
+      effective = pending;
+    } else {
+      effective = selected.filter((item) => current.slice(item.start, item.end) !== item.text);
+      if (effective.length === 0) {
+        throw new Error(
+          `edits[${index}] already produces the requested text at its matched location in ${displayPath}. ` +
+            "No changes were written.",
+        );
+      }
     }
 
     current = applyReplacements(current, effective);
@@ -593,8 +597,11 @@ function insertAlreadyApplied(
   content: string,
   item: Replacement,
   insert: InsertPosition,
+  newText: string,
 ): boolean {
   if (item.text.length === 0) return false;
+  // Short inserts without a newline collide with ordinary neighboring characters too often.
+  if (newText.length < 4 && !newText.includes("\n") && !newText.includes("\r")) return false;
   if (insert === "before") {
     const from = item.matchStart - item.text.length;
     return from >= 0 && content.slice(from, item.matchStart) === item.text;
