@@ -37,9 +37,8 @@ environment opt-in.
 
 Ladder (cheapest correct choice first):
 
-1. **Whole file / most of file / new file** → `rewrite` (`onMissing: "create"` only when creating)
+1. **Whole file / most of file / new file** → `rewrite` with full contents (`onMissing: "create"` only when creating). No `oldText` matching.
 2. **Small unique substring** → `edits` with short exact `oldText`
-3. Do **not** fall back to shell (`cat`, heredoc, `python`, `tee`) for file writes when this tool is loaded
 
 Provide exactly one of `edits` or `rewrite`:
 

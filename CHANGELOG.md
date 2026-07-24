@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.1.2 — 2026-07-24
+
+- Soften prompts: sell `rewrite` as easy whole-file path; do not ban shell.
+
 ## 0.1.1 — 2026-07-24
 
-- Prompt/docs ladder: prefer `rewrite` for whole-file work; ban shell file writes when the tool is available; keep `edits` for small unique patches.
+- Prompt/docs ladder: make `rewrite` the easy whole-file path (no `oldText`); keep `edits` for small unique patches.
 
 ## 0.1.0 — 2026-07-24
 
