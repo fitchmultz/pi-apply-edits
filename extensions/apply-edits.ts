@@ -102,15 +102,27 @@ export function prepareApplyEditsArguments(raw: unknown): ApplyEditsParameters {
   if (!isRecord(value)) return value as ApplyEditsParameters;
 
   if (value.files !== undefined) {
-    if (
-      value.path !== undefined ||
-      value.edits !== undefined ||
-      value.rewrite !== undefined ||
-      value.content !== undefined ||
-      value.onMissing !== undefined ||
-      value.on_missing !== undefined
-    ) {
-      throw new Error("files cannot be combined with top-level path, edits, rewrite, content, or onMissing");
+    const strayTopLevel = [
+      "path",
+      "file_path",
+      "filePath",
+      "edits",
+      "rewrite",
+      "content",
+      "onMissing",
+      "on_missing",
+      "oldText",
+      "old_string",
+      "newText",
+      "new_string",
+      "all",
+      "replace_all",
+      "insert",
+    ].filter((name) => value[name] !== undefined);
+    if (strayTopLevel.length > 0) {
+      throw new Error(
+        `files cannot be combined with top-level ${strayTopLevel.join(", ")}`,
+      );
     }
     let files = value.files;
     if (typeof files === "string") {

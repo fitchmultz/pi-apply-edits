@@ -245,6 +245,15 @@ test("argument preparation accepts multi-file batches and insert", () => {
     () => prepareApplyEditsArguments({ path: "a.ts", files: [{ path: "b.ts", rewrite: "x" }] }),
     /files cannot be combined/,
   );
+  assert.throws(
+    () =>
+      prepareApplyEditsArguments({
+        files: [{ path: "b.ts", rewrite: "x" }],
+        old_string: "a",
+        new_string: "b",
+      }),
+    /files cannot be combined with top-level old_string, new_string/,
+  );
 });
 
 test("tool execution applies a multi-file batch from the session cwd", async () => {

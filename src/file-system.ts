@@ -75,12 +75,11 @@ export async function captureSnapshot(inputPath: string): Promise<FileSnapshot |
   throw new Error(`File changed while it was being read: ${inputPath}. Re-read and retry.`);
 }
 
-export async function publishReplacement(
+/** Deterministic replacement refusals. Safe to call during plan so multi-file batches fail closed before any write. */
+export async function assertSafeToReplace(
   snapshot: FileSnapshot,
-  bytes: Buffer,
   signal?: AbortSignal,
-  hooks?: ReplacementPublishHooks,
-): Promise<string[]> {
+): Promise<void> {
   if ((snapshot.stats.mode & 0o6000n) !== 0n) {
     throw new Error(
       `Refusing to replace setuid or setgid file ${snapshot.inputPath}. No changes were written.`,
@@ -92,6 +91,23 @@ export async function publishReplacement(
         `(link count ${snapshot.stats.nlink}). No changes were written.`,
     );
   }
+  if (process.platform !== "darwin" && process.platform !== "linux") {
+    throw new Error(
+      `Atomic metadata-preserving replacement is not supported on ${process.platform}. No changes were written.`,
+    );
+  }
+  if (process.platform === "linux") {
+    await assertNoLinuxCapabilities(snapshot.actualPath, signal);
+  }
+}
+
+export async function publishReplacement(
+  snapshot: FileSnapshot,
+  bytes: Buffer,
+  signal?: AbortSignal,
+  hooks?: ReplacementPublishHooks,
+): Promise<string[]> {
+  await assertSafeToReplace(snapshot, signal);
 
   const directory = dirname(snapshot.actualPath);
   const temporary = temporaryPath(snapshot.actualPath);
@@ -471,19 +487,13 @@ function temporaryPath(targetPath: string): string {
 }
 
 async function cloneWithMetadata(source: string, target: string, signal?: AbortSignal): Promise<void> {
-  if (process.platform === "darwin" || process.platform === "linux") {
-    if (process.platform === "linux") await assertNoLinuxCapabilities(source, signal);
-    const args = process.platform === "darwin"
-      ? ["-p", source, target]
-      : ["--preserve=all", "--", source, target];
-    await new Promise<void>((resolve, reject) => {
-      execFile("/bin/cp", args, { signal }, (error) => (error ? reject(error) : resolve()));
-    });
-    return;
-  }
-  throw new Error(
-    `Atomic metadata-preserving replacement is not supported on ${process.platform}. No changes were written.`,
-  );
+  // Platform/capability checks run in assertSafeToReplace before publish/plan commit.
+  const args = process.platform === "darwin"
+    ? ["-p", source, target]
+    : ["--preserve=all", "--", source, target];
+  await new Promise<void>((resolve, reject) => {
+    execFile("/bin/cp", args, { signal }, (error) => (error ? reject(error) : resolve()));
+  });
 }
 
 async function assertNoLinuxCapabilities(path: string, signal?: AbortSignal): Promise<void> {

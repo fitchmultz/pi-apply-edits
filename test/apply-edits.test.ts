@@ -1029,3 +1029,31 @@ test("multi-file batch rejects case-alias paths of the same file on case-insensi
     assert.equal(await readFile(lower, "utf8"), "x\n");
   });
 });
+
+test("multi-file batch refuses hard-linked targets during plan before any write", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const first = join(directory, "a.txt");
+    const second = join(directory, "b.txt");
+    const linked = join(directory, "b-link.txt");
+    await writeFile(first, "one\n");
+    await writeFile(second, "two\n");
+    await link(second, linked);
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "a.txt", edits: [{ oldText: "one", newText: "ONE" }] },
+              { path: "b.txt", edits: [{ oldText: "two", newText: "TWO" }] },
+            ],
+          },
+          directory,
+        ),
+      /hard-linked file/,
+    );
+
+    assert.equal(await readFile(first, "utf8"), "one\n");
+    assert.equal(await readFile(second, "utf8"), "two\n");
+  });
+});

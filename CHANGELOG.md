@@ -5,6 +5,8 @@
 - `insert: "before" | "after"` on edits: add text at an anchor without replacing it.
 - Multi-file batches via `files: [{ path, edits|rewrite }, ...]` (plan all, then write; path aliases deduped via realpath).
 - Insert already-applied detection and overlap checks use the matched anchor span.
+- Plan-time safety preflight (setuid/setgid/hardlink/capabilities/platform) so multi-file batches fail closed before any write.
+- Reject stray top-level edit fields when `files` is set.
 
 ## 0.1.2 — 2026-07-24
 

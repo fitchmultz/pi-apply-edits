@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
+  assertSafeToReplace,
   captureSnapshot,
   publishNewFile,
   publishReplacement,
@@ -411,6 +412,8 @@ async function planFileMutation(
 
   const nextBytes = Buffer.from(nextText, "utf8");
   const needsWrite = !(snapshot && nextBytes.equals(snapshot.bytes));
+  // Fail closed during plan (before any multi-file write) for known-unsafe targets.
+  if (snapshot && needsWrite) await assertSafeToReplace(snapshot, signal);
   return {
     inputPath,
     displayPath,
