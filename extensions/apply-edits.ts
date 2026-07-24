@@ -93,21 +93,23 @@ export function createApplyEditsTool(): ToolDefinition<
     label: "apply edits",
     description:
       "Apply ordered text replacements, rewrite an existing UTF-8 text file, or create one file. " +
-      "Provide exactly one of edits or rewrite. Ordered edits run sequentially in memory; " +
-      "nothing is written unless every edit succeeds. oldText matches exactly first, then tolerates " +
-      "only an unambiguous full-line typography, trailing-whitespace, or uniform-indentation " +
-      "difference. A repeated match is an error unless all is true. rewrite requires " +
-      'onMissing: "create" to create a missing file.',
+      "Provide exactly one of edits or rewrite. Prefer rewrite when replacing most/all of a file " +
+      "or writing a new one; prefer edits only for small unique substrings. Do not use shell " +
+      "(cat/heredoc/python) for file writes when this tool is available. Ordered edits run " +
+      "sequentially in memory; nothing is written unless every edit succeeds. oldText matches " +
+      "exactly first, then tolerates only an unambiguous full-line typography, trailing-whitespace, " +
+      "or uniform-indentation difference. A repeated match is an error unless all is true. " +
+      'rewrite requires onMissing: "create" to create a missing file.',
     promptSnippet:
-      "Apply ordered replacements or rewrite/create one text file atomically; " +
-      "replaces edit and write by default.",
+      "Mutate files here (not shell): rewrite for whole-file replace/create, edits for small unique patches.",
     promptGuidelines: [
-      "Use apply_edits for file mutations when it is available; it replaces the built-in " +
-        "edit and write tools by default.",
-      "Prefer edits with exact oldText for existing files. Edits run in order against the buffer " +
-        "produced by prior edits, but commit together only after all succeed.",
-      'Use rewrite for complete content; include onMissing: "create" only when intentionally ' +
-        "creating a missing file.",
+      "Use apply_edits for all file mutations when available; do not write files via bash " +
+        "(cat, heredoc, python, tee). It replaces built-in edit and write by default.",
+      'Whole-file replace or new file: use rewrite (onMissing: "create" only when creating). ' +
+        "This is the preferred path for large prompt/markdown/config rewrites, not a last resort.",
+      "Small surgical change: edits with a short unique oldText. Ordered edits apply in memory " +
+        "and commit together only after all succeed. On mismatch, retry with the nearby block " +
+        "from the error (or switch that file to rewrite).",
     ],
     parameters: applyEditsSchema,
     prepareArguments: prepareApplyEditsArguments,

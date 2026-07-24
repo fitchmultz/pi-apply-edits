@@ -35,6 +35,12 @@ environment opt-in.
 
 ## Tool contract
 
+Ladder (cheapest correct choice first):
+
+1. **Whole file / most of file / new file** → `rewrite` (`onMissing: "create"` only when creating)
+2. **Small unique substring** → `edits` with short exact `oldText`
+3. Do **not** fall back to shell (`cat`, heredoc, `python`, `tee`) for file writes when this tool is loaded
+
 Provide exactly one of `edits` or `rewrite`:
 
 ```json

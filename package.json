@@ -1,6 +1,6 @@
 {
   "name": "pi-apply-edits",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A reliable, agent-friendly apply_edits tool for Pi.",
   "type": "module",
   "keywords": [

@@ -205,10 +205,14 @@ test("renderer keeps collapsed output compact and exposes the diff when expanded
   for (const line of [...collapsedLines, ...expandedLines]) assert(visibleWidth(line) <= 80);
 });
 
-test("tool contract tells the model about sequential atomic semantics and creation", () => {
+test("tool contract prefers rewrite for whole files and bans shell writes", () => {
   const tool = createApplyEditsTool();
   assert.match(tool.description, /sequentially in memory/);
   assert.match(tool.description, /nothing is written unless every edit succeeds/);
   assert.match(tool.description, /onMissing: "create"/);
-  assert(tool.promptGuidelines?.some((guideline) => guideline.includes("replaces the built-in edit and write")));
+  assert.match(tool.description, /Do not use shell/);
+  assert.match(tool.promptSnippet ?? "", /not shell/);
+  assert(tool.promptGuidelines?.some((g) => /do not write files via bash/i.test(g)));
+  assert(tool.promptGuidelines?.some((g) => /Whole-file replace/.test(g) && /preferred path/.test(g)));
+  assert(tool.promptGuidelines?.some((g) => /short unique oldText/.test(g)));
 });

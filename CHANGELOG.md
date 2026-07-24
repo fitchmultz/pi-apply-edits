@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 — 2026-07-24
+
+- Prompt/docs ladder: prefer `rewrite` for whole-file work; ban shell file writes when the tool is available; keep `edits` for small unique patches.
+
 ## 0.1.0 — 2026-07-24
 
 - Initial public release of `apply_edits` for Pi.
