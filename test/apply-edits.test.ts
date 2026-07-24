@@ -1140,6 +1140,48 @@ test("multi-file batch rejects create aliases through symlink parents before any
   });
 });
 
+test("multi-file batch rejects Unicode case-fold aliases of the same missing path", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const plain = join(directory, "s");
+    const longS = join(directory, "ſ");
+    let aliases = false;
+    try {
+      await writeFile(plain, "probe\n");
+      const { statSync } = await import("node:fs");
+      aliases = statSync(plain).ino === statSync(longS).ino;
+      await unlink(plain);
+    } catch {
+      try { await unlink(plain); } catch { /* ignore */ }
+    }
+    if (!aliases) return;
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: plain, rewrite: "first\n", onMissing: "create" },
+              { path: longS, rewrite: "second\n", onMissing: "create" },
+            ],
+          },
+          directory,
+        ),
+      /same file/,
+    );
+    await assert.rejects(() => readFile(plain, "utf8"), /ENOENT/);
+  });
+});
+
+test("exact match wins in mixed-line-ending files", () => {
+  const result = applyTargetedEdits(
+    "A\nB\n---\r\nA\r\nB\r\n",
+    [{ oldText: "A\nB\n", newText: "X\n" }],
+    "mixed.txt",
+  );
+  assert.equal(result.text, "X\n---\r\nA\r\nB\r\n");
+  assert.equal(result.matches[0]?.strategy, "exact");
+});
+
 test("multi-file batch rejects case-alias creates of the same missing path", async () => {
   await inTemporaryDirectory(async (directory) => {
     // On case-sensitive volumes this creates two different paths; skip if both can coexist.

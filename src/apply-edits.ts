@@ -167,7 +167,6 @@ export function applyTargetedEdits(
 ): TextEditResult {
   if (edits.length === 0) throw new Error("edits must contain at least one replacement");
 
-  const lineEnding = detectLineEnding(original);
   let current = original;
   const matches: AppliedEditDetail[] = [];
 
@@ -178,8 +177,10 @@ export function applyTargetedEdits(
     if (edit.insert !== undefined && edit.insert !== "before" && edit.insert !== "after") {
       throw new Error(`edits[${index}].insert must be "before" or "after"`);
     }
-    const oldText = convertLineEndings(stripBomCharacter(edit.oldText), lineEnding);
-    const newText = convertLineEndings(edit.newText, lineEnding);
+    // Preserve the caller's exact anchor. Line-ending tolerance belongs in fuzzy matching,
+    // otherwise a mixed-EOL file can redirect an exact LF edit to a different CRLF block.
+    const oldText = stripBomCharacter(edit.oldText);
+    const newText = edit.newText;
     if (oldText.length === 0) {
       throw new Error(`edits[${index}].oldText must not be empty`);
     }
@@ -573,9 +574,11 @@ function findMatch(
     );
   }
   const exactLines = lineNumbersAt(content, exactOffsets);
-  const exact = exactOffsets.map((start, index) =>
-    toReplacement(start, start + oldText.length, newText, exactLines[index] ?? 1, insert),
-  );
+  const exact = exactOffsets.map((start, index) => {
+    const end = start + oldText.length;
+    const replacement = convertLineEndings(newText, lineEndingForRange(content, start, end));
+    return toReplacement(start, end, replacement, exactLines[index] ?? 1, insert);
+  });
   if (exact.length > 0) return { strategy: "exact", replacements: exact };
 
   const normalized = findLineBlockMatches(content, oldText, newText, false, insert);
@@ -643,7 +646,11 @@ function normalizeLockKey(existingPrefix: string, missingParts: string[]): strin
   const foldCase = process.platform === "darwin" || process.platform === "win32";
   const parts = missingParts.map((part) => {
     const normalized = part.normalize("NFC");
-    return foldCase ? normalized.toLowerCase() : normalized;
+    // upper→lower is a closer caseless key than lower alone for APFS aliases:
+    // ſ/s, ς/σ, ß/ss, and ﬀ/ff all collapse consistently.
+    return foldCase
+      ? normalized.toUpperCase().toLowerCase().normalize("NFC")
+      : normalized;
   });
   return join(existingPrefix, ...parts);
 }
@@ -723,10 +730,14 @@ function findLineBlockMatches(
     if (!first || !last) continue;
     const matchStart = first.start;
     const matchEnd = includeFinalEnding ? last.end : last.bodyEnd;
-    // Insert keeps the caller's text; only full replacements reindent with the anchor.
+    const localReplacement = convertLineEndings(
+      replacement,
+      lineEndingForRange(content, matchStart, matchEnd),
+    );
+    // Insert keeps caller indentation; only full indent-normalized replacements reindent.
     const text = insert || !ignoreBaseIndent
-      ? replacement
-      : reindentReplacement(replacement, baseIndent(bodies));
+      ? localReplacement
+      : reindentReplacement(localReplacement, baseIndent(bodies));
     matches.push(toReplacement(matchStart, matchEnd, text, first.number, insert));
     if (matches.length > MAX_REPLACEMENTS) {
       throw new Error(
@@ -994,6 +1005,18 @@ function lineNumbersAt(content: string, offsets: number[]): number[] {
 
 function lineNumberAt(content: string, offset: number): number {
   return lineNumbersAt(content, [offset])[0] ?? 1;
+}
+
+function lineEndingForRange(content: string, start: number, end: number): LineEnding {
+  const matched = content.slice(start, end);
+  if (/\r\n|\r|\n/.test(matched)) return detectLineEnding(matched);
+
+  // Single-line anchors inherit the ending of their containing line.
+  const after = content.slice(end).match(/\r\n|\r|\n/);
+  if (after) return after[0] as LineEnding;
+  const before = content.slice(0, start).match(/(?:\r\n|\r|\n)(?![\s\S]*(?:\r\n|\r|\n))/);
+  if (before) return before[0] as LineEnding;
+  return detectLineEnding(content);
 }
 
 function detectLineEnding(text: string): LineEnding {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5 — 2026-07-24
+
+- Strengthen missing-path case folding for APFS aliases (`ſ`/`s`, `ς`/`σ`, `ß`/`ss`, `ﬀ`/`ff`).
+- Preserve exact `oldText` line endings before tolerance matching, preventing mixed-EOL wrong-block edits.
+- Convert replacement line endings per matched anchor rather than file-wide dominant EOL.
+
 ## 0.2.4 — 2026-07-24
 
 - Treat `ENOTDIR` as an invalid path (not a missing creatable file) during snapshot/plan.
