@@ -290,58 +290,17 @@ function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
   }
   if (Array.isArray(edits)) edits = edits.map(normalizeEditAliases);
 
-  return {
-    path,
-    edits,
-    rewrite: typeof rewrite === "string" ? unescapeModelString(rewrite) : rewrite,
-    onMissing,
-  };
+  return { path, edits, rewrite, onMissing };
 }
 
 function normalizeEditAliases(value: unknown): unknown {
   if (!isRecord(value)) return value;
-  const oldText = readAlias(value, ["oldText", "old_string"], "edit oldText");
-  const newText = readAlias(value, ["newText", "new_string"], "edit newText");
   return {
-    oldText: typeof oldText === "string" ? unescapeModelString(oldText) : oldText,
-    newText: typeof newText === "string" ? unescapeModelString(newText) : newText,
+    oldText: readAlias(value, ["oldText", "old_string"], "edit oldText"),
+    newText: readAlias(value, ["newText", "new_string"], "edit newText"),
     all: readAlias(value, ["all", "replace_all"], "edit all"),
     insert: readAlias(value, ["insert"], "edit insert"),
   };
-}
-
-/** Repair clear multi-line model payloads ("line1\nline2\n") without touching paths like C:\new. */
-function unescapeModelString(value: string): string {
-  if (!value.includes("\\") || /[\n\r]/.test(value)) return value;
-  if (!value.includes("\\n")) return value; // never lone \t (C:\tmp) or other escapes
-  if (/[A-Za-z]:\\/.test(value)) return value; // Windows drive path
-  // Single mid-string \n with surrounding spaces is usually prose ("Use \n for newline").
-  const nlCount = value.split("\\n").length - 1;
-  if (nlCount === 1 && !value.endsWith("\\n") && / \\n /.test(value)) return value;
-  let out = "";
-  for (let i = 0; i < value.length; i++) {
-    if (value[i] === "\\" && i + 1 < value.length) {
-      const next = value[i + 1];
-      if (next === "n") {
-        out += "\n";
-        i++;
-        continue;
-      }
-      if (next === "r") {
-        out += "\r";
-        i++;
-        continue;
-      }
-      if (next === "\\") {
-        out += "\\";
-        i++;
-        continue;
-      }
-      // Leave \t and unknown escapes intact.
-    }
-    out += value[i]!;
-  }
-  return out;
 }
 
 function callLabel(args: ApplyEditsParameters): { path: string; mode: string } {

@@ -283,65 +283,29 @@ test("tool execution applies a multi-file batch from the session cwd", async () 
   }
 });
 
-test("argument preparation unescapes clear multi-line \\n payloads only", () => {
-  assert.deepEqual(
+test("argument preparation preserves canonical string content exactly", () => {
+  assert.equal(
     prepareApplyEditsArguments({
       path: "a.ts",
       rewrite: "line1\\nline2\\n",
       onMissing: "create",
-    }),
-    {
-      path: "a.ts",
-      edits: undefined,
-      rewrite: "line1\nline2\n",
-      onMissing: "create",
-    },
+    }).rewrite,
+    "line1\\nline2\\n",
   );
 
-  assert.deepEqual(
-    prepareApplyEditsArguments({
-      path: "a.ts",
-      edits: [{ oldText: "a\\nb", newText: "c\\nd" }],
-    }),
-    {
-      path: "a.ts",
-      edits: [{ oldText: "a\nb", newText: "c\nd", all: undefined, insert: undefined }],
-      rewrite: undefined,
-      onMissing: undefined,
-    },
-  );
-
-  // Already-real newlines are left alone.
   assert.equal(
     prepareApplyEditsArguments({
       path: "a.ts",
-      rewrite: "keep\\nreal\nnewline",
+      rewrite: String.raw`Use \n for newline.\nNext line.\n`,
     }).rewrite,
-    "keep\\nreal\nnewline",
+    String.raw`Use \n for newline.\nNext line.\n`,
   );
 
-  // Do not corrupt Windows paths or lone \\t (C:\\tmp).
   assert.equal(
     prepareApplyEditsArguments({
       path: "a.ts",
       rewrite: 'const p = "C:\\new\\file";',
     }).rewrite,
     'const p = "C:\\new\\file";',
-  );
-  assert.equal(
-    prepareApplyEditsArguments({
-      path: "a.ts",
-      rewrite: 'const p = "C:\\tmp\\x";',
-    }).rewrite,
-    'const p = "C:\\tmp\\x";',
-  );
-
-  // Prose about escapes stays put.
-  assert.equal(
-    prepareApplyEditsArguments({
-      path: "a.md",
-      rewrite: "Use \\n for newline",
-    }).rewrite,
-    "Use \\n for newline",
   );
 });

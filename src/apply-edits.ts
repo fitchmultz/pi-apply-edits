@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
@@ -213,7 +213,7 @@ export function applyTargetedEdits(
     const selected = edit.all ? match.replacements : match.replacements.slice(0, 1);
     if (hasOverlaps(selected)) {
       throw new Error(
-        `edits[${index}] has overlapping normalized matches in ${displayPath}. ` +
+        `edits[${index}] has overlapping matches in ${displayPath}. ` +
           "Add more surrounding text so matches do not overlap. No changes were written.",
       );
     }
@@ -581,16 +581,48 @@ async function mutationQueueKey(filePath: string): Promise<string> {
   try {
     return await realpath(resolvedPath);
   } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      (error.code === "ENOENT" || error.code === "ENOTDIR")
-    ) {
-      return resolvedPath;
-    }
-    throw error;
+    if (!isMissingPathError(error)) throw error;
   }
+
+  // Missing targets: canonicalize deepest existing ancestor + remaining suffix so
+  // symlink parents and case-aliases of the same create path share one lock/dedupe key.
+  const missing: string[] = [];
+  let current = resolvedPath;
+  while (true) {
+    const parent = dirname(current);
+    if (parent === current) {
+      return normalizeLockKey(resolvedPath, missing);
+    }
+    try {
+      const realParent = await realpath(parent);
+      missing.unshift(basename(current));
+      return normalizeLockKey(realParent, missing);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === "ENOENT" || error.code === "ENOTDIR")
+  );
+}
+
+function normalizeLockKey(existingPrefix: string, missingParts: string[]): string {
+  if (missingParts.length === 0) return existingPrefix;
+  // Prefer over-dedupe on default macOS/Windows volumes over deterministic partial batch writes.
+  const foldCase = process.platform === "darwin" || process.platform === "win32";
+  const parts = missingParts.map((part) => {
+    const normalized = part.normalize("NFC");
+    return foldCase ? normalized.toLowerCase() : normalized;
+  });
+  return join(existingPrefix, ...parts);
 }
 
 function insertAlreadyApplied(
@@ -611,12 +643,15 @@ function insertAlreadyApplied(
 
 function findOccurrences(content: string, search: string, limit = Number.POSITIVE_INFINITY): number[] {
   const offsets: number[] = [];
+  if (search.length === 0) return offsets;
   let from = 0;
   while (from <= content.length - search.length && offsets.length < limit) {
     const index = content.indexOf(search, from);
     if (index < 0) break;
     offsets.push(index);
-    from = index + search.length;
+    // Advance by 1 so overlapping exact matches (e.g. "ana" in "banana") are visible
+    // to uniqueness / overlap checks. Non-overlapping all:true still applies cleanly.
+    from = index + 1;
   }
   return offsets;
 }

@@ -210,7 +210,7 @@ test("overlapping normalized all-matches are rejected", () => {
         [{ oldText: "a\na", newText: "b", all: true }],
         "file.txt",
       ),
-    /overlapping normalized matches/,
+    /overlapping matches/,
   );
 });
 
@@ -973,7 +973,7 @@ test("insert all rejects overlapping normalized anchor windows", () => {
         [{ oldText: "a\na", newText: "!", insert: "after", all: true }],
         "file.txt",
       ),
-    /overlapping normalized matches/,
+    /overlapping matches/,
   );
 });
 
@@ -1097,4 +1097,79 @@ test("short insert after shared prefix is not false-already-applied", () => {
     "file.txt",
   );
   assert.equal(result.text, "testt\n");
+});
+
+
+test("exact overlapping matches are ambiguous without all", () => {
+  assert.throws(
+    () => applyTargetedEdits("banana\n", [{ oldText: "ana", newText: "X" }], "overlap.txt"),
+    /matched 2 locations/,
+  );
+});
+
+test("exact overlapping all-matches are rejected", () => {
+  assert.throws(
+    () =>
+      applyTargetedEdits("banana\n", [{ oldText: "ana", newText: "X", all: true }], "overlap.txt"),
+    /overlapping matches/,
+  );
+});
+
+test("multi-file batch rejects create aliases through symlink parents before any write", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const real = join(directory, "real");
+    const alias = join(directory, "alias");
+    await mkdir(real);
+    await symlink(real, alias);
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: join(real, "new.txt"), rewrite: "first\n", onMissing: "create" },
+              { path: join(alias, "new.txt"), rewrite: "second\n", onMissing: "create" },
+            ],
+          },
+          directory,
+        ),
+      /same file/,
+    );
+
+    await assert.rejects(() => readFile(join(real, "new.txt"), "utf8"), /ENOENT/);
+  });
+});
+
+test("multi-file batch rejects case-alias creates of the same missing path", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    // On case-sensitive volumes this creates two different paths; skip if both can coexist.
+    const lower = join(directory, "new.txt");
+    const upper = join(directory, "NEW.TXT");
+    let caseInsensitive = false;
+    try {
+      await writeFile(lower, "probe\n");
+      const { statSync } = await import("node:fs");
+      caseInsensitive = statSync(lower).ino === statSync(upper).ino;
+      await unlink(lower);
+    } catch {
+      caseInsensitive = false;
+      try { await unlink(lower); } catch { /* ignore */ }
+    }
+    if (!caseInsensitive) return;
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "new.txt", rewrite: "first\n", onMissing: "create" },
+              { path: "NEW.TXT", rewrite: "second\n", onMissing: "create" },
+            ],
+          },
+          directory,
+        ),
+      /same file/,
+    );
+    await assert.rejects(() => readFile(lower, "utf8"), /ENOENT/);
+  });
 });

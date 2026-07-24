@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3 — 2026-07-24
+
+- Batch lock/dedupe keys canonicalize missing paths via deepest existing ancestor (symlink parents + case-fold on macOS/Windows) so alias creates cannot partial-write.
+- Exact match discovery includes overlapping occurrences (`ana` in `banana`); uniqueness/overlap checks reject them.
+- Remove heuristic `\n` unescaping of canonical strings; JSON already decodes real newlines.
+
 ## 0.2.2 — 2026-07-24
 
 - Narrow `\n` unescape so Windows paths (`C:\new`, `C:\tmp`) and prose escapes are not corrupted.
