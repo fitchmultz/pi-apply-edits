@@ -81,8 +81,9 @@ export const applyEditsSchema = Type.Object({
     Type.Array(fileSchema, {
       minItems: 1,
       description:
-        "Atomic multi-file batch. Every file is planned first; nothing is written unless every file " +
-        "mutation can be computed. Prefer this when changing several files together.",
+        "Multi-file batch. Every file is planned first; nothing is written unless every file " +
+        "mutation can be computed. Prefer this when changing several files together. " +
+        "A rare mid-publish filesystem failure can leave earlier files already written.",
     }),
   ),
 });
@@ -144,7 +145,7 @@ export function createApplyEditsTool(): ToolDefinition<
     label: "apply edits",
     description:
       "Apply ordered text replacements/inserts, rewrite a UTF-8 text file, create one file, or apply " +
-      "an atomic multi-file batch. Provide either files: [...] or a single-file path with exactly one of " +
+      "a multi-file batch. Provide either files: [...] or a single-file path with exactly one of " +
       "edits or rewrite. rewrite is the easy whole-file path: pass the full new contents " +
       '(onMissing: "create" only when creating). edits is for small unique patches; set insert to ' +
       '"before" or "after" to insert newText at an anchor without replacing it. Ordered edits run ' +
@@ -153,7 +154,7 @@ export function createApplyEditsTool(): ToolDefinition<
       "typography, trailing-whitespace, or uniform-indentation difference. A repeated match is an error " +
       "unless all is true.",
     promptSnippet:
-      "File writes: rewrite whole files, edits/inserts for small patches, files:[] for atomic multi-file batches.",
+      "File writes: rewrite whole files, edits/inserts for small patches, files:[] for plan-first multi-file batches.",
     promptGuidelines: [
       "Use apply_edits for file mutations when available; it replaces built-in edit and write by default.",
       'Whole-file replace or new file: rewrite with the full contents (onMissing: "create" only when ' +

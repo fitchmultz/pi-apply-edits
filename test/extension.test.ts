@@ -216,7 +216,7 @@ test("renderer keeps collapsed output compact and exposes the diff when expanded
 
 test("tool contract covers rewrite, insert, and multi-file batch", () => {
   const tool = createApplyEditsTool();
-  assert.match(tool.description, /atomic multi-file batch/);
+  assert.match(tool.description, /multi-file batch/);
   assert.match(tool.description, /insert/);
   assert.match(tool.description, /onMissing: "create"/);
   assert.match(tool.description, /easy whole-file path/);

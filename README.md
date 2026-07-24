@@ -40,9 +40,9 @@ Ladder (cheapest correct choice first):
 1. **Whole file / most of file / new file** → `rewrite` with full contents (`onMissing: "create"` only when creating). No `oldText` matching.
 2. **Small unique substring** → `edits` with short exact `oldText`
 3. **Insert at an anchor** → `edits` with `insert: "before"` or `insert: "after"`
-4. **Several files together** → `files: [{ path, edits|rewrite }, ...]` (planned atomically before any write)
+4. **Several files together** → `files: [{ path, edits|rewrite }, ...]` (plan-first batch; nothing writes until every file can be planned)
 
-Provide exactly one of `edits` or `rewrite`:
+Provide either `files: [...]` or a single-file `path` with exactly one of `edits` or `rewrite`:
 
 ```json
 {
@@ -51,6 +51,39 @@ Provide exactly one of `edits` or `rewrite`:
     {
       "oldText": "const state = 'old';",
       "newText": "const state = 'new';"
+    }
+  ]
+}
+```
+
+Insert without replacing the anchor:
+
+```json
+{
+  "path": "src/example.ts",
+  "edits": [
+    {
+      "oldText": "import fs from \"node:fs\";",
+      "newText": "\nimport path from \"node:path\";",
+      "insert": "after"
+    }
+  ]
+}
+```
+
+Multi-file batch (plan all, then write):
+
+```json
+{
+  "files": [
+    {
+      "path": "src/a.ts",
+      "edits": [{ "oldText": "foo", "newText": "bar" }]
+    },
+    {
+      "path": "src/b.ts",
+      "rewrite": "export {}\n",
+      "onMissing": "create"
     }
   ]
 }

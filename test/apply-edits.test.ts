@@ -944,7 +944,88 @@ test("multi-file batch rejects duplicate resolved paths", async () => {
           },
           directory,
         ),
-      /same path/,
+      /same file/,
     );
+  });
+});
+
+test("insert rejects when the text is already adjacent to the anchor", () => {
+  assert.throws(
+    () =>
+      applyTargetedEdits(
+        'import fs from "node:fs";\nimport path from "node:path";\n',
+        [{
+          oldText: 'import fs from "node:fs";',
+          newText: '\nimport path from "node:path";',
+          insert: "after",
+        }],
+        "a.ts",
+      ),
+    /already has the inserted text/,
+  );
+});
+
+test("insert all rejects overlapping normalized anchor windows", () => {
+  assert.throws(
+    () =>
+      applyTargetedEdits(
+        "a \na \na \n",
+        [{ oldText: "a\na", newText: "!", insert: "after", all: true }],
+        "file.txt",
+      ),
+    /overlapping normalized matches/,
+  );
+});
+
+test("multi-file batch rejects symlink aliases of the same file", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "a.txt"), "x\n");
+    await symlink(join(directory, "a.txt"), join(directory, "alias.txt"));
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "a.txt", edits: [{ oldText: "x", newText: "y" }] },
+              { path: "alias.txt", edits: [{ oldText: "x", newText: "z" }] },
+            ],
+          },
+          directory,
+        ),
+      /same file/,
+    );
+    assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "x\n");
+  });
+});
+
+test("multi-file batch rejects case-alias paths of the same file on case-insensitive volumes", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const lower = join(directory, "a.txt");
+    await writeFile(lower, "x\n");
+    const upper = join(directory, "A.TXT");
+    // On case-insensitive APFS, upper is the same inode; on case-sensitive FS this is a second file.
+    let sameFile = false;
+    try {
+      const { statSync } = await import("node:fs");
+      sameFile = statSync(lower).ino === statSync(upper).ino;
+    } catch {
+      sameFile = false;
+    }
+    if (!sameFile) return; // skip on case-sensitive volumes
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "a.txt", edits: [{ oldText: "x", newText: "y" }] },
+              { path: "A.TXT", edits: [{ oldText: "x", newText: "z" }] },
+            ],
+          },
+          directory,
+        ),
+      /same file/,
+    );
+    assert.equal(await readFile(lower, "utf8"), "x\n");
   });
 });

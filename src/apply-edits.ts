@@ -1,4 +1,5 @@
 import { lstatSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,8 +88,12 @@ interface TextLine {
 }
 
 interface Replacement {
+  /** Write range [start, end). Zero-width for inserts. */
   start: number;
   end: number;
+  /** Matched anchor range, used for overlap checks (inserts keep a non-zero span here). */
+  matchStart: number;
+  matchEnd: number;
   text: string;
   line: number;
 }
@@ -211,6 +216,15 @@ export function applyTargetedEdits(
           "Add more surrounding text so matches do not overlap. No changes were written.",
       );
     }
+    if (edit.insert) {
+      const already = selected.filter((item) => insertAlreadyApplied(current, item, edit.insert!));
+      if (already.length === selected.length) {
+        throw new Error(
+          `edits[${index}] already has the inserted text at its matched location in ${displayPath}. ` +
+            "No changes were written.",
+        );
+      }
+    }
     const effective = selected.filter((item) => current.slice(item.start, item.end) !== item.text);
     if (effective.length === 0) {
       throw new Error(
@@ -279,20 +293,24 @@ async function applyEditsBatch(
     }
   }
 
-  const resolved = files.map((file) => ({
-    file,
-    inputPath: resolveInputPath(file.path, cwd),
-  }));
+  const resolved = await Promise.all(
+    files.map(async (file, index) => {
+      const inputPath = resolveInputPath(file.path, cwd);
+      // Match Pi's mutation-queue key (realpath) so aliases cannot nest-lock or slip past dedupe.
+      const lockKey = await mutationQueueKey(inputPath);
+      return { file, inputPath, lockKey, index };
+    }),
+  );
   const seen = new Map<string, number>();
-  for (const [index, item] of resolved.entries()) {
-    const prior = seen.get(item.inputPath);
+  for (const item of resolved) {
+    const prior = seen.get(item.lockKey);
     if (prior !== undefined) {
       throw new Error(
-        `files[${index}] resolves to the same path as files[${prior}] (${item.inputPath}). ` +
-          "Combine edits for one path into a single entry.",
+        `files[${item.index}] refers to the same file as files[${prior}] ` +
+          `(${item.inputPath}). Combine edits for one path into a single entry.`,
       );
     }
-    seen.set(item.inputPath, index);
+    seen.set(item.lockKey, item.index);
   }
 
   const lockPaths = [...seen.keys()].sort();
@@ -302,7 +320,7 @@ async function applyEditsBatch(
       planned.push(await planFileMutation(item.file, item.inputPath, cwd, signal));
     }
 
-    // ponytail: plan fully before any write; mid-publish FS failure can leave earlier files written.
+    // Plan fully before any write. Mid-publish FS failure can leave earlier files written.
     const detailsList: ApplyEditsDetails[] = [];
     let written = 0;
     for (const [index, plan] of planned.entries()) {
@@ -546,9 +564,39 @@ function toReplacement(
   line: number,
   insert?: InsertPosition,
 ): Replacement {
-  if (insert === "before") return { start, end: start, text, line };
-  if (insert === "after") return { start: end, end, text, line };
-  return { start, end, text, line };
+  if (insert === "before") return { start, end: start, matchStart: start, matchEnd: end, text, line };
+  if (insert === "after") return { start: end, end, matchStart: start, matchEnd: end, text, line };
+  return { start, end, matchStart: start, matchEnd: end, text, line };
+}
+
+async function mutationQueueKey(filePath: string): Promise<string> {
+  const resolvedPath = resolve(filePath);
+  try {
+    return await realpath(resolvedPath);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error.code === "ENOENT" || error.code === "ENOTDIR")
+    ) {
+      return resolvedPath;
+    }
+    throw error;
+  }
+}
+
+function insertAlreadyApplied(
+  content: string,
+  item: Replacement,
+  insert: InsertPosition,
+): boolean {
+  if (item.text.length === 0) return false;
+  if (insert === "before") {
+    const from = item.matchStart - item.text.length;
+    return from >= 0 && content.slice(from, item.matchStart) === item.text;
+  }
+  return content.slice(item.matchEnd, item.matchEnd + item.text.length) === item.text;
 }
 
 function findOccurrences(content: string, search: string, limit = Number.POSITIVE_INFINITY): number[] {
@@ -739,8 +787,8 @@ function hasFinalLineEnding(text: string): boolean {
 }
 
 function hasOverlaps(replacements: Replacement[]): boolean {
-  const ordered = [...replacements].sort((left, right) => left.start - right.start);
-  return ordered.some((item, index) => index > 0 && item.start < ordered[index - 1]!.end);
+  const ordered = [...replacements].sort((left, right) => left.matchStart - right.matchStart);
+  return ordered.some((item, index) => index > 0 && item.matchStart < ordered[index - 1]!.matchEnd);
 }
 
 function applyReplacements(content: string, replacements: Replacement[]): string {

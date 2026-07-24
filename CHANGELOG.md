@@ -3,7 +3,8 @@
 ## 0.2.0 — 2026-07-24
 
 - `insert: "before" | "after"` on edits: add text at an anchor without replacing it.
-- Atomic multi-file batches via `files: [{ path, edits|rewrite }, ...]` (plan all, then write).
+- Multi-file batches via `files: [{ path, edits|rewrite }, ...]` (plan all, then write; path aliases deduped via realpath).
+- Insert already-applied detection and overlap checks use the matched anchor span.
 
 ## 0.1.2 — 2026-07-24
 
