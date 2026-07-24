@@ -282,3 +282,41 @@ test("tool execution applies a multi-file batch from the session cwd", async () 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("argument preparation unescapes model \\n payloads without real newlines", () => {
+  assert.deepEqual(
+    prepareApplyEditsArguments({
+      path: "a.ts",
+      rewrite: "line1\\nline2\\n",
+      onMissing: "create",
+    }),
+    {
+      path: "a.ts",
+      edits: undefined,
+      rewrite: "line1\nline2\n",
+      onMissing: "create",
+    },
+  );
+
+  assert.deepEqual(
+    prepareApplyEditsArguments({
+      path: "a.ts",
+      edits: [{ oldText: "a\\nb", newText: "c\\nd" }],
+    }),
+    {
+      path: "a.ts",
+      edits: [{ oldText: "a\nb", newText: "c\nd", all: undefined, insert: undefined }],
+      rewrite: undefined,
+      onMissing: undefined,
+    },
+  );
+
+  // Already-real newlines are left alone (including intentional backslash characters).
+  assert.equal(
+    prepareApplyEditsArguments({
+      path: "a.ts",
+      rewrite: "keep\\nreal\nnewline",
+    }).rewrite,
+    "keep\\nreal\nnewline",
+  );
+});

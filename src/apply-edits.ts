@@ -827,8 +827,19 @@ function missingEditMessage(
   const hint = closest
     ? `\n${candidateLabel} is lines ${closest.startLine}-${closest.endLine} (${similarity}% similar):\n` +
       `${closest.excerpt}\nUse the actual block above as oldText and retry.`
-    : "\nRe-read the target area and retry with the current text.";
+    : fileHeadHint(content);
   return `Could not find edits[${index}].oldText in ${path}.${alreadyPresent}${hint}\nNo changes were written.`;
+}
+
+function fileHeadHint(content: string): string {
+  if (content.length === 0) return "\nFile is empty. Re-read the target area and retry with the current text.";
+  const lines = content.split(/\r\n|\n|\r/).slice(0, 8);
+  const excerpt = truncateUtf8(lines.join("\n"), DIAGNOSTIC_LIMIT_BYTES).text;
+  const more = countTextLines(content) > lines.length ? "\n..." : "";
+  return (
+    `\nFile starts with:\n${excerpt}${more}\n` +
+    "Re-read the target area and retry with the current text."
+  );
 }
 
 function findClosestBlock(

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 — 2026-07-24
+
+- Unescape model payloads like `line1\nline2` in rewrite/oldText/newText when no real newlines are present.
+- Missing-edit diagnostics show the file head when no close match exists.
+
 ## 0.2.0 — 2026-07-24
 
 - `insert: "before" | "after"` on edits: add text at an anchor without replacing it.

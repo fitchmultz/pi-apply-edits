@@ -1057,3 +1057,15 @@ test("multi-file batch refuses hard-linked targets during plan before any write"
     assert.equal(await readFile(second, "utf8"), "two\n");
   });
 });
+
+test("missing text with no close match shows the file head", () => {
+  assert.throws(
+    () =>
+      applyTargetedEdits(
+        "alpha\nbeta\ngamma\n",
+        [{ oldText: "zzzz-not-present", newText: "nope" }],
+        "file.txt",
+      ),
+    /File starts with:\nalpha\nbeta\ngamma/,
+  );
+});
