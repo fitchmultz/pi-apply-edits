@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.12 — 2026-07-24
+
+- Align tracked package-lock root version and license metadata with the published package.
+
 ## 0.2.11 — 2026-07-24
 
 - Prebuild every nested-create staging tree before any batch target publication, so deterministic staging failures leave all targets unchanged.
