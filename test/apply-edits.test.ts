@@ -384,6 +384,25 @@ test("targeted edits cannot duplicate or add a UTF-8 BOM", async () => {
   });
 });
 
+test("targeted edits match internal U+FEFF anchors exactly", () => {
+  assert.equal(
+    applyTargetedEdits(
+      "p|\uFEFFtoken|s",
+      [{ oldText: "\uFEFFtoken", newText: "changed" }],
+      "internal-feff.txt",
+    ).text,
+    "p|changed|s",
+  );
+  assert.equal(
+    applyTargetedEdits(
+      "p|\uFEFFtoken|s",
+      [{ oldText: "\uFEFFtoken", newText: "X", insert: "before" }],
+      "internal-feff.txt",
+    ).text,
+    "p|X\uFEFFtoken|s",
+  );
+});
+
 test("targeted edits preserve a second leading U+FEFF content character", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "double-bom.txt");

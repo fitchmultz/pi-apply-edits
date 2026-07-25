@@ -182,7 +182,7 @@ export function applyTargetedEdits(
     }
     // Preserve the caller's exact anchor. Line-ending tolerance belongs in fuzzy matching,
     // otherwise a mixed-EOL file can redirect an exact LF edit to a different CRLF block.
-    const oldText = stripBomCharacter(edit.oldText);
+    const oldText = edit.oldText;
     const newText = edit.newText;
     if (oldText.length === 0) {
       throw new Error(`edits[${index}].oldText must not be empty`);
@@ -1157,10 +1157,6 @@ function countLeadingBomCharacters(text: string): number {
 function limitLeadingBomCharacters(text: string, maximum: number): string {
   const count = countLeadingBomCharacters(text);
   return count > maximum ? text.slice(count - maximum) : text;
-}
-
-function stripBomCharacter(text: string): string {
-  return text.startsWith("\uFEFF") ? text.slice(1) : text;
 }
 
 function hasUnpairedSurrogate(text: string): boolean {

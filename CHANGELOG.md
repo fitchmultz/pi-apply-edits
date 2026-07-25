@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8 — 2026-07-24
+
+- Preserve leading U+FEFF in targeted-edit anchors so internal U+FEFF content is matched and replaced at the requested boundary.
+
 ## 0.2.7 — 2026-07-24
 
 - Symmetric missing-path case folding covers APFS `ẞ`/`ß` aliases before batch publication.
