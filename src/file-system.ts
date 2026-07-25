@@ -30,6 +30,15 @@ export interface ReplacementPublishHooks {
   beforeRecoveryCleanup?: (paths: { target: string; recovery: string }) => void | Promise<void>;
 }
 
+export interface NewFilePlan {
+  inputPath: string;
+  targetPath: string;
+  ancestorPath: string;
+  ancestorDev: bigint;
+  ancestorIno: bigint;
+  missingDirectories: string[];
+}
+
 export async function captureSnapshot(inputPath: string): Promise<FileSnapshot | undefined> {
   let inputStats: BigIntStats;
   try {
@@ -106,21 +115,17 @@ export async function assertSafeToReplace(
   }
 }
 
-/** Plan-time create preflight: deepest existing ancestor must be a writable directory. */
-export async function assertSafeToCreate(targetPath: string): Promise<void> {
-  let current = dirname(resolve(targetPath));
+/** Bind a missing create target to the canonical parent validated during planning. */
+export async function planNewFile(targetPath: string): Promise<NewFilePlan> {
+  const inputPath = resolve(targetPath);
+  const targetName = basename(inputPath);
+  const missingDirectories: string[] = [];
+  let current = dirname(inputPath);
+
   while (true) {
+    let currentStats: BigIntStats;
     try {
-      const stats = await lstat(current, { bigint: true });
-      const directoryPath = stats.isSymbolicLink() ? await realpath(current) : current;
-      const directoryStats = await stat(directoryPath, { bigint: true });
-      if (!directoryStats.isDirectory()) {
-        throw new Error(
-          `Cannot create ${targetPath}: a parent path is not a directory. No changes were written.`,
-        );
-      }
-      await assertDirectoryWritableForPublish(directoryPath, targetPath);
-      return;
+      currentStats = await lstat(current, { bigint: true });
     } catch (error) {
       if (isCode(error, "ENOENT")) {
         const parent = dirname(current);
@@ -129,6 +134,7 @@ export async function assertSafeToCreate(targetPath: string): Promise<void> {
             `Cannot create ${targetPath}: no existing parent directory. No changes were written.`,
           );
         }
+        missingDirectories.unshift(basename(current));
         current = parent;
         continue;
       }
@@ -137,6 +143,63 @@ export async function assertSafeToCreate(targetPath: string): Promise<void> {
           `Cannot create ${targetPath}: a parent path is not a directory. No changes were written.`,
         );
       }
+      throw error;
+    }
+
+    let ancestorPath: string;
+    try {
+      ancestorPath = await realpath(current);
+    } catch (error) {
+      if (currentStats.isSymbolicLink() && isCode(error, "ENOENT")) {
+        throw new Error(
+          `Cannot create ${targetPath}: a parent path is a dangling symbolic link. No changes were written.`,
+        );
+      }
+      throw error;
+    }
+    const ancestorStats = await stat(ancestorPath, { bigint: true });
+    if (!ancestorStats.isDirectory()) {
+      throw new Error(
+        `Cannot create ${targetPath}: a parent path is not a directory. No changes were written.`,
+      );
+    }
+    await assertDirectoryWritableForPublish(ancestorPath, targetPath);
+    return {
+      inputPath,
+      targetPath: join(ancestorPath, ...missingDirectories, targetName),
+      ancestorPath,
+      ancestorDev: ancestorStats.dev,
+      ancestorIno: ancestorStats.ino,
+      missingDirectories,
+    };
+  }
+}
+
+async function assertNewFilePlanCurrent(plan: NewFilePlan): Promise<void> {
+  const ancestor = await stat(plan.ancestorPath, { bigint: true });
+  if (
+    !ancestor.isDirectory() ||
+    ancestor.dev !== plan.ancestorDev ||
+    ancestor.ino !== plan.ancestorIno
+  ) {
+    throw new Error(
+      `Create parent changed after planning ${plan.inputPath}. No changes were written.`,
+    );
+  }
+  await assertDirectoryWritableForPublish(plan.ancestorPath, plan.inputPath);
+
+  let current = plan.ancestorPath;
+  for (const part of plan.missingDirectories) {
+    current = join(current, part);
+    try {
+      const stats = await lstat(current, { bigint: true });
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw new Error(
+          `Create parent changed after planning ${plan.inputPath}. No changes were written.`,
+        );
+      }
+    } catch (error) {
+      if (isCode(error, "ENOENT")) break;
       throw error;
     }
   }
@@ -300,10 +363,13 @@ export async function publishReplacement(
 }
 
 export async function publishNewFile(
-  targetPath: string,
+  inputTargetPath: string,
   bytes: Buffer,
   signal?: AbortSignal,
+  plan?: NewFilePlan,
 ): Promise<string[]> {
+  if (plan) await assertNewFilePlanCurrent(plan);
+  const targetPath = plan?.targetPath ?? inputTargetPath;
   const directory = dirname(targetPath);
   let firstCreatedDirectory: string | undefined;
   try {

@@ -30,6 +30,7 @@ function singleDetails(details: { files?: ApplyEditsDetails[] } | ApplyEditsDeta
 
 import {
   captureSnapshot,
+  planNewFile,
   publishNewFile,
   publishReplacement,
 } from "../src/file-system.ts";
@@ -1263,6 +1264,90 @@ test("multi-file batch rejects a path nested under another batch target before a
 
     assert.equal(await readFile(first, "utf8"), "old\n");
     await assert.rejects(() => readFile(join(directory, "parent"), "utf8"), /ENOENT/);
+  });
+});
+
+test("ancestor conflict detection cannot be bypassed by a locale-sort interloper", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "a", rewrite: "file\n", onMissing: "create" },
+              { path: "a-", rewrite: "other\n", onMissing: "create" },
+              { path: "a/x", rewrite: "child\n", onMissing: "create" },
+            ],
+          },
+          directory,
+        ),
+      /nested under/,
+    );
+    for (const path of ["a", "a-", "a/x"]) {
+      await assert.rejects(() => readFile(join(directory, path), "utf8"), /ENOENT/);
+    }
+  });
+});
+
+test("multi-file batch rejects dangling parent symlinks during plan", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await symlink(join(directory, "missing-dir"), join(directory, "dangling"));
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "first.txt", rewrite: "written\n", onMissing: "create" },
+              { path: "dangling/child.txt", rewrite: "child\n", onMissing: "create" },
+            ],
+          },
+          directory,
+        ),
+      /dangling symbolic link/,
+    );
+    await assert.rejects(() => readFile(join(directory, "first.txt"), "utf8"), /ENOENT/);
+  });
+});
+
+test("planned create stays bound to its canonical parent if an alias changes", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const dir1 = join(directory, "dir1");
+    const dir2 = join(directory, "dir2");
+    const alias = join(directory, "alias");
+    await mkdir(dir1);
+    await mkdir(dir2);
+    await symlink(dir1, alias);
+
+    const inputPath = join(alias, "child.txt");
+    const plan = await planNewFile(inputPath);
+    await unlink(alias);
+    await symlink(dir2, alias);
+    await publishNewFile(inputPath, Buffer.from("created\n"), undefined, plan);
+
+    assert.equal(await readFile(join(dir1, "child.txt"), "utf8"), "created\n");
+    await assert.rejects(() => readFile(join(dir2, "child.txt"), "utf8"), /ENOENT/);
+  });
+});
+
+test("concurrent single creates through symlink-parent aliases serialize", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const real = join(directory, "real");
+    const alias = join(directory, "alias");
+    await mkdir(real);
+    await symlink(real, alias);
+
+    const results = await Promise.all([
+      applyEditsToFile(
+        { path: join(real, "child.txt"), rewrite: "first\n", onMissing: "create" },
+        directory,
+      ),
+      applyEditsToFile(
+        { path: join(alias, "child.txt"), rewrite: "second\n", onMissing: "create" },
+        directory,
+      ),
+    ]);
+    assert.equal(results.length, 2);
+    assert.equal(await readFile(join(real, "child.txt"), "utf8"), "second\n");
   });
 });
 

@@ -5,8 +5,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
-  assertSafeToCreate,
   assertSafeToReplace,
+  planNewFile,
+  type NewFilePlan,
   captureSnapshot,
   publishNewFile,
   publishReplacement,
@@ -266,7 +267,8 @@ export async function applyEditsToFile(
 
   const single = input as ApplyEditsInput;
   const inputPath = resolveInputPath(single.path, cwd);
-  return withFileMutationQueue(inputPath, async () => {
+  const lockKey = await mutationQueueKey(inputPath);
+  return withFileMutationQueue(lockKey, async () => {
     const planned = await planFileMutation(single, inputPath, cwd, signal);
     return commitPlannedMutation(planned, signal);
   });
@@ -283,6 +285,7 @@ interface PlannedMutation {
   operation: ApplyEditsDetails["operation"];
   editsRequested: number;
   needsWrite: boolean;
+  createPlan?: NewFilePlan;
 }
 
 async function applyEditsBatch(
@@ -365,13 +368,20 @@ async function applyEditsBatch(
 function rejectAncestorPathConflicts(
   resolved: Array<{ lockKey: string; inputPath: string; index: number }>,
 ): void {
-  const ordered = [...resolved].sort((left, right) => left.lockKey.localeCompare(right.lockKey));
-  for (let i = 0; i < ordered.length; i++) {
-    const ancestor = ordered[i]!;
-    const prefix = ancestor.lockKey.endsWith(sep) ? ancestor.lockKey : `${ancestor.lockKey}${sep}`;
-    for (let j = i + 1; j < ordered.length; j++) {
-      const descendant = ordered[j]!;
-      if (!descendant.lockKey.startsWith(prefix)) break;
+  // Batch sizes are small; pairwise checking avoids collation-order assumptions (`a`, `a-`, `a/x`).
+  for (let i = 0; i < resolved.length; i++) {
+    for (let j = i + 1; j < resolved.length; j++) {
+      const left = resolved[i]!;
+      const right = resolved[j]!;
+      const leftPrefix = left.lockKey.endsWith(sep) ? left.lockKey : `${left.lockKey}${sep}`;
+      const rightPrefix = right.lockKey.endsWith(sep) ? right.lockKey : `${right.lockKey}${sep}`;
+      const ancestor = right.lockKey.startsWith(leftPrefix)
+        ? left
+        : left.lockKey.startsWith(rightPrefix)
+          ? right
+          : undefined;
+      if (!ancestor) continue;
+      const descendant = ancestor === left ? right : left;
       throw new Error(
         `files[${descendant.index}] (${descendant.inputPath}) is nested under files[${ancestor.index}] ` +
           `(${ancestor.inputPath}). A batch cannot target a path and one of its ancestors.`,
@@ -437,10 +447,11 @@ async function planFileMutation(
 
   const nextBytes = Buffer.from(nextText, "utf8");
   const needsWrite = !(snapshot && nextBytes.equals(snapshot.bytes));
+  let createPlan: NewFilePlan | undefined;
   // Fail closed during plan (before any multi-file write) for known-unsafe targets.
   if (needsWrite) {
     if (snapshot) await assertSafeToReplace(snapshot, signal);
-    else await assertSafeToCreate(inputPath);
+    else createPlan = await planNewFile(inputPath);
   }
   return {
     inputPath,
@@ -453,6 +464,7 @@ async function planFileMutation(
     operation: needsWrite ? operation : "no_change",
     editsRequested: input.edits?.length ?? 1,
     needsWrite,
+    createPlan,
   };
 }
 
@@ -492,7 +504,7 @@ async function commitPlannedMutation(
   throwIfAborted(signal);
   const warnings = plan.snapshot
     ? await publishReplacement(plan.snapshot, plan.nextBytes, signal)
-    : await publishNewFile(plan.inputPath, plan.nextBytes, signal);
+    : await publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan);
   details.warnings.push(...warnings);
   const corrected = plan.matches.filter((item) => item.strategy !== "exact").length;
   const counts = details.addedLines + details.deletedLines > 0

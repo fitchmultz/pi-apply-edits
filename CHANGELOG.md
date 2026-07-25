@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.6 — 2026-07-24
+
+- Pairwise ancestor-path checks avoid locale-sort interlopers (`a`, `a-`, `a/x`).
+- Dangling parent symlinks fail create planning before any batch write.
+- Create plans bind to the canonical parent and reject parent identity/symlink changes before publish.
+- Single-file calls use the same missing-path canonical lock key as batches.
+
 ## 0.2.5 — 2026-07-24
 
 - Strengthen missing-path case folding for APFS aliases (`ſ`/`s`, `ς`/`σ`, `ß`/`ss`, `ﬀ`/`ff`).
