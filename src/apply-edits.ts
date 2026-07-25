@@ -117,6 +117,7 @@ const FUZZY_SEARCH_LIMIT_LINES = 200;
 const FUZZY_CONTENT_LIMIT_CHARS = 1_000_000;
 const FUZZY_CONTENT_LIMIT_LINES = 50_000;
 const MAX_REPLACEMENTS = 10_000;
+const MAX_EDIT_EXPANSION_CHARS = 8 * 1024 * 1024;
 const DIAGNOSTIC_LIMIT_BYTES = 1_200;
 const DIAGNOSTIC_SEARCH_LIMIT_BYTES = 8 * 1024;
 const DIAGNOSTIC_SEARCH_LIMIT_LINES = 40;
@@ -169,6 +170,7 @@ export function applyTargetedEdits(
   if (edits.length === 0) throw new Error("edits must contain at least one replacement");
 
   let current = original;
+  const maxResultLength = Math.min(Number.MAX_SAFE_INTEGER, original.length + MAX_EDIT_EXPANSION_CHARS);
   const matches: AppliedEditDetail[] = [];
 
   for (const [index, edit] of edits.entries()) {
@@ -199,7 +201,7 @@ export function applyTargetedEdits(
       throw new Error(`edits[${index}] would make no change because oldText and newText are identical`);
     }
 
-    const match = findMatch(current, oldText, newText, edit.insert);
+    const match = findMatch(current, oldText, newText, edit.insert, edit.all === true, maxResultLength);
     if (!match) {
       throw new Error(missingEditMessage(current, oldText, newText, displayPath, index));
     }
@@ -241,7 +243,7 @@ export function applyTargetedEdits(
       }
     }
 
-    current = applyReplacements(current, effective);
+    current = applyReplacements(current, effective, maxResultLength);
     matches.push({
       index,
       strategy: match.strategy,
@@ -267,11 +269,22 @@ export async function applyEditsToFile(
 
   const single = input as ApplyEditsInput;
   const inputPath = resolveInputPath(single.path, cwd);
-  const lockKey = await mutationQueueKey(inputPath);
-  return withFileMutationQueue(lockKey, async () => {
+  return withCanonicalFileLock(inputPath, async () => {
     const planned = await planFileMutation(single, inputPath, cwd, signal);
     return commitPlannedMutation(planned, signal);
   });
+}
+
+let canonicalLockRegistration = Promise.resolve();
+
+function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Promise<T> {
+  // Resolve aliases in invocation order, then let Pi's queue serialize only matching keys.
+  // Wrapping the operation prevents Promise assimilation from serializing unrelated files.
+  const registration = canonicalLockRegistration.then(async () => ({
+    operation: withFileMutationQueue(await mutationQueueKey(inputPath), fn),
+  }));
+  canonicalLockRegistration = registration.then(() => undefined, () => undefined);
+  return registration.then(({ operation }) => operation);
 }
 
 interface PlannedMutation {
@@ -435,7 +448,8 @@ async function planFileMutation(
 
   if (input.edits) {
     const result = applyTargetedEdits(originalBody, input.edits, displayPath);
-    nextText = `${hadBom ? "\uFEFF" : ""}${stripBomCharacter(result.text)}`;
+    const body = limitLeadingBomCharacters(result.text, countLeadingBomCharacters(originalBody));
+    nextText = `${hadBom ? "\uFEFF" : ""}${body}`;
     matches = result.matches;
     operation = "edit";
   } else {
@@ -576,27 +590,56 @@ function findMatch(
   content: string,
   oldText: string,
   newText: string,
-  insert?: InsertPosition,
+  insert: InsertPosition | undefined,
+  applyAll: boolean,
+  maxResultLength: number,
 ): MatchResult | undefined {
-  const exactOffsets = findOccurrences(content, oldText, MAX_REPLACEMENTS + 1);
+  const maximumReplacementLength = convertLineEndings(newText, "\r\n").length;
+  const removedPerMatch = insert ? 0 : oldText.length;
+  const expansionPerMatch = maximumReplacementLength - removedPerMatch;
+  const maximumExpansionMatches = applyAll && expansionPerMatch > 0
+    ? Math.floor((maxResultLength - content.length) / expansionPerMatch)
+    : Number.POSITIVE_INFINITY;
+  // Stop scanning before even the offsets array can consume the heap for a doomed expansion.
+  const exactLimit = Math.min(MAX_REPLACEMENTS + 1, maximumExpansionMatches + 1);
+  const exactOffsets = findOccurrences(content, oldText, exactLimit);
+  if (exactOffsets.length > maximumExpansionMatches) throwExpansionError();
   if (exactOffsets.length > MAX_REPLACEMENTS) {
     throw new Error(
       `oldText matched more than ${MAX_REPLACEMENTS.toLocaleString()} locations. ` +
         `Add surrounding context instead. No changes were written.`,
     );
   }
+  const exactCount = applyAll ? exactOffsets.length : Math.min(exactOffsets.length, 1);
+  assertProjectedExpansion(
+    content.length,
+    exactCount,
+    removedPerMatch,
+    maximumReplacementLength,
+    maxResultLength,
+  );
   const exactLines = lineNumbersAt(content, exactOffsets);
+  const exactEndings = lineEndingsAt(content, exactOffsets);
+  const replacementsByEnding = new Map<LineEnding, string>();
   const exact = exactOffsets.map((start, index) => {
     const end = start + oldText.length;
-    const replacement = convertLineEndings(newText, lineEndingForRange(content, start, end));
+    const replacement = convertedReplacement(
+      newText,
+      exactEndings[index] ?? "\n",
+      replacementsByEnding,
+    );
     return toReplacement(start, end, replacement, exactLines[index] ?? 1, insert);
   });
   if (exact.length > 0) return { strategy: "exact", replacements: exact };
 
-  const normalized = findLineBlockMatches(content, oldText, newText, false, insert);
+  const normalized = findLineBlockMatches(
+    content, oldText, newText, false, insert, applyAll, maxResultLength,
+  );
   if (normalized.length > 0) return { strategy: "normalized", replacements: normalized };
 
-  const indentation = findLineBlockMatches(content, oldText, newText, true, insert);
+  const indentation = findLineBlockMatches(
+    content, oldText, newText, true, insert, applyAll, maxResultLength,
+  );
   if (indentation.length > 0) return { strategy: "indent-normalized", replacements: indentation };
 
   return undefined;
@@ -661,7 +704,7 @@ function normalizeLockKey(existingPrefix: string, missingParts: string[]): strin
     // upper→lower is a closer caseless key than lower alone for APFS aliases:
     // ſ/s, ς/σ, ß/ss, and ﬀ/ff all collapse consistently.
     return foldCase
-      ? normalized.toUpperCase().toLowerCase().normalize("NFC")
+      ? normalized.toLowerCase().toUpperCase().toLowerCase().normalize("NFC")
       : normalized;
   });
   return join(existingPrefix, ...parts);
@@ -703,7 +746,9 @@ function findLineBlockMatches(
   search: string,
   replacement: string,
   ignoreBaseIndent: boolean,
-  insert?: InsertPosition,
+  insert: InsertPosition | undefined,
+  applyAll: boolean,
+  maxResultLength: number,
 ): Replacement[] {
   if (Buffer.byteLength(search) > FUZZY_SEARCH_LIMIT_BYTES) return [];
   const searchLines = splitLines(search);
@@ -717,6 +762,7 @@ function findLineBlockMatches(
   }
   const contentLines = splitLines(content);
   if (contentLines.length < searchLines.length) return [];
+  const replacementsByEnding = new Map<LineEnding, string>();
 
   const searchBodies = searchLines.map((line) => line.body);
   const searchSignature = ignoreBaseIndent
@@ -727,6 +773,7 @@ function findLineBlockMatches(
     : contentLines.map((line) => normalizeLine(line.body));
   const includeFinalEnding = hasFinalLineEnding(search);
   const matches: Replacement[] = [];
+  let projectedLength = content.length;
 
   for (let start = 0; start <= contentLines.length - searchLines.length; start++) {
     const window = contentLines.slice(start, start + searchLines.length);
@@ -742,14 +789,16 @@ function findLineBlockMatches(
     if (!first || !last) continue;
     const matchStart = first.start;
     const matchEnd = includeFinalEnding ? last.end : last.bodyEnd;
-    const localReplacement = convertLineEndings(
-      replacement,
-      lineEndingForRange(content, matchStart, matchEnd),
-    );
+    const ending = (window.find((line) => line.ending !== "")?.ending || detectLineEnding(content)) as LineEnding;
+    const localReplacement = convertedReplacement(replacement, ending, replacementsByEnding);
     // Insert keeps caller indentation; only full indent-normalized replacements reindent.
     const text = insert || !ignoreBaseIndent
       ? localReplacement
       : reindentReplacement(localReplacement, baseIndent(bodies));
+    if (applyAll || matches.length === 0) {
+      projectedLength += text.length - (insert ? 0 : matchEnd - matchStart);
+      if (projectedLength > maxResultLength) throwExpansionError();
+    }
     matches.push(toReplacement(matchStart, matchEnd, text, first.number, insert));
     if (matches.length > MAX_REPLACEMENTS) {
       throw new Error(
@@ -882,10 +931,40 @@ function hasOverlaps(replacements: Replacement[]): boolean {
   return ordered.some((item, index) => index > 0 && item.matchStart < ordered[index - 1]!.matchEnd);
 }
 
-function applyReplacements(content: string, replacements: Replacement[]): string {
+function assertProjectedExpansion(
+  contentLength: number,
+  count: number,
+  removedPerMatch: number,
+  replacementLength: number,
+  maxResultLength: number,
+): void {
+  if (count === 0) return;
+  const projectedLength = contentLength + count * (replacementLength - removedPerMatch);
+  if (projectedLength > maxResultLength) throwExpansionError();
+}
+
+function throwExpansionError(): never {
+  throw new Error(
+    `Ordered edits would expand the result by more than ${MAX_EDIT_EXPANSION_CHARS.toLocaleString()} ` +
+      "characters. Use rewrite or smaller edits. No changes were written.",
+  );
+}
+
+function applyReplacements(
+  content: string,
+  replacements: Replacement[],
+  maxResultLength: number,
+): string {
+  const ordered = [...replacements].sort((left, right) => left.start - right.start);
+  let projectedLength = content.length;
+  for (const replacement of ordered) {
+    projectedLength += replacement.text.length - (replacement.end - replacement.start);
+    if (projectedLength > maxResultLength) throwExpansionError();
+  }
+
   const parts: string[] = [];
   let cursor = 0;
-  for (const replacement of [...replacements].sort((left, right) => left.start - right.start)) {
+  for (const replacement of ordered) {
     parts.push(content.slice(cursor, replacement.start), replacement.text);
     cursor = replacement.end;
   }
@@ -1019,16 +1098,22 @@ function lineNumberAt(content: string, offset: number): number {
   return lineNumbersAt(content, [offset])[0] ?? 1;
 }
 
-function lineEndingForRange(content: string, start: number, end: number): LineEnding {
-  const matched = content.slice(start, end);
-  if (/\r\n|\r|\n/.test(matched)) return detectLineEnding(matched);
-
-  // Single-line anchors inherit the ending of their containing line.
-  const after = content.slice(end).match(/\r\n|\r|\n/);
-  if (after) return after[0] as LineEnding;
-  const before = content.slice(0, start).match(/(?:\r\n|\r|\n)(?![\s\S]*(?:\r\n|\r|\n))/);
-  if (before) return before[0] as LineEnding;
-  return detectLineEnding(content);
+function lineEndingsAt(content: string, offsets: number[]): LineEnding[] {
+  const endings: LineEnding[] = [];
+  const fallback = detectLineEnding(content);
+  let cursor = 0;
+  for (const offset of offsets) {
+    if (cursor < offset) cursor = offset;
+    while (cursor < content.length && content[cursor] !== "\r" && content[cursor] !== "\n") cursor++;
+    if (cursor >= content.length) {
+      endings.push(fallback);
+    } else if (content[cursor] === "\r" && content[cursor + 1] === "\n") {
+      endings.push("\r\n");
+    } else {
+      endings.push(content[cursor] as "\r" | "\n");
+    }
+  }
+  return endings;
 }
 
 function detectLineEnding(text: string): LineEnding {
@@ -1049,6 +1134,29 @@ function detectLineEnding(text: string): LineEnding {
 
 function convertLineEndings(text: string, ending: LineEnding): string {
   return text.replace(/\r\n|\r|\n/g, ending);
+}
+
+function convertedReplacement(
+  text: string,
+  ending: LineEnding,
+  cache: Map<LineEnding, string>,
+): string {
+  const cached = cache.get(ending);
+  if (cached !== undefined) return cached;
+  const converted = convertLineEndings(text, ending);
+  cache.set(ending, converted);
+  return converted;
+}
+
+function countLeadingBomCharacters(text: string): number {
+  let count = 0;
+  while (text[count] === "\uFEFF") count++;
+  return count;
+}
+
+function limitLeadingBomCharacters(text: string, maximum: number): string {
+  const count = countLeadingBomCharacters(text);
+  return count > maximum ? text.slice(count - maximum) : text;
 }
 
 function stripBomCharacter(text: string): string {
@@ -1075,7 +1183,8 @@ function decodeText(bytes: Buffer, path: string): { text: string; body: string; 
   const content = hadBom ? bytes.subarray(3) : bytes;
   let body: string;
   try {
-    body = new TextDecoder("utf-8", { fatal: true }).decode(content);
+    // The first BOM was removed explicitly; preserve any following U+FEFF content.
+    body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content);
   } catch {
     throw new Error(`Cannot edit non-UTF-8 file: ${path}`);
   }

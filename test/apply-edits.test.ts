@@ -111,6 +111,32 @@ test("replacement count is capped before unbounded match arrays can grow", () =>
   );
 });
 
+test("replace-all amplification is rejected under a bounded heap", () => {
+  const moduleUrl = new URL("../src/apply-edits.ts", import.meta.url).href;
+  const program = `
+    import { applyTargetedEdits } from ${JSON.stringify(moduleUrl)};
+    const content = "a\\n".repeat(10_000);
+    try {
+      applyTargetedEdits(
+        content,
+        [{ oldText: "a", newText: "x".repeat(10_000), all: true }],
+        "large.txt",
+      );
+    } catch (error) {
+      process.stdout.write(error.message);
+    }
+  `;
+  const result = spawnSync(
+    process.execPath,
+    // Importing Pi itself exceeds 32 MB on Node 24; 48 MB still proves no 100 MB result is built.
+    ["--max-old-space-size=48", "--input-type=module", "--eval", program],
+    { encoding: "utf8", maxBuffer: 1024 * 1024 },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /expand the result/);
+});
+
 test("normalized matching fails fast when candidate work exceeds its safety budget", () => {
   const content = `${"filler\n".repeat(60_000)}    alpha\n    beta\n    gamma\n    delta\n    epsilon\n`;
   assert.throws(
@@ -355,6 +381,24 @@ test("targeted edits cannot duplicate or add a UTF-8 BOM", async () => {
       Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("two\n")]),
     );
     assert.equal(await readFile(withoutBom, "utf8"), "two\n");
+  });
+});
+
+test("targeted edits preserve a second leading U+FEFF content character", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "double-bom.txt");
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+    await writeFile(path, Buffer.concat([bom, bom, Buffer.from("keep\nold\n")]));
+
+    await applyEditsToFile(
+      { path, edits: [{ oldText: "old", newText: "new" }] },
+      directory,
+    );
+
+    assert.deepEqual(
+      await readFile(path),
+      Buffer.concat([bom, bom, Buffer.from("keep\nnew\n")]),
+    );
   });
 });
 
@@ -1170,6 +1214,38 @@ test("multi-file batch rejects Unicode case-fold aliases of the same missing pat
       /same file/,
     );
     await assert.rejects(() => readFile(plain, "utf8"), /ENOENT/);
+  });
+});
+
+test("multi-file batch rejects uppercase/lowercase sharp-S aliases", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const upper = join(directory, "ẞ.txt");
+    const lower = join(directory, "ß.txt");
+    let aliases = false;
+    try {
+      await writeFile(upper, "probe\n");
+      const { statSync } = await import("node:fs");
+      aliases = statSync(upper).ino === statSync(lower).ino;
+      await unlink(upper);
+    } catch {
+      try { await unlink(upper); } catch { /* ignore */ }
+    }
+    if (!aliases) return;
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: upper, rewrite: "upper\n", onMissing: "create" },
+              { path: lower, rewrite: "lower\n", onMissing: "create" },
+            ],
+          },
+          directory,
+        ),
+      /same file/,
+    );
+    await assert.rejects(() => readFile(upper, "utf8"), /ENOENT/);
   });
 });
 

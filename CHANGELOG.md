@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.7 — 2026-07-24
+
+- Symmetric missing-path case folding covers APFS `ẞ`/`ß` aliases before batch publication.
+- Targeted edits preserve pre-existing leading U+FEFF content while still blocking added BOMs.
+- Bound cumulative ordered-edit expansion to prevent replace-all amplification from exhausting memory.
+- Cache per-EOL replacement conversions across repeated matches.
+- Preserve invocation order while resolving canonical single-file lock keys.
+
 ## 0.2.6 — 2026-07-24
 
 - Pairwise ancestor-path checks avoid locale-sort interlopers (`a`, `a-`, `a/x`).
