@@ -10,6 +10,7 @@ import {
   type NewFilePlan,
   captureSnapshot,
   publishNewFile,
+  publishPlannedNestedFiles,
   publishReplacement,
   throwIfAborted,
 } from "./file-system.ts";
@@ -299,6 +300,7 @@ interface PlannedMutation {
   editsRequested: number;
   needsWrite: boolean;
   createPlan?: NewFilePlan;
+  lockKey?: string;
 }
 
 async function applyEditsBatch(
@@ -341,16 +343,67 @@ async function applyEditsBatch(
   return withOrderedFileLocks(lockPaths, async () => {
     const planned: PlannedMutation[] = [];
     for (const item of resolved) {
-      planned.push(await planFileMutation(item.file, item.inputPath, cwd, signal));
+      planned.push(await planFileMutation(item.file, item.inputPath, cwd, signal, item.lockKey));
+    }
+
+    const nestedGroups = new Map<string, number[]>();
+    for (const [index, plan] of planned.entries()) {
+      const key = nestedCreateRootKey(plan);
+      if (!key) continue;
+      const group = nestedGroups.get(key) ?? [];
+      group.push(index);
+      nestedGroups.set(key, group);
+    }
+    for (const group of nestedGroups.values()) {
+      const spellings = new Set(
+        group.map((index) => planned[index]!.createPlan!.missingDirectories[0]),
+      );
+      if (spellings.size > 1) {
+        throw new Error(
+          `files[${group.join(", ")}] use alias spellings for one missing directory. ` +
+            "Use one consistent path spelling so the batch can publish it safely.",
+        );
+      }
     }
 
     // Plan fully before any write. Mid-publish FS failure can leave earlier files written.
-    const detailsList: ApplyEditsDetails[] = [];
+    const detailsList = new Array<ApplyEditsDetails>(planned.length);
+    const prepared = new Map<number, ApplyEditsExecution>();
     let written = 0;
     for (const [index, plan] of planned.entries()) {
       try {
-        detailsList.push((await commitPlannedMutation(plan, signal)).details as ApplyEditsDetails);
-        if (plan.needsWrite) written += 1;
+        let execution = prepared.get(index);
+        if (!execution) {
+          const key = nestedCreateRootKey(plan);
+          const group = key ? nestedGroups.get(key) : undefined;
+          if (group && group.length > 1) {
+            // Build every result before publishing the shared missing subtree once.
+            for (const groupIndex of group) {
+              prepared.set(
+                groupIndex,
+                await commitPlannedMutation(planned[groupIndex]!, signal, []),
+              );
+            }
+            const warnings = await publishPlannedNestedFiles(
+              group.map((groupIndex) => ({
+                plan: planned[groupIndex]!.createPlan!,
+                bytes: planned[groupIndex]!.nextBytes,
+              })),
+              signal,
+            );
+            const firstExecution = prepared.get(group[0]!);
+            if (firstExecution && "warnings" in firstExecution.details) {
+              firstExecution.details.warnings.push(...warnings);
+            }
+            written += group.length;
+            execution = prepared.get(index);
+          } else {
+            execution = await commitPlannedMutation(plan, signal);
+            if (plan.needsWrite) written += 1;
+          }
+        }
+        if (!execution) throw new Error(`Missing prepared result for files[${index}]`);
+        detailsList[index] = execution.details as ApplyEditsDetails;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(
@@ -376,6 +429,17 @@ async function applyEditsBatch(
       details: { files: detailsList },
     };
   });
+}
+
+function nestedCreateRootKey(plan: PlannedMutation): string | undefined {
+  if (!plan.lockKey || !plan.createPlan || plan.createPlan.missingDirectories.length === 0) {
+    return undefined;
+  }
+  let key = plan.lockKey;
+  for (let index = 0; index < plan.createPlan.missingDirectories.length; index++) {
+    key = dirname(key);
+  }
+  return key;
 }
 
 function rejectAncestorPathConflicts(
@@ -416,6 +480,7 @@ async function planFileMutation(
   inputPath: string,
   cwd: string,
   signal?: AbortSignal,
+  lockKey?: string,
 ): Promise<PlannedMutation> {
   throwIfAborted(signal);
   const snapshot = await captureSnapshot(inputPath);
@@ -479,12 +544,14 @@ async function planFileMutation(
     editsRequested: input.edits?.length ?? 1,
     needsWrite,
     createPlan,
+    lockKey,
   };
 }
 
 async function commitPlannedMutation(
   plan: PlannedMutation,
   signal?: AbortSignal,
+  publicationWarnings?: string[],
 ): Promise<ApplyEditsExecution> {
   if (!plan.needsWrite) {
     const details = buildDetails(
@@ -516,9 +583,9 @@ async function commitPlannedMutation(
     [],
   );
   throwIfAborted(signal);
-  const warnings = plan.snapshot
+  const warnings = publicationWarnings ?? (plan.snapshot
     ? await publishReplacement(plan.snapshot, plan.nextBytes, signal)
-    : await publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan);
+    : await publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan));
   details.warnings.push(...warnings);
   const corrected = plan.matches.filter((item) => item.strategy !== "exact").length;
   const counts = details.addedLines + details.deletedLines > 0

@@ -970,6 +970,58 @@ test("multi-file batch plans then writes all files", async () => {
   });
 });
 
+test("multi-file batch publishes sibling creates under one missing root together", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const result = await applyEditsToFile(
+      {
+        files: [
+          { path: "shared/a.txt", rewrite: "A\n", onMissing: "create" },
+          { path: "shared/b.txt", rewrite: "B\n", onMissing: "create" },
+          { path: "shared/nested/c.txt", rewrite: "C\n", onMissing: "create" },
+        ],
+      },
+      directory,
+    );
+
+    assert.match(result.summary, /Updated 3 files/);
+    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
+    assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
+    assert.equal(await readFile(join(directory, "shared/nested/c.txt"), "utf8"), "C\n");
+  });
+});
+
+test("sibling creates reject alias-spelled missing roots before publication", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const probe = join(directory, "probe");
+    let caseInsensitive = false;
+    try {
+      await mkdir(probe);
+      const { statSync } = await import("node:fs");
+      caseInsensitive = statSync(probe).ino === statSync(join(directory, "PROBE")).ino;
+      await rm(probe, { recursive: true });
+    } catch {
+      await rm(probe, { recursive: true, force: true });
+    }
+    if (!caseInsensitive) return;
+
+    await assert.rejects(
+      () =>
+        applyEditsToFile(
+          {
+            files: [
+              { path: "Shared/a.txt", rewrite: "A\n", onMissing: "create" },
+              { path: "shared/b.txt", rewrite: "B\n", onMissing: "create" },
+            ],
+          },
+          directory,
+        ),
+      /alias spellings/,
+    );
+    await assert.rejects(() => readFile(join(directory, "shared/a.txt"), "utf8"), /ENOENT/);
+    await assert.rejects(() => readFile(join(directory, "Shared/b.txt"), "utf8"), /ENOENT/);
+  });
+});
+
 test("multi-file batch writes nothing when a later file cannot be planned", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "a.ts"), "const a = 1;\n");

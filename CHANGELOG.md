@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.10 — 2026-07-24
+
+- Coalesce sibling creates sharing a missing root into one staged subtree publication, preventing the first create from invalidating later precomputed plans.
+
 ## 0.2.9 — 2026-07-24
 
 - Stage complete missing directory trees under the verified ancestor and publish them with one rename, preventing parent-symlink swaps from redirecting nested creates or leaking temporary links.

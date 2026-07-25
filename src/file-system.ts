@@ -44,6 +44,11 @@ export interface NewFilePublishHooks {
   beforeDirectoryPublish?: (paths: { staging: string; target: string }) => void | Promise<void>;
 }
 
+export interface PlannedNewFile {
+  plan: NewFilePlan;
+  bytes: Buffer;
+}
+
 export async function captureSnapshot(inputPath: string): Promise<FileSnapshot | undefined> {
   let inputStats: BigIntStats;
   try {
@@ -367,19 +372,28 @@ export async function publishReplacement(
   }
 }
 
-async function publishPlannedNestedFile(
-  plan: NewFilePlan,
-  bytes: Buffer,
+export async function publishPlannedNestedFiles(
+  entries: PlannedNewFile[],
   signal?: AbortSignal,
   hooks?: NewFilePublishHooks,
 ): Promise<string[]> {
-  const [firstMissing, ...remainingDirectories] = plan.missingDirectories;
-  if (!firstMissing) throw new Error(`Invalid nested create plan for ${plan.inputPath}`);
+  const firstPlan = entries[0]?.plan;
+  const firstMissing = firstPlan?.missingDirectories[0];
+  if (!firstPlan || !firstMissing || entries.length === 0) {
+    throw new Error("Nested create publication requires at least one valid plan");
+  }
+  for (const { plan } of entries) {
+    if (
+      plan.ancestorPath !== firstPlan.ancestorPath ||
+      plan.missingDirectories.length === 0
+    ) {
+      throw new Error("Nested create publication plans must share one missing root");
+    }
+  }
 
-  const publishRoot = join(plan.ancestorPath, firstMissing);
-  const staging = join(plan.ancestorPath, `.pi-apply-edits-${randomUUID()}.tmpdir`);
-  const stagedDirectory = join(staging, ...remainingDirectories);
-  const stagedTarget = join(stagedDirectory, basename(plan.targetPath));
+  const publishRoot = join(firstPlan.ancestorPath, firstMissing);
+  const staging = join(firstPlan.ancestorPath, `.pi-apply-edits-${randomUUID()}.tmpdir`);
+  const stagedDirectories = new Set<string>();
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let published = false;
   let failure: unknown;
@@ -387,32 +401,39 @@ async function publishPlannedNestedFile(
 
   try {
     throwIfAborted(signal);
+    for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
     await mkdir(staging);
-    if (remainingDirectories.length > 0) await mkdir(stagedDirectory, { recursive: true });
 
-    handle = await open(stagedTarget, "wx", 0o666);
-    await handle.writeFile(bytes);
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
+    for (const { plan, bytes } of entries) {
+      const stagedDirectory = join(staging, ...plan.missingDirectories.slice(1));
+      if (stagedDirectory !== staging) await mkdir(stagedDirectory, { recursive: true });
+      stagedDirectories.add(stagedDirectory);
+      const stagedTarget = join(stagedDirectory, basename(plan.targetPath));
+      handle = await open(stagedTarget, "wx", 0o666);
+      await handle.writeFile(bytes);
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+    }
 
-    const stagedDirectoryWarning = await syncDirectory(stagedDirectory);
-    if (stagedDirectoryWarning) warnings.push(stagedDirectoryWarning);
+    for (const directory of stagedDirectories) {
+      const warning = await syncDirectory(directory);
+      if (warning) warnings.push(warning);
+    }
     await hooks?.beforeDirectoryPublish?.({ staging, target: publishRoot });
     throwIfAborted(signal);
-    await assertNewFilePlanCurrent(plan);
+    for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
     try {
       await lstat(publishRoot);
       throw new Error(
-        `Create parent changed after planning ${plan.inputPath}. No changes were written.`,
+        `Create parent changed after planning ${firstPlan.inputPath}. No changes were written.`,
       );
     } catch (error) {
       if (!isCode(error, "ENOENT")) throw error;
     }
 
-    // Publish the complete missing subtree in one rename. A symlink/file/non-empty
-    // directory appearing at the planned parent makes rename fail; no operation
-    // ever traverses that mutable component.
+    // Publish every sibling create below the missing root in one rename. A
+    // symlink/file/directory appearing there is rejected without traversal.
     try {
       await rename(staging, publishRoot);
       published = true;
@@ -424,13 +445,13 @@ async function publishPlannedNestedFile(
         isCode(error, "EISDIR")
       ) {
         throw new Error(
-          `Create parent changed after planning ${plan.inputPath}. No changes were written.`,
+          `Create parent changed after planning ${firstPlan.inputPath}. No changes were written.`,
         );
       }
       throw error;
     }
 
-    const ancestorWarning = await syncDirectory(plan.ancestorPath);
+    const ancestorWarning = await syncDirectory(firstPlan.ancestorPath);
     if (ancestorWarning) warnings.push(ancestorWarning);
     return warnings;
   } catch (error) {
@@ -449,6 +470,15 @@ async function publishPlannedNestedFile(
       }
     }
   }
+}
+
+async function publishPlannedNestedFile(
+  plan: NewFilePlan,
+  bytes: Buffer,
+  signal?: AbortSignal,
+  hooks?: NewFilePublishHooks,
+): Promise<string[]> {
+  return publishPlannedNestedFiles([{ plan, bytes }], signal, hooks);
 }
 
 export async function publishNewFile(
