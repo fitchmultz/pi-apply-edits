@@ -360,27 +360,31 @@ test("targeted edits preserve CRLF and BOM", async () => {
   });
 });
 
-test("targeted edits cannot duplicate or add a UTF-8 BOM", async () => {
+test("targeted edits reject newly leading U+FEFF without changing bytes", async () => {
   await inTemporaryDirectory(async (directory) => {
     const withBom = join(directory, "with-bom.txt");
     const withoutBom = join(directory, "without-bom.txt");
-    await writeFile(withBom, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("one\n")]));
+    const originalWithBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("one\n")]);
+    await writeFile(withBom, originalWithBom);
     await writeFile(withoutBom, "one\n");
 
-    await applyEditsToFile(
-      { path: withBom, edits: [{ oldText: "one", newText: "\uFEFFtwo" }] },
-      directory,
+    await assert.rejects(
+      () => applyEditsToFile(
+        { path: withBom, edits: [{ oldText: "one", newText: "\uFEFFtwo" }] },
+        directory,
+      ),
+      /would move or add U\+FEFF/,
     );
-    await applyEditsToFile(
-      { path: withoutBom, edits: [{ oldText: "one", newText: "\uFEFFtwo" }] },
-      directory,
+    await assert.rejects(
+      () => applyEditsToFile(
+        { path: withoutBom, edits: [{ oldText: "one", newText: "\uFEFFtwo" }] },
+        directory,
+      ),
+      /would move or add U\+FEFF/,
     );
 
-    assert.deepEqual(
-      await readFile(withBom),
-      Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("two\n")]),
-    );
-    assert.equal(await readFile(withoutBom, "utf8"), "two\n");
+    assert.deepEqual(await readFile(withBom), originalWithBom);
+    assert.equal(await readFile(withoutBom, "utf8"), "one\n");
   });
 });
 
@@ -401,6 +405,23 @@ test("targeted edits match internal U+FEFF anchors exactly", () => {
     ).text,
     "p|X\uFEFFtoken|s",
   );
+});
+
+test("targeted edits reject deletion that would silently remove relocated U+FEFF", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "relocated-feff.txt");
+    const original = Buffer.from("x\uFEFFy");
+    await writeFile(path, original);
+
+    await assert.rejects(
+      () => applyEditsToFile(
+        { path, edits: [{ oldText: "x", newText: "" }] },
+        directory,
+      ),
+      /would move or add U\+FEFF/,
+    );
+    assert.deepEqual(await readFile(path), original);
+  });
 });
 
 test("targeted edits preserve a second leading U+FEFF content character", async () => {
@@ -990,6 +1011,33 @@ test("multi-file batch publishes sibling creates under one missing root together
   });
 });
 
+test("nested create staging failures are detected before earlier batch writes", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const sentinel = join(directory, "sentinel.txt");
+    await writeFile(sentinel, "old\n");
+
+    await assert.rejects(
+      () => applyEditsToFile(
+        {
+          files: [
+            { path: "sentinel.txt", rewrite: "new\n" },
+            {
+              path: `missing/${"x".repeat(300)}.txt`,
+              rewrite: "content\n",
+              onMissing: "create",
+            },
+          ],
+        },
+        directory,
+      ),
+      /could not be prepared|ENAMETOOLONG/,
+    );
+
+    assert.equal(await readFile(sentinel, "utf8"), "old\n");
+    await assert.rejects(() => readFile(join(directory, "missing"), "utf8"), /ENOENT/);
+  });
+});
+
 test("sibling creates reject alias-spelled missing roots before publication", async () => {
   await inTemporaryDirectory(async (directory) => {
     const probe = join(directory, "probe");
@@ -1497,6 +1545,37 @@ test("planned nested create never follows a parent symlink appearing after valid
     assert.equal(
       (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
       false,
+    );
+  });
+});
+
+test("staged create cleanup survives ancestor rename and replacement", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const ancestor = join(directory, "ancestor");
+    const movedAncestor = join(directory, "moved-ancestor");
+    const inputPath = join(ancestor, "missing", "child.txt");
+    await mkdir(ancestor);
+    const plan = await planNewFile(inputPath);
+    let staging = "";
+
+    await assert.rejects(
+      () => publishNewFile(inputPath, Buffer.from("created\n"), undefined, plan, {
+        beforeDirectoryPublish: async (paths) => {
+          staging = paths.staging;
+          await rename(ancestor, movedAncestor);
+          await mkdir(ancestor);
+        },
+      }),
+      /Create parent changed after planning/,
+    );
+
+    const entries = await readdir(directory, { recursive: true });
+    assert.equal(entries.some((name) => name.includes(".pi-apply-edits-")), false);
+    assert.notEqual(staging, "");
+    await assert.rejects(() => lstat(staging), /ENOENT/);
+    await assert.rejects(
+      () => readFile(join(movedAncestor, "missing", "child.txt"), "utf8"),
+      /ENOENT/,
     );
   });
 });

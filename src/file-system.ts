@@ -49,6 +49,17 @@ export interface PlannedNewFile {
   bytes: Buffer;
 }
 
+export interface PreparedNestedFiles {
+  entries: PlannedNewFile[];
+  firstPlan: NewFilePlan;
+  publishRoot: string;
+  staging: string;
+  stagingParent: string;
+  warnings: string[];
+  hooks?: NewFilePublishHooks;
+  published: boolean;
+}
+
 export async function captureSnapshot(inputPath: string): Promise<FileSnapshot | undefined> {
   let inputStats: BigIntStats;
   try {
@@ -372,11 +383,11 @@ export async function publishReplacement(
   }
 }
 
-export async function publishPlannedNestedFiles(
+export async function preparePlannedNestedFiles(
   entries: PlannedNewFile[],
   signal?: AbortSignal,
   hooks?: NewFilePublishHooks,
-): Promise<string[]> {
+): Promise<PreparedNestedFiles> {
   const firstPlan = entries[0]?.plan;
   const firstMissing = firstPlan?.missingDirectories[0];
   if (!firstPlan || !firstMissing || entries.length === 0) {
@@ -385,28 +396,44 @@ export async function publishPlannedNestedFiles(
   for (const { plan } of entries) {
     if (
       plan.ancestorPath !== firstPlan.ancestorPath ||
-      plan.missingDirectories.length === 0
+      plan.missingDirectories[0] !== firstMissing
     ) {
       throw new Error("Nested create publication plans must share one missing root");
     }
   }
 
-  const publishRoot = join(firstPlan.ancestorPath, firstMissing);
-  const staging = join(firstPlan.ancestorPath, `.pi-apply-edits-${randomUUID()}.tmpdir`);
+  const ancestorParent = dirname(firstPlan.ancestorPath);
+  let stagingParent = firstPlan.ancestorPath;
+  try {
+    const parentStats = await stat(ancestorParent, { bigint: true });
+    if (parentStats.dev === firstPlan.ancestorDev) {
+      await access(ancestorParent, constants.W_OK | constants.X_OK);
+      stagingParent = ancestorParent;
+    }
+  } catch {
+    // A mount root or non-writable parent must stage inside the verified ancestor.
+  }
+
+  const prepared: PreparedNestedFiles = {
+    entries,
+    firstPlan,
+    publishRoot: join(firstPlan.ancestorPath, firstMissing),
+    staging: join(stagingParent, `.pi-apply-edits-${randomUUID()}.tmpdir`),
+    stagingParent,
+    warnings: [],
+    hooks,
+    published: false,
+  };
   const stagedDirectories = new Set<string>();
   let handle: Awaited<ReturnType<typeof open>> | undefined;
-  let published = false;
-  let failure: unknown;
-  const warnings: string[] = [];
-
   try {
     throwIfAborted(signal);
     for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
-    await mkdir(staging);
+    await mkdir(prepared.staging);
 
     for (const { plan, bytes } of entries) {
-      const stagedDirectory = join(staging, ...plan.missingDirectories.slice(1));
-      if (stagedDirectory !== staging) await mkdir(stagedDirectory, { recursive: true });
+      const stagedDirectory = join(prepared.staging, ...plan.missingDirectories.slice(1));
+      if (stagedDirectory !== prepared.staging) await mkdir(stagedDirectory, { recursive: true });
       stagedDirectories.add(stagedDirectory);
       const stagedTarget = join(stagedDirectory, basename(plan.targetPath));
       handle = await open(stagedTarget, "wx", 0o666);
@@ -418,9 +445,29 @@ export async function publishPlannedNestedFiles(
 
     for (const directory of stagedDirectories) {
       const warning = await syncDirectory(directory);
-      if (warning) warnings.push(warning);
+      if (warning) prepared.warnings.push(warning);
     }
-    await hooks?.beforeDirectoryPublish?.({ staging, target: publishRoot });
+    return prepared;
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    try {
+      await discardPreparedNestedFiles(prepared);
+    } catch (cleanupError) {
+      throw new Error(
+        `${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
+      );
+    }
+    throw error;
+  }
+}
+
+export async function publishPreparedNestedFiles(
+  prepared: PreparedNestedFiles,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const { entries, firstPlan, publishRoot, staging } = prepared;
+  try {
+    await prepared.hooks?.beforeDirectoryPublish?.({ staging, target: publishRoot });
     throwIfAborted(signal);
     for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
     try {
@@ -432,11 +479,9 @@ export async function publishPlannedNestedFiles(
       if (!isCode(error, "ENOENT")) throw error;
     }
 
-    // Publish every sibling create below the missing root in one rename. A
-    // symlink/file/directory appearing there is rejected without traversal.
     try {
       await rename(staging, publishRoot);
-      published = true;
+      prepared.published = true;
     } catch (error) {
       if (
         isCode(error, "EEXIST") ||
@@ -452,24 +497,36 @@ export async function publishPlannedNestedFiles(
     }
 
     const ancestorWarning = await syncDirectory(firstPlan.ancestorPath);
-    if (ancestorWarning) warnings.push(ancestorWarning);
-    return warnings;
-  } catch (error) {
-    failure = error;
-    throw error;
-  } finally {
-    await handle?.close().catch(() => undefined);
-    if (!published) {
-      try {
-        await rm(staging, { recursive: true, force: true });
-      } catch (cleanupError) {
-        throw new Error(
-          `${failure ? `${errorMessage(failure)} ` : "Create failed. "}` +
-            `Cleanup was incomplete: ${staging}: ${errorMessage(cleanupError)}`,
-        );
-      }
+    if (ancestorWarning) prepared.warnings.push(ancestorWarning);
+    if (prepared.stagingParent !== firstPlan.ancestorPath) {
+      const stagingParentWarning = await syncDirectory(prepared.stagingParent);
+      if (stagingParentWarning) prepared.warnings.push(stagingParentWarning);
     }
+    return prepared.warnings;
+  } catch (error) {
+    try {
+      await discardPreparedNestedFiles(prepared);
+    } catch (cleanupError) {
+      throw new Error(
+        `${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
+      );
+    }
+    throw error;
   }
+}
+
+export async function discardPreparedNestedFiles(prepared: PreparedNestedFiles): Promise<void> {
+  if (prepared.published) return;
+  await rm(prepared.staging, { recursive: true, force: true });
+}
+
+export async function publishPlannedNestedFiles(
+  entries: PlannedNewFile[],
+  signal?: AbortSignal,
+  hooks?: NewFilePublishHooks,
+): Promise<string[]> {
+  const prepared = await preparePlannedNestedFiles(entries, signal, hooks);
+  return publishPreparedNestedFiles(prepared, signal);
 }
 
 async function publishPlannedNestedFile(

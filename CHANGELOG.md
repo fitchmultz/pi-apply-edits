@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.11 — 2026-07-24
+
+- Prebuild every nested-create staging tree before any batch target publication, so deterministic staging failures leave all targets unchanged.
+- Reject targeted edits that would move or add U+FEFF at the content start instead of silently deleting unrelated text.
+- Stage beside the verified ancestor when possible so cleanup survives ancestor rename/replacement.
+
 ## 0.2.10 — 2026-07-24
 
 - Coalesce sibling creates sharing a missing root into one staged subtree publication, preventing the first create from invalidating later precomputed plans.

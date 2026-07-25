@@ -6,12 +6,15 @@ import { fileURLToPath } from "node:url";
 import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
   assertSafeToReplace,
-  planNewFile,
-  type NewFilePlan,
   captureSnapshot,
+  discardPreparedNestedFiles,
+  planNewFile,
+  preparePlannedNestedFiles,
   publishNewFile,
-  publishPlannedNestedFiles,
+  publishPreparedNestedFiles,
   publishReplacement,
+  type NewFilePlan,
+  type PreparedNestedFiles,
   throwIfAborted,
 } from "./file-system.ts";
 
@@ -366,68 +369,88 @@ async function applyEditsBatch(
       }
     }
 
-    // Plan fully before any write. Mid-publish FS failure can leave earlier files written.
-    const detailsList = new Array<ApplyEditsDetails>(planned.length);
-    const prepared = new Map<number, ApplyEditsExecution>();
-    let written = 0;
-    for (const [index, plan] of planned.entries()) {
-      try {
-        let execution = prepared.get(index);
-        if (!execution) {
-          const key = nestedCreateRootKey(plan);
-          const group = key ? nestedGroups.get(key) : undefined;
-          if (group && group.length > 1) {
-            // Build every result before publishing the shared missing subtree once.
-            for (const groupIndex of group) {
-              prepared.set(
-                groupIndex,
-                await commitPlannedMutation(planned[groupIndex]!, signal, []),
-              );
-            }
-            const warnings = await publishPlannedNestedFiles(
+    // Build every nested-create staging tree before any target publication.
+    const preparedExecutions = new Map<number, ApplyEditsExecution>();
+    const preparedGroups = new Map<string, PreparedNestedFiles>();
+    try {
+      for (const [key, group] of nestedGroups) {
+        for (const groupIndex of group) {
+          preparedExecutions.set(
+            groupIndex,
+            await commitPlannedMutation(planned[groupIndex]!, signal, []),
+          );
+        }
+        try {
+          preparedGroups.set(
+            key,
+            await preparePlannedNestedFiles(
               group.map((groupIndex) => ({
                 plan: planned[groupIndex]!.createPlan!,
                 bytes: planned[groupIndex]!.nextBytes,
               })),
               signal,
-            );
-            const firstExecution = prepared.get(group[0]!);
-            if (firstExecution && "warnings" in firstExecution.details) {
-              firstExecution.details.warnings.push(...warnings);
+            ),
+          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(`files[${group.join(", ")}] could not be prepared. ${reason}`);
+        }
+      }
+
+      // Plan and stage fully before any write. Mid-publish FS failure can still leave earlier files written.
+      const detailsList = new Array<ApplyEditsDetails>(planned.length);
+      const publishedGroups = new Set<string>();
+      let written = 0;
+      for (const [index, plan] of planned.entries()) {
+        try {
+          const key = nestedCreateRootKey(plan);
+          let execution = key ? preparedExecutions.get(index) : undefined;
+          if (key) {
+            const group = nestedGroups.get(key)!;
+            if (!publishedGroups.has(key)) {
+              const warnings = await publishPreparedNestedFiles(preparedGroups.get(key)!, signal);
+              const firstExecution = preparedExecutions.get(group[0]!);
+              if (firstExecution && "warnings" in firstExecution.details) {
+                firstExecution.details.warnings.push(...warnings);
+              }
+              publishedGroups.add(key);
+              written += group.length;
             }
-            written += group.length;
-            execution = prepared.get(index);
           } else {
             execution = await commitPlannedMutation(plan, signal);
             if (plan.needsWrite) written += 1;
           }
+          if (!execution) throw new Error(`Missing prepared result for files[${index}]`);
+          detailsList[index] = execution.details as ApplyEditsDetails;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Multi-file batch failed while writing files[${index}] (${plan.displayPath}) ` +
+              `after ${written} successful write${written === 1 ? "" : "s"}. ${reason}`,
+          );
         }
-        if (!execution) throw new Error(`Missing prepared result for files[${index}]`);
-        detailsList[index] = execution.details as ApplyEditsDetails;
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new Error(
-          `Multi-file batch failed while writing files[${index}] (${plan.displayPath}) ` +
-            `after ${written} successful write${written === 1 ? "" : "s"}. ${reason}`,
-        );
       }
-    }
 
-    const changed = detailsList.filter((item) => item.operation !== "no_change");
-    const added = detailsList.reduce((sum, item) => sum + item.addedLines, 0);
-    const deleted = detailsList.reduce((sum, item) => sum + item.deletedLines, 0);
-    const counts = added + deleted > 0 ? ` (+${added}/-${deleted})` : "";
-    if (changed.length === 0) {
+      const changed = detailsList.filter((item) => item.operation !== "no_change");
+      const added = detailsList.reduce((sum, item) => sum + item.addedLines, 0);
+      const deleted = detailsList.reduce((sum, item) => sum + item.deletedLines, 0);
+      const counts = added + deleted > 0 ? ` (+${added}/-${deleted})` : "";
+      if (changed.length === 0) {
+        return {
+          summary: `No change: ${detailsList.length} file${detailsList.length === 1 ? "" : "s"} already match.`,
+          details: { files: detailsList },
+        };
+      }
+      const names = changed.map((item) => item.path).join(", ");
       return {
-        summary: `No change: ${detailsList.length} file${detailsList.length === 1 ? "" : "s"} already match.`,
+        summary: `Updated ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}.`,
         details: { files: detailsList },
       };
+    } finally {
+      for (const prepared of preparedGroups.values()) {
+        await discardPreparedNestedFiles(prepared);
+      }
     }
-    const names = changed.map((item) => item.path).join(", ");
-    return {
-      summary: `Updated ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}.`,
-      details: { files: detailsList },
-    };
   });
 }
 
@@ -513,8 +536,13 @@ async function planFileMutation(
 
   if (input.edits) {
     const result = applyTargetedEdits(originalBody, input.edits, displayPath);
-    const body = limitLeadingBomCharacters(result.text, countLeadingBomCharacters(originalBody));
-    nextText = `${hadBom ? "\uFEFF" : ""}${body}`;
+    if (countLeadingBomCharacters(result.text) > countLeadingBomCharacters(originalBody)) {
+      throw new Error(
+        `Targeted edits would move or add U+FEFF to the start of ${displayPath}. ` +
+          "Use rewrite to make that encoding change explicit. No changes were written.",
+      );
+    }
+    nextText = `${hadBom ? "\uFEFF" : ""}${result.text}`;
     matches = result.matches;
     operation = "edit";
   } else {
@@ -1219,11 +1247,6 @@ function countLeadingBomCharacters(text: string): number {
   let count = 0;
   while (text[count] === "\uFEFF") count++;
   return count;
-}
-
-function limitLeadingBomCharacters(text: string, maximum: number): string {
-  const count = countLeadingBomCharacters(text);
-  return count > maximum ? text.slice(count - maximum) : text;
 }
 
 function hasUnpairedSurrogate(text: string): boolean {
