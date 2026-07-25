@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9 — 2026-07-24
+
+- Stage complete missing directory trees under the verified ancestor and publish them with one rename, preventing parent-symlink swaps from redirecting nested creates or leaking temporary links.
+
 ## 0.2.8 — 2026-07-24
 
 - Preserve leading U+FEFF in targeted-edit anchors so internal U+FEFF content is matched and replaced at the requested boundary.

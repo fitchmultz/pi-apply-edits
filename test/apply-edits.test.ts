@@ -1424,6 +1424,31 @@ test("planned create stays bound to its canonical parent if an alias changes", a
   });
 });
 
+test("planned nested create never follows a parent symlink appearing after validation", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const outside = join(directory, "outside");
+    const gate = join(directory, "gate");
+    const inputPath = join(gate, "sub", "child.txt");
+    await mkdir(outside);
+    const plan = await planNewFile(inputPath);
+
+    await assert.rejects(
+      () =>
+        publishNewFile(inputPath, Buffer.from("created\n"), undefined, plan, {
+          beforeDirectoryPublish: async () => symlink(outside, gate),
+        }),
+      /Create parent changed after planning/,
+    );
+
+    await assert.rejects(() => readFile(join(outside, "sub", "child.txt"), "utf8"), /ENOENT/);
+    assert.equal((await lstat(gate)).isSymbolicLink(), true);
+    assert.equal(
+      (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
+      false,
+    );
+  });
+});
+
 test("concurrent single creates through symlink-parent aliases serialize", async () => {
   await inTemporaryDirectory(async (directory) => {
     const real = join(directory, "real");
