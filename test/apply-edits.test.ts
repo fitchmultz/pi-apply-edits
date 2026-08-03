@@ -19,7 +19,13 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { applyEditsToFile, applyTargetedEdits, resolveInputPath, type ApplyEditsDetails } from "../src/apply-edits.ts";
+import {
+  applyEditsToFile,
+  applyTargetedEdits,
+  resolveInputPath,
+  RetryableApplyEditsError,
+  type ApplyEditsDetails,
+} from "../src/apply-edits.ts";
 
 function singleDetails(details: { files?: ApplyEditsDetails[] } | ApplyEditsDetails): ApplyEditsDetails {
   if (details && typeof details === "object" && "files" in details) {
@@ -310,6 +316,77 @@ test("rewrite creation is explicit and creates parent directories", async () => 
     assert.equal(await readFile(path, "utf8"), "hello\n");
     assert.equal(singleDetails(result.details).operation, "create");
     assert.match(result.summary, /^Created nested\/file\.txt/);
+  });
+});
+
+test("missing rewrite failures expose compact-create eligibility before any write", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await assert.rejects(
+      applyEditsToFile(
+        {
+          files: [
+            { path: "a.txt", rewrite: "A\n" },
+            { path: "b.txt", rewrite: "B\n" },
+          ],
+        },
+        directory,
+      ),
+      (error: unknown) => {
+        assert(error instanceof RetryableApplyEditsError);
+        assert.deepEqual(error.retry, { kind: "create", files: [0, 1] });
+        assert.match(error.message, /files\[0\].*onMissing: "create"/s);
+        return true;
+      },
+    );
+    await assert.rejects(readFile(join(directory, "a.txt")), /ENOENT/);
+    await assert.rejects(readFile(join(directory, "b.txt")), /ENOENT/);
+  });
+});
+
+test("requireMissing prevents compact create retries from rewriting a file that appeared", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "appeared.txt");
+    await writeFile(path, "external\n");
+
+    await assert.rejects(
+      applyEditsToFile(
+        { path, rewrite: "agent\n", onMissing: "create", requireMissing: true },
+        directory,
+      ),
+      /File now exists.*No changes were written/s,
+    );
+    assert.equal(await readFile(path, "utf8"), "external\n");
+  });
+});
+
+test("requireMissing keeps a stale create batch entirely unchanged", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "appeared.txt"), "external\n");
+
+    await assert.rejects(
+      applyEditsToFile(
+        {
+          files: [
+            {
+              path: "still-missing.txt",
+              rewrite: "new\n",
+              onMissing: "create",
+              requireMissing: true,
+            },
+            {
+              path: "appeared.txt",
+              rewrite: "agent\n",
+              onMissing: "create",
+              requireMissing: true,
+            },
+          ],
+        },
+        directory,
+      ),
+      /File now exists.*No changes were written/s,
+    );
+    await assert.rejects(readFile(join(directory, "still-missing.txt")), /ENOENT/);
+    assert.equal(await readFile(join(directory, "appeared.txt"), "utf8"), "external\n");
   });
 });
 
@@ -1091,6 +1168,33 @@ test("multi-file batch writes nothing when a later file cannot be planned", asyn
 
     assert.equal(await readFile(join(directory, "a.ts"), "utf8"), "const a = 1;\n");
     assert.equal(await readFile(join(directory, "b.ts"), "utf8"), "const b = 1;\n");
+  });
+});
+
+test("ambiguous batch anchors expose the exact compact oldText correction", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "a.txt"), "first\n");
+    await writeFile(join(directory, "b.txt"), "target\ntarget\n");
+
+    await assert.rejects(
+      applyEditsToFile(
+        {
+          files: [
+            { path: "a.txt", edits: [{ oldText: "first", newText: "FIRST" }] },
+            { path: "b.txt", edits: [{ oldText: "target", newText: "changed" }] },
+          ],
+        },
+        directory,
+      ),
+      (error: unknown) => {
+        assert(error instanceof RetryableApplyEditsError);
+        assert.deepEqual(error.retry, { kind: "oldText", file: 1, edit: 0 });
+        assert.match(error.message, /files\[1\].*matched 2 locations/s);
+        return true;
+      },
+    );
+    assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "first\n");
+    assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "target\ntarget\n");
   });
 });
 

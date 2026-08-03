@@ -42,7 +42,8 @@ Ladder (cheapest correct choice first):
 3. **Insert at an anchor** → `edits` with `insert: "before"` or `insert: "after"`
 4. **Several files together** → `files: [{ path, edits|rewrite }, ...]` (plan-first batch; nothing writes until every file can be planned)
 
-Provide either `files: [...]` or a single-file `path` with exactly one of `edits` or `rewrite`:
+Provide `files: [...]`, a single-file `path` with exactly one of `edits` or
+`rewrite`, or the exact compact retry payload returned after an eligible failure:
 
 ```json
 {
@@ -113,6 +114,26 @@ Creation is explicit so a typo does not silently create the wrong path:
 ```
 
 `onMissing` is valid only with `rewrite`.
+
+## Compact retries
+
+Two pre-write failures can be retried without resending unchanged file bodies:
+
+```json
+{"retry":{"from":"<tool-call-id>"}}
+```
+
+```json
+{"retry":{"from":"<tool-call-id>","oldText":"corrected unique anchor"}}
+```
+
+The tool includes the appropriate payload in eligible error text. `create` is
+available only for rewrite-only requests and refuses to overwrite a target that
+appeared after the original failure. `oldText` is available only for edit-only
+requests and can change only the failing anchor. Both retries are single-use,
+expire when the current agent run settles or the session changes, and pass the
+reconstructed full request through normal validation and `tool_call` policy
+hooks before execution. Other failures require a normal request.
 
 ## Matching and failure behavior
 

@@ -6,6 +6,7 @@ import test from "node:test";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import applyEditsExtension, {
+  type ApplyEditsParameters,
   createApplyEditsTool,
   prepareApplyEditsArguments,
 } from "../extensions/apply-edits.ts";
@@ -24,6 +25,15 @@ interface ExtensionHarness {
   flag: boolean;
   tool?: ToolDefinition;
   sessionStart?: () => void;
+  agentSettled?: () => void;
+}
+
+function prepare(
+  tool: ReturnType<typeof createApplyEditsTool>,
+  raw: unknown,
+): ApplyEditsParameters {
+  if (!tool.prepareArguments) throw new Error("expected prepareArguments");
+  return tool.prepareArguments(raw);
 }
 
 function createHarness(active: string[], flag = false): { api: ExtensionAPI; state: ExtensionHarness } {
@@ -35,6 +45,7 @@ function createHarness(active: string[], flag = false): { api: ExtensionAPI; sta
     },
     on: (event: string, handler: () => void) => {
       if (event === "session_start") state.sessionStart = handler;
+      if (event === "agent_settled") state.agentSettled = handler;
     },
     getActiveTools: () => state.active,
     setActiveTools: (tools: string[]) => {
@@ -156,6 +167,34 @@ test("factory respects CLI, environment, and registry availability", () => {
   assert.deepEqual(excluded.state.active, ["edit", "write"]);
 });
 
+test("factory clears unused compact retries when the agent settles", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-settled-retry-"));
+  try {
+    const { api, state } = createHarness(["apply_edits"]);
+    applyEditsExtension(api);
+    const tool = state.tool as ReturnType<typeof createApplyEditsTool>;
+    const original = prepare(tool, { path: "new.txt", rewrite: "content\n" });
+
+    await assert.rejects(
+      tool.execute(
+        "call-settled",
+        original,
+        undefined,
+        undefined,
+        { cwd: directory } as never,
+      ),
+      /Compact retry/,
+    );
+    state.agentSettled?.();
+    assert.throws(
+      () => prepare(tool, { retry: { from: "call-settled" } }),
+      /Compact retry is unavailable/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("tool execution uses the session cwd and returns compact evidence", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-extension-test-"));
   try {
@@ -220,6 +259,7 @@ test("tool contract covers rewrite, insert, and multi-file batch", () => {
   assert.match(tool.description, /insert/);
   assert.match(tool.description, /onMissing: "create"/);
   assert.match(tool.description, /easy whole-file path/);
+  assert.match(tool.description, /compact retry/);
   assert.match(tool.promptSnippet ?? "", /files:\[\]/);
   assert(tool.promptGuidelines?.some((g) => /no oldText matching/.test(g)));
   assert(tool.promptGuidelines?.some((g) => /insert: "before"\|\"after"/.test(g)));
@@ -278,6 +318,111 @@ test("tool execution applies a multi-file batch from the session cwd", async () 
     assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "b!\n");
     assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /Updated 2 files/);
     assert.equal("files" in (result.details ?? {}), true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("compact create retry reuses full bodies and is single-use", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-create-retry-"));
+  try {
+    const tool = createApplyEditsTool();
+    await writeFile(join(directory, "existing.txt"), "before\n");
+    const original = {
+      files: [
+        { path: "a.txt", rewrite: "A body\n" },
+        { path: "existing.txt", rewrite: "after\n" },
+        { path: "b.txt", rewrite: "B body\n" },
+      ],
+    };
+    await assert.rejects(
+      tool.execute(
+        "call-create",
+        prepare(tool, original),
+        undefined,
+        undefined,
+        { cwd: directory } as never,
+      ),
+      /Compact retry:.*"from":"call-create"/s,
+    );
+    await assert.rejects(readFile(join(directory, "a.txt")), /ENOENT/);
+
+    const retry = { retry: { from: "call-create" } };
+    const expanded = prepare(tool, retry);
+    assert.equal(expanded.retry, undefined);
+    assert.equal(expanded.files?.[0]?.rewrite, "A body\n");
+    assert.equal(expanded.files?.[1]?.rewrite, "after\n");
+    assert.equal(expanded.files?.[2]?.rewrite, "B body\n");
+    assert.equal(expanded.files?.[0]?.onMissing, "create");
+    assert.equal(expanded.files?.[0]?.requireMissing, true);
+    assert.equal(expanded.files?.[1]?.onMissing, undefined);
+    assert.equal(expanded.files?.[1]?.requireMissing, undefined);
+    assert.equal(expanded.files?.[2]?.onMissing, "create");
+    assert.equal(expanded.files?.[2]?.requireMissing, true);
+    assert.throws(() => prepare(tool, retry), /Compact retry is unavailable/);
+
+    await tool.execute(
+      "call-create-retry",
+      expanded,
+      undefined,
+      undefined,
+      { cwd: directory } as never,
+    );
+    assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "A body\n");
+    assert.equal(await readFile(join(directory, "existing.txt"), "utf8"), "after\n");
+    assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "B body\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("compact oldText retry changes only the failed anchor in a five-file batch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-old-text-retry-"));
+  try {
+    const tool = createApplyEditsTool();
+    const files = Array.from({ length: 5 }, (_, index) => ({
+      path: `${index}.txt`,
+      edits: [{
+        oldText: index === 4 ? "target" : `value-${index}`,
+        newText: index === 4 ? "changed" : `VALUE-${index}`,
+      }],
+    }));
+    for (let index = 0; index < 4; index++) {
+      await writeFile(join(directory, `${index}.txt`), `value-${index}\n`);
+    }
+    await writeFile(join(directory, "4.txt"), "target one\ntarget two\n");
+
+    await assert.rejects(
+      tool.execute(
+        "call-old-text",
+        prepare(tool, { files }),
+        undefined,
+        undefined,
+        { cwd: directory } as never,
+      ),
+      /files\[4\].*Compact retry:.*"from":"call-old-text".*"oldText"/s,
+    );
+    assert.equal(await readFile(join(directory, "0.txt"), "utf8"), "value-0\n");
+
+    const expanded = prepare(tool, {
+      retry: {
+        from: "call-old-text",
+        oldText: "target one",
+      },
+    });
+    assert.equal(expanded.files?.length, 5);
+    assert.equal(expanded.files?.[0]?.edits?.[0]?.oldText, "value-0");
+    assert.equal(expanded.files?.[4]?.edits?.[0]?.oldText, "target one");
+
+    await tool.execute(
+      "call-old-text-retry",
+      expanded,
+      undefined,
+      undefined,
+      { cwd: directory } as never,
+    );
+    assert.equal(await readFile(join(directory, "0.txt"), "utf8"), "VALUE-0\n");
+    assert.equal(await readFile(join(directory, "4.txt"), "utf8"), "changed\ntarget two\n");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

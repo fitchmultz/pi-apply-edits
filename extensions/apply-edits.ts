@@ -5,8 +5,11 @@ import { type Static, Type } from "typebox";
 import {
   applyEditsToFile,
   type ApplyEditsBatchDetails,
+  type ApplyEditsInput,
   type ApplyEditsRequest,
+  type ApplyEditsRetry,
   type ApplyEditsToolDetails,
+  RetryableApplyEditsError,
 } from "../src/apply-edits.ts";
 
 const editSchema = Type.Object({
@@ -33,6 +36,24 @@ const editSchema = Type.Object({
   ),
 });
 
+const retrySchema = Type.Object(
+  {
+    from: Type.String({
+      minLength: 1,
+      maxLength: 512,
+      description: "Tool-call ID from the compact retry hint.",
+    }),
+    oldText: Type.Optional(Type.String({ description: "Corrected unique anchor when the hint requests one." })),
+  },
+  { description: "Single-use compact retry exactly as returned by a retryable apply_edits error." },
+);
+
+const requireMissingSchema = Type.Optional(
+  Type.Boolean({
+    description: "Require the rewrite target to remain missing. Used by compact create retries.",
+  }),
+);
+
 const fileSchema = Type.Object({
   path: Type.String({ description: "File path, relative to the session working directory or absolute." }),
   edits: Type.Optional(
@@ -53,6 +74,7 @@ const fileSchema = Type.Object({
       description: 'Missing-file behavior for rewrite. Use "create" only when creating a file. Default "error".',
     }),
   ),
+  requireMissing: requireMissingSchema,
 });
 
 export const applyEditsSchema = Type.Object({
@@ -77,6 +99,7 @@ export const applyEditsSchema = Type.Object({
       description: 'Missing-file behavior for single-file rewrite. Use "create" only when creating. Default "error".',
     }),
   ),
+  requireMissing: requireMissingSchema,
   files: Type.Optional(
     Type.Array(fileSchema, {
       minItems: 1,
@@ -86,20 +109,27 @@ export const applyEditsSchema = Type.Object({
         "A rare mid-publish filesystem failure can leave earlier files already written.",
     }),
   ),
+  retry: Type.Optional(retrySchema),
 });
 
 export type ApplyEditsParameters = Static<typeof applyEditsSchema>;
+type RetryParameters = Static<typeof retrySchema>;
+
+interface StoredRetry {
+  request: ApplyEditsRequest;
+  retry: ApplyEditsRetry;
+}
+
+type RetryStore = Map<string, StoredRetry>;
+
+const MAX_PENDING_RETRIES = 4;
+const RETRY_UNAVAILABLE =
+  "Compact retry is unavailable or does not match this failure. Send a normal apply_edits request.";
 
 export function prepareApplyEditsArguments(raw: unknown): ApplyEditsParameters {
-  let value = raw;
-  if (typeof value === "string") {
-    try {
-      value = JSON.parse(value);
-    } catch {
-      throw new Error("apply_edits arguments must be a JSON object");
-    }
-  }
+  const value = parseArguments(raw);
   if (!isRecord(value)) return value as ApplyEditsParameters;
+  if (value.retry !== undefined) throw new Error(RETRY_UNAVAILABLE);
 
   if (value.files !== undefined) {
     const strayTopLevel = [
@@ -111,6 +141,8 @@ export function prepareApplyEditsArguments(raw: unknown): ApplyEditsParameters {
       "content",
       "onMissing",
       "on_missing",
+      "requireMissing",
+      "retry",
       "oldText",
       "old_string",
       "newText",
@@ -148,23 +180,119 @@ export function prepareApplyEditsArguments(raw: unknown): ApplyEditsParameters {
   return prepareSingleFileArguments(value) as ApplyEditsParameters;
 }
 
+function prepareToolArguments(raw: unknown, retries: RetryStore): ApplyEditsParameters {
+  const value = parseArguments(raw);
+  if (!isRecord(value) || value.retry === undefined) return prepareApplyEditsArguments(value);
+  const extra = Object.keys(value).filter((key) => key !== "retry");
+  if (extra.length > 0) {
+    throw new Error(`retry cannot be combined with ${extra.join(", ")}`);
+  }
+  return expandRetry(value.retry, retries);
+}
+
+function expandRetry(raw: unknown, retries: RetryStore): ApplyEditsParameters {
+  const retry = parseRetry(raw);
+  const stored = retries.get(retry.from);
+  retries.delete(retry.from);
+  if (!stored) throw new Error(RETRY_UNAVAILABLE);
+
+  const request = structuredClone(stored.request);
+  if (stored.retry.kind === "create") {
+    if (retry.oldText !== undefined) throw new Error(RETRY_UNAVAILABLE);
+    const allInputs = request.files ?? [request as ApplyEditsInput];
+    if (
+      allInputs.length === 0 ||
+      allInputs.some((input) => typeof input.rewrite !== "string" || input.edits !== undefined)
+    ) {
+      throw new Error(RETRY_UNAVAILABLE);
+    }
+    const inputs = request.files
+      ? stored.retry.files?.map((file) => request.files?.[file])
+      : stored.retry.files === undefined
+        ? allInputs
+        : undefined;
+    if (!inputs || inputs.length === 0) throw new Error(RETRY_UNAVAILABLE);
+    for (const input of inputs) {
+      if (!input) throw new Error(RETRY_UNAVAILABLE);
+      input.onMissing = "create";
+      input.requireMissing = true;
+    }
+    return request as ApplyEditsParameters;
+  }
+
+  if (retry.oldText === undefined) throw new Error(RETRY_UNAVAILABLE);
+  const input = stored.retry.file === undefined
+    ? request as ApplyEditsInput
+    : request.files?.[stored.retry.file];
+  const edit = input?.edits?.[stored.retry.edit];
+  if (!edit) throw new Error(RETRY_UNAVAILABLE);
+  edit.oldText = retry.oldText;
+  return request as ApplyEditsParameters;
+}
+
+function parseRetry(raw: unknown): RetryParameters {
+  if (!isRecord(raw)) throw new Error("retry must be an object");
+  const extra = Object.keys(raw).filter((key) => key !== "from" && key !== "oldText");
+  if (extra.length > 0) throw new Error(`retry has unsupported fields: ${extra.join(", ")}`);
+  if (typeof raw.from !== "string" || raw.from.length === 0 || raw.from.length > 512) {
+    throw new Error("retry.from must be a non-empty tool-call ID");
+  }
+  if (raw.oldText !== undefined && typeof raw.oldText !== "string") {
+    throw new Error("retry.oldText must be a string");
+  }
+  return { from: raw.from, oldText: raw.oldText };
+}
+
+function rememberRetry(
+  retries: RetryStore,
+  toolCallId: string,
+  request: ApplyEditsRequest,
+  retry: ApplyEditsRetry,
+): boolean {
+  if (toolCallId.length === 0 || toolCallId.length > 512 || retries.has(toolCallId)) {
+    retries.delete(toolCallId);
+    return false;
+  }
+  while (retries.size >= MAX_PENDING_RETRIES) {
+    const oldest = retries.keys().next().value;
+    if (oldest === undefined) break;
+    retries.delete(oldest);
+  }
+  retries.set(toolCallId, { request: structuredClone(request), retry });
+  return true;
+}
+
+function retryPayload(toolCallId: string, retry: ApplyEditsRetry): string {
+  const value = retry.kind === "create"
+    ? { from: toolCallId }
+    : { from: toolCallId, oldText: "<corrected unique oldText>" };
+  return JSON.stringify({ retry: value });
+}
+
 export function createApplyEditsTool(): ToolDefinition<
   typeof applyEditsSchema,
   ApplyEditsToolDetails
 > {
+  return createApplyEditsToolWithStore(new Map());
+}
+
+function createApplyEditsToolWithStore(
+  retries: RetryStore,
+): ToolDefinition<typeof applyEditsSchema, ApplyEditsToolDetails> {
   return {
     name: "apply_edits",
     label: "apply edits",
     description:
       "Apply ordered text replacements/inserts, rewrite a UTF-8 text file, create one file, or apply " +
-      "a multi-file batch. Provide either files: [...] or a single-file path with exactly one of " +
-      "edits or rewrite. rewrite is the easy whole-file path: pass the full new contents " +
+      "a multi-file batch. Provide files: [...], a single-file path with exactly one of edits or " +
+      "rewrite, or the exact compact retry payload returned after an eligible failure. rewrite is " +
+      "the easy whole-file path: pass the full new contents " +
       '(onMissing: "create" only when creating). edits is for small unique patches; set insert to ' +
       '"before" or "after" to insert newText at an anchor without replacing it. Ordered edits run ' +
       "sequentially in memory; nothing is written unless every edit (and every file in a batch) can be " +
       "planned successfully. oldText matches exactly first, then tolerates only an unambiguous full-line " +
       "typography, trailing-whitespace, or uniform-indentation difference. A repeated match is an error " +
-      "unless all is true.",
+      "unless all is true. Eligible no-write failures return a single-use compact retry payload.",
     promptSnippet:
       "File writes: rewrite whole files, edits/inserts for small patches, files:[] for plan-first multi-file batches.",
     promptGuidelines: [
@@ -176,17 +304,26 @@ export function createApplyEditsTool(): ToolDefinition<
         "edits apply in memory and commit together only after all succeed.",
       "Multi-file change: pass files: [{path, edits|rewrite}, ...] so the whole batch is planned before " +
         "any write. Prefer this over several separate apply_edits calls when the edits belong together.",
+      "When apply_edits returns a compact retry payload, use it instead of resending unchanged content.",
     ],
     parameters: applyEditsSchema,
-    prepareArguments: prepareApplyEditsArguments,
+    prepareArguments: (raw) => prepareToolArguments(raw, retries),
     executionMode: "parallel",
 
-    async execute(_toolCallId, params, signal, _onUpdate, context) {
-      const result = await applyEditsToFile(params as ApplyEditsRequest, context.cwd, signal);
-      return {
-        content: [{ type: "text", text: result.summary }],
-        details: result.details,
-      };
+    async execute(toolCallId, params, signal, _onUpdate, context) {
+      try {
+        const result = await applyEditsToFile(params as ApplyEditsRequest, context.cwd, signal);
+        return {
+          content: [{ type: "text", text: result.summary }],
+          details: result.details,
+        };
+      } catch (error) {
+        if (!(error instanceof RetryableApplyEditsError)) throw error;
+        if (!rememberRetry(retries, toolCallId, params as ApplyEditsRequest, error.retry)) {
+          throw error;
+        }
+        throw new Error(`${error.message}\nCompact retry: ${retryPayload(toolCallId, error.retry)}`);
+      }
     },
 
     renderCall(args, theme) {
@@ -243,18 +380,25 @@ export function createApplyEditsTool(): ToolDefinition<
 }
 
 export default function applyEditsExtension(pi: ExtensionAPI): void {
+  const retries: RetryStore = new Map();
+  const clearRetries = () => retries.clear();
+
   pi.registerFlag("apply-edits-with-builtins", {
     type: "boolean",
     default: false,
     description: "Keep Pi's built-in edit and write tools active alongside apply_edits",
   });
-  pi.registerTool(createApplyEditsTool());
+  pi.registerTool(createApplyEditsToolWithStore(retries));
 
   pi.on("session_start", () => {
+    clearRetries();
     const active = pi.getActiveTools();
     if (!active.includes("apply_edits") || keepBuiltins(pi)) return;
     pi.setActiveTools(active.filter((name) => name !== "edit" && name !== "write"));
   });
+  pi.on("agent_settled", clearRetries);
+  pi.on("session_tree", clearRetries);
+  pi.on("session_shutdown", clearRetries);
 }
 
 function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
@@ -264,6 +408,7 @@ function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
   let edits = raw.edits;
   const rewrite = readAlias(raw, ["rewrite", "content"], "rewrite content");
   const onMissing = readAlias(raw, ["onMissing", "on_missing"], "onMissing");
+  const requireMissing = raw.requireMissing;
 
   if (typeof edits === "string") {
     try {
@@ -290,7 +435,13 @@ function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
   }
   if (Array.isArray(edits)) edits = edits.map(normalizeEditAliases);
 
-  return { path, edits, rewrite, onMissing };
+  return {
+    path,
+    edits,
+    rewrite,
+    onMissing,
+    ...(requireMissing === undefined ? {} : { requireMissing }),
+  };
 }
 
 function normalizeEditAliases(value: unknown): unknown {
@@ -304,6 +455,9 @@ function normalizeEditAliases(value: unknown): unknown {
 }
 
 function callLabel(args: ApplyEditsParameters): { path: string; mode: string } {
+  if (args.retry) {
+    return { path: "previous call", mode: args.retry.oldText === undefined ? "retry create" : "retry oldText" };
+  }
   if (Array.isArray(args.files)) {
     const count = args.files.length;
     return {
@@ -364,6 +518,15 @@ function keepBuiltins(pi: ExtensionAPI): boolean {
   return ["1", "true", "yes", "on"].includes(
     (process.env.PI_APPLY_EDITS_KEEP_BUILTINS ?? "").toLowerCase(),
   );
+}
+
+function parseArguments(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("apply_edits arguments must be a JSON object");
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -33,6 +33,7 @@ export interface ApplyEditsInput {
   edits?: TargetedEdit[];
   rewrite?: string;
   onMissing?: "error" | "create";
+  requireMissing?: boolean;
 }
 
 /** Tool args: one file (path + edits|rewrite) or an atomic multi-file batch. */
@@ -41,7 +42,33 @@ export interface ApplyEditsRequest {
   edits?: TargetedEdit[];
   rewrite?: string;
   onMissing?: "error" | "create";
+  requireMissing?: boolean;
   files?: ApplyEditsInput[];
+}
+
+export type ApplyEditsRetry =
+  | { kind: "create"; files?: number[] }
+  | { kind: "oldText"; file?: number; edit: number };
+
+export class RetryableApplyEditsError extends Error {
+  readonly retry: ApplyEditsRetry;
+
+  constructor(message: string, retry: ApplyEditsRetry) {
+    super(message);
+    this.name = "RetryableApplyEditsError";
+    this.retry = retry;
+  }
+}
+
+class MissingCreateOptInError extends Error {}
+
+class OldTextMatchError extends Error {
+  readonly edit: number;
+
+  constructor(message: string, edit: number) {
+    super(message);
+    this.edit = edit;
+  }
 }
 
 export type MatchStrategy = "exact" | "normalized" | "indent-normalized";
@@ -207,15 +234,19 @@ export function applyTargetedEdits(
 
     const match = findMatch(current, oldText, newText, edit.insert, edit.all === true, maxResultLength);
     if (!match) {
-      throw new Error(missingEditMessage(current, oldText, newText, displayPath, index));
+      throw new OldTextMatchError(
+        missingEditMessage(current, oldText, newText, displayPath, index),
+        index,
+      );
     }
     if (!edit.all && match.replacements.length > 1) {
       const lines = match.replacements.slice(0, 8).map((item) => item.line);
       const suffix = match.replacements.length > lines.length ? ", …" : "";
-      throw new Error(
+      throw new OldTextMatchError(
         `edits[${index}].oldText matched ${match.replacements.length} locations in ${displayPath} ` +
           `(lines ${lines.join(", ")}${suffix}). Add enough surrounding text to make it unique, ` +
           `or set all: true only when every match should change. No changes were written.`,
+        index,
       );
     }
 
@@ -274,7 +305,12 @@ export async function applyEditsToFile(
   const single = input as ApplyEditsInput;
   const inputPath = resolveInputPath(single.path, cwd);
   return withCanonicalFileLock(inputPath, async () => {
-    const planned = await planFileMutation(single, inputPath, cwd, signal);
+    let planned: PlannedMutation;
+    try {
+      planned = await planFileMutation(single, inputPath, cwd, signal);
+    } catch (error) {
+      throw retryablePlanningError(error, [single]);
+    }
     return commitPlannedMutation(planned, signal);
   });
 }
@@ -289,6 +325,32 @@ function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Prom
   }));
   canonicalLockRegistration = registration.then(() => undefined, () => undefined);
   return registration.then(({ operation }) => operation);
+}
+
+function retryablePlanningError(
+  error: unknown,
+  files: ApplyEditsInput[],
+  file?: number,
+): Error {
+  const reason = error instanceof Error ? error.message : String(error);
+  const prefix = file === undefined ? "" : `files[${file}]: `;
+  if (
+    error instanceof MissingCreateOptInError &&
+    files.every((input) => typeof input.rewrite === "string" && input.edits === undefined)
+  ) {
+    return new RetryableApplyEditsError(`${prefix}${reason}`, { kind: "create" });
+  }
+  if (
+    error instanceof OldTextMatchError &&
+    files.every((input) => Array.isArray(input.edits) && input.rewrite === undefined)
+  ) {
+    return new RetryableApplyEditsError(`${prefix}${reason}`, {
+      kind: "oldText",
+      file,
+      edit: error.edit,
+    });
+  }
+  return error instanceof Error ? error : new Error(reason);
 }
 
 interface PlannedMutation {
@@ -345,8 +407,26 @@ async function applyEditsBatch(
   const lockPaths = [...seen.keys()].sort();
   return withOrderedFileLocks(lockPaths, async () => {
     const planned: PlannedMutation[] = [];
+    const allRewrites = files.every(
+      (input) => typeof input.rewrite === "string" && input.edits === undefined,
+    );
+    const missingCreates: Array<{ file: number; message: string }> = [];
     for (const item of resolved) {
-      planned.push(await planFileMutation(item.file, item.inputPath, cwd, signal, item.lockKey));
+      try {
+        planned.push(await planFileMutation(item.file, item.inputPath, cwd, signal, item.lockKey));
+      } catch (error) {
+        if (allRewrites && error instanceof MissingCreateOptInError) {
+          missingCreates.push({ file: item.index, message: error.message });
+          continue;
+        }
+        throw retryablePlanningError(error, files, item.index);
+      }
+    }
+    if (missingCreates.length > 0) {
+      throw new RetryableApplyEditsError(
+        missingCreates.map(({ file, message }) => `files[${file}]: ${message}`).join("\n"),
+        { kind: "create", files: missingCreates.map(({ file }) => file) },
+      );
     }
 
     const nestedGroups = new Map<string, number[]>();
@@ -509,14 +589,21 @@ async function planFileMutation(
   const snapshot = await captureSnapshot(inputPath);
   const displayPath = displayPathFor(inputPath, cwd);
 
+  if (snapshot && input.requireMissing) {
+    throw new Error(
+      `File now exists: ${displayPath}. Compact create retries require targets to remain missing. ` +
+        "No changes were written.",
+    );
+  }
   if (!snapshot && input.edits) {
     throw new Error(
       `Cannot edit missing file ${displayPath}. Use rewrite with onMissing: "create" to create it.`,
     );
   }
   if (!snapshot && input.onMissing !== "create") {
-    throw new Error(
-      `File does not exist: ${displayPath}. Set onMissing: "create" with rewrite to create it.`,
+    throw new MissingCreateOptInError(
+      `File does not exist: ${displayPath}. Set onMissing: "create" with rewrite to create it. ` +
+        "No changes were written.",
     );
   }
 
@@ -645,7 +732,8 @@ function validateRequest(input: ApplyEditsRequest): void {
     input.path !== undefined ||
     input.edits !== undefined ||
     input.rewrite !== undefined ||
-    input.onMissing !== undefined;
+    input.onMissing !== undefined ||
+    input.requireMissing !== undefined;
   if (hasFiles === hasTopLevel) {
     throw new Error('Provide either files: [...] or a single-file path with edits/rewrite');
   }
@@ -676,8 +764,14 @@ function validateInput(input: ApplyEditsInput): void {
   if (hasEdits && input.onMissing !== undefined) {
     throw new Error("onMissing is valid only with rewrite");
   }
+  if (hasEdits && input.requireMissing !== undefined) {
+    throw new Error("requireMissing is valid only with rewrite");
+  }
   if (input.onMissing !== undefined && input.onMissing !== "error" && input.onMissing !== "create") {
     throw new Error('onMissing must be either "error" or "create"');
+  }
+  if (input.requireMissing === true && input.onMissing !== "create") {
+    throw new Error('requireMissing requires onMissing: "create"');
   }
 }
 
