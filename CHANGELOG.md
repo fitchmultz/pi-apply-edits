@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add single-use compact retries for rewrite-only missing-create failures and edit-only missing or ambiguous `oldText` failures.
+- Expand compact retries before validation and `tool_call` policy hooks, then rerun the normal planning and publication path.
+- Refuse compact create retries when any target appeared after the original no-write failure.
+
 ## 0.2.12 — 2026-07-24
 
 - Align tracked package-lock root version and license metadata with the published package.
