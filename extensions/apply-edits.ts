@@ -43,7 +43,12 @@ const retrySchema = Type.Object(
       maxLength: 512,
       description: "Tool-call ID from the compact retry hint.",
     }),
-    oldText: Type.Optional(Type.String({ description: "Corrected unique anchor when the hint requests one." })),
+    oldText: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description: "Corrected unique anchor when the hint requests one.",
+      }),
+    ),
   },
   { description: "Single-use compact retry exactly as returned by a retryable apply_edits error." },
 );
@@ -193,12 +198,10 @@ function prepareToolArguments(raw: unknown, retries: RetryStore): ApplyEditsPara
 function expandRetry(raw: unknown, retries: RetryStore): ApplyEditsParameters {
   const retry = parseRetry(raw);
   const stored = retries.get(retry.from);
-  retries.delete(retry.from);
   if (!stored) throw new Error(RETRY_UNAVAILABLE);
-
-  const request = structuredClone(stored.request);
   if (stored.retry.kind === "create") {
     if (retry.oldText !== undefined) throw new Error(RETRY_UNAVAILABLE);
+    const request = structuredClone(stored.request);
     const allInputs = request.files ?? [request as ApplyEditsInput];
     if (
       allInputs.length === 0 ||
@@ -206,26 +209,32 @@ function expandRetry(raw: unknown, retries: RetryStore): ApplyEditsParameters {
     ) {
       throw new Error(RETRY_UNAVAILABLE);
     }
-    const inputs = request.files
-      ? stored.retry.files?.map((file) => request.files?.[file])
-      : stored.retry.files === undefined
-        ? allInputs
-        : undefined;
-    if (!inputs || inputs.length === 0) throw new Error(RETRY_UNAVAILABLE);
+    let inputs: Array<ApplyEditsInput | undefined>;
+    if (request.files) {
+      if (!stored.retry.files) throw new Error(RETRY_UNAVAILABLE);
+      inputs = stored.retry.files.map((file) => request.files?.[file]);
+    } else {
+      if (stored.retry.files !== undefined) throw new Error(RETRY_UNAVAILABLE);
+      inputs = allInputs;
+    }
+    if (inputs.length === 0) throw new Error(RETRY_UNAVAILABLE);
     for (const input of inputs) {
       if (!input) throw new Error(RETRY_UNAVAILABLE);
       input.onMissing = "create";
       input.requireMissing = true;
     }
+    retries.delete(retry.from);
     return request as ApplyEditsParameters;
   }
 
   if (retry.oldText === undefined) throw new Error(RETRY_UNAVAILABLE);
+  const request = structuredClone(stored.request);
   const input = stored.retry.file === undefined
     ? request as ApplyEditsInput
     : request.files?.[stored.retry.file];
   const edit = input?.edits?.[stored.retry.edit];
   if (!edit) throw new Error(RETRY_UNAVAILABLE);
+  retries.delete(retry.from);
   edit.oldText = retry.oldText;
   return request as ApplyEditsParameters;
 }
@@ -237,8 +246,8 @@ function parseRetry(raw: unknown): RetryParameters {
   if (typeof raw.from !== "string" || raw.from.length === 0 || raw.from.length > 512) {
     throw new Error("retry.from must be a non-empty tool-call ID");
   }
-  if (raw.oldText !== undefined && typeof raw.oldText !== "string") {
-    throw new Error("retry.oldText must be a string");
+  if (raw.oldText !== undefined && (typeof raw.oldText !== "string" || raw.oldText.length === 0)) {
+    throw new Error("retry.oldText must be a non-empty string");
   }
   return { from: raw.from, oldText: raw.oldText };
 }
@@ -249,14 +258,13 @@ function rememberRetry(
   request: ApplyEditsRequest,
   retry: ApplyEditsRetry,
 ): boolean {
-  if (toolCallId.length === 0 || toolCallId.length > 512 || retries.has(toolCallId)) {
-    retries.delete(toolCallId);
+  if (
+    toolCallId.length === 0 ||
+    toolCallId.length > 512 ||
+    retries.has(toolCallId) ||
+    retries.size >= MAX_PENDING_RETRIES
+  ) {
     return false;
-  }
-  while (retries.size >= MAX_PENDING_RETRIES) {
-    const oldest = retries.keys().next().value;
-    if (oldest === undefined) break;
-    retries.delete(oldest);
   }
   retries.set(toolCallId, { request: structuredClone(request), retry });
   return true;

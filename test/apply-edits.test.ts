@@ -343,6 +343,23 @@ test("missing rewrite failures expose compact-create eligibility before any writ
   });
 });
 
+test("explicit onMissing error does not offer compact create", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await assert.rejects(
+      applyEditsToFile(
+        { path: "missing.txt", rewrite: "content\n", onMissing: "error" },
+        directory,
+      ),
+      (error: unknown) => {
+        assert(error instanceof Error);
+        assert.equal(error instanceof RetryableApplyEditsError, false);
+        assert.match(error.message, /onMissing: "create"/);
+        return true;
+      },
+    );
+  });
+});
+
 test("requireMissing prevents compact create retries from rewriting a file that appeared", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "appeared.txt");

@@ -347,6 +347,10 @@ test("compact create retry reuses full bodies and is single-use", async () => {
     );
     await assert.rejects(readFile(join(directory, "a.txt")), /ENOENT/);
 
+    assert.throws(
+      () => prepare(tool, { retry: { from: "call-create", oldText: "wrong kind" } }),
+      /Compact retry is unavailable/,
+    );
     const retry = { retry: { from: "call-create" } };
     const expanded = prepare(tool, retry);
     assert.equal(expanded.retry, undefined);
@@ -371,6 +375,42 @@ test("compact create retry reuses full bodies and is single-use", async () => {
     assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "A body\n");
     assert.equal(await readFile(join(directory, "existing.txt"), "utf8"), "after\n");
     assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "B body\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retry capacity never invalidates an advertised handle", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-retry-capacity-"));
+  try {
+    const tool = createApplyEditsTool();
+    const errors: string[] = [];
+    for (let index = 0; index < 5; index++) {
+      try {
+        await tool.execute(
+          `call-${index}`,
+          prepare(tool, { path: `${index}.txt`, rewrite: `body-${index}\n` }),
+          undefined,
+          undefined,
+          { cwd: directory } as never,
+        );
+      } catch (error) {
+        errors.push(String(error));
+      }
+    }
+    assert.equal(errors.length, 5);
+    assert.equal(errors.slice(0, 4).every((error) => error.includes("Compact retry:")), true);
+    assert.equal(errors[4]?.includes("Compact retry:"), false);
+
+    const expanded = prepare(tool, { retry: { from: "call-0" } });
+    await tool.execute(
+      "call-0-retry",
+      expanded,
+      undefined,
+      undefined,
+      { cwd: directory } as never,
+    );
+    assert.equal(await readFile(join(directory, "0.txt"), "utf8"), "body-0\n");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -404,6 +444,10 @@ test("compact oldText retry changes only the failed anchor in a five-file batch"
     );
     assert.equal(await readFile(join(directory, "0.txt"), "utf8"), "value-0\n");
 
+    assert.throws(
+      () => prepare(tool, { retry: { from: "call-old-text", oldText: "" } }),
+      /retry.oldText must be a non-empty string/,
+    );
     const expanded = prepare(tool, {
       retry: {
         from: "call-old-text",

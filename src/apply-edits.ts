@@ -601,10 +601,11 @@ async function planFileMutation(
     );
   }
   if (!snapshot && input.onMissing !== "create") {
-    throw new MissingCreateOptInError(
+    const message =
       `File does not exist: ${displayPath}. Set onMissing: "create" with rewrite to create it. ` +
-        "No changes were written.",
-    );
+      "No changes were written.";
+    if (input.onMissing === undefined) throw new MissingCreateOptInError(message);
+    throw new Error(message);
   }
 
   let originalText = "";
