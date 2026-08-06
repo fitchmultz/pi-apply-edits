@@ -2,6 +2,8 @@
 
 A Pi package that provides one reliable file-mutation tool: `apply_edits`.
 
+Requires Pi 0.84.0 or later. Pi 0.83 and earlier are not supported.
+
 By default, the extension keeps `apply_edits` active and removes Pi's built-in
 `edit` and `write` tools from the active tool set before the first model turn.
 It does not override those registry entries, so they can still coexist when
@@ -199,4 +201,4 @@ npm run check
 ```
 
 The package has no runtime dependencies beyond Pi's public extension API.
-Validated against Pi 0.82.0.
+Validated against Pi 0.84.0.
