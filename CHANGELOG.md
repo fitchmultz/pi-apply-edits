@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-08-06
+
+- Require Pi 0.84.0 or later; Pi 0.83 and earlier are no longer supported.
+- Validate the extension, package metadata, tool registration, active-tool behavior, renderers, and mutation queue integration against Pi 0.84.0's released implementation and emitted types.
 - Add single-use compact retries for rewrite-only missing-create failures and edit-only missing or ambiguous `oldText` failures.
 - Expand compact retries before validation and `tool_call` policy hooks, then rerun the normal planning and publication path.
 - Refuse compact create retries when any target appeared after the original no-write failure.
