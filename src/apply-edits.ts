@@ -1,11 +1,9 @@
-import { lstatSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
   assertSafeToReplace,
+  assertSnapshotCurrent,
   captureSnapshot,
   discardPreparedNestedFiles,
   planNewFile,
@@ -89,8 +87,8 @@ export interface ApplyEditsDetails {
   matches: AppliedEditDetail[];
   bytesBefore: number;
   bytesAfter: number;
-  addedLines: number;
-  deletedLines: number;
+  addedLines?: number;
+  deletedLines?: number;
   diff: string;
   diffTruncated: boolean;
   warnings: string[];
@@ -148,6 +146,8 @@ const FUZZY_SEARCH_LIMIT_LINES = 200;
 const FUZZY_CONTENT_LIMIT_CHARS = 1_000_000;
 const FUZZY_CONTENT_LIMIT_LINES = 50_000;
 const MAX_REPLACEMENTS = 10_000;
+export const MAX_EDITS_PER_FILE = 100;
+export const MAX_BATCH_FILES = 64;
 const MAX_EDIT_EXPANSION_CHARS = 8 * 1024 * 1024;
 const DIAGNOSTIC_LIMIT_BYTES = 1_200;
 const DIAGNOSTIC_SEARCH_LIMIT_BYTES = 8 * 1024;
@@ -163,34 +163,7 @@ export function resolveInputPath(input: string, cwd: string): string {
   if (typeof input !== "string" || input.length === 0) {
     throw new Error("path must be a non-empty string");
   }
-
-  const literal = isAbsolute(input) ? resolve(input) : resolve(cwd, input);
-  let transformed = input;
-  if (transformed === "~") transformed = homedir();
-  else if (
-    transformed.startsWith("~/") ||
-    (process.platform === "win32" && transformed.startsWith("~\\"))
-  ) {
-    transformed = join(homedir(), transformed.slice(2));
-  }
-  if (transformed.startsWith("file://")) {
-    try {
-      transformed = fileURLToPath(transformed);
-    } catch (error) {
-      if (pathExists(literal)) return literal;
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(`Invalid file URL path ${input}: ${reason}`);
-    }
-  }
-  transformed = isAbsolute(transformed) ? resolve(transformed) : resolve(cwd, transformed);
-  if (literal === transformed) return literal;
-
-  const literalExists = pathExists(literal);
-  const transformedExists = pathExists(transformed);
-  if (literalExists && transformedExists) {
-    throw new Error(`Ambiguous path: both ${literal} and ${transformed} exist. Use an explicit absolute path.`);
-  }
-  return literalExists ? literal : transformed;
+  return resolve(cwd, input);
 }
 
 export function applyTargetedEdits(
@@ -199,6 +172,9 @@ export function applyTargetedEdits(
   displayPath: string,
 ): TextEditResult {
   if (edits.length === 0) throw new Error("edits must contain at least one replacement");
+  if (edits.length > MAX_EDITS_PER_FILE) {
+    throw new Error(`edits cannot contain more than ${MAX_EDITS_PER_FILE} entries`);
+  }
 
   let current = original;
   const maxResultLength = Math.min(Number.MAX_SAFE_INTEGER, original.length + MAX_EDIT_EXPANSION_CHARS);
@@ -207,6 +183,9 @@ export function applyTargetedEdits(
   for (const [index, edit] of edits.entries()) {
     if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
       throw new Error(`edits[${index}] must contain string oldText and newText fields`);
+    }
+    if (edit.all !== undefined && typeof edit.all !== "boolean") {
+      throw new Error(`edits[${index}].all must be a boolean`);
     }
     if (edit.insert !== undefined && edit.insert !== "before" && edit.insert !== "after") {
       throw new Error(`edits[${index}].insert must be "before" or "after"`);
@@ -257,25 +236,14 @@ export function applyTargetedEdits(
           "Add more surrounding text so matches do not overlap. No changes were written.",
       );
     }
-    let effective: Replacement[];
-    if (edit.insert) {
-      // Only treat long/block inserts as idempotent; short inserts like "t" after "tes" in "test" are ambiguous.
-      const pending = selected.filter((item) => !insertAlreadyApplied(current, item, edit.insert!, edit.newText));
-      if (pending.length === 0) {
-        throw new Error(
-          `edits[${index}] already has the inserted text at its matched location in ${displayPath}. ` +
-            "No changes were written.",
-        );
-      }
-      effective = pending;
-    } else {
-      effective = selected.filter((item) => current.slice(item.start, item.end) !== item.text);
-      if (effective.length === 0) {
-        throw new Error(
-          `edits[${index}] already produces the requested text at its matched location in ${displayPath}. ` +
-            "No changes were written.",
-        );
-      }
+    const effective = edit.insert
+      ? selected
+      : selected.filter((item) => current.slice(item.start, item.end) !== item.text);
+    if (effective.length === 0) {
+      throw new Error(
+        `edits[${index}] already produces the requested text at its matched location in ${displayPath}. ` +
+          "No changes were written.",
+      );
     }
 
     current = applyReplacements(current, effective, maxResultLength);
@@ -321,7 +289,7 @@ function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Prom
   // Resolve aliases in invocation order, then let Pi's queue serialize only matching keys.
   // Wrapping the operation prevents Promise assimilation from serializing unrelated files.
   const registration = canonicalLockRegistration.then(async () => ({
-    operation: withFileMutationQueue(await mutationQueueKey(inputPath), fn),
+    operation: withFileMutationQueue((await mutationQueueKeys(inputPath)).queueKey, fn),
   }));
   canonicalLockRegistration = registration.then(() => undefined, () => undefined);
   return registration.then(({ operation }) => operation);
@@ -387,24 +355,24 @@ async function applyEditsBatch(
     files.map(async (file, index) => {
       const inputPath = resolveInputPath(file.path, cwd);
       // Match Pi's mutation-queue key (realpath) so aliases cannot nest-lock or slip past dedupe.
-      const lockKey = await mutationQueueKey(inputPath);
-      return { file, inputPath, lockKey, index };
+      const keys = await mutationQueueKeys(inputPath);
+      return { file, inputPath, ...keys, index };
     }),
   );
   const seen = new Map<string, number>();
   for (const item of resolved) {
-    const prior = seen.get(item.lockKey);
+    const prior = seen.get(item.targetKey);
     if (prior !== undefined) {
       throw new Error(
         `files[${item.index}] refers to the same file as files[${prior}] ` +
           `(${item.inputPath}). Combine edits for one path into a single entry.`,
       );
     }
-    seen.set(item.lockKey, item.index);
+    seen.set(item.targetKey, item.index);
   }
   rejectAncestorPathConflicts(resolved);
 
-  const lockPaths = [...seen.keys()].sort();
+  const lockPaths = [...new Set(resolved.map((item) => item.queueKey))].sort();
   return withOrderedFileLocks(lockPaths, async () => {
     const planned: PlannedMutation[] = [];
     const allRewrites = files.every(
@@ -413,7 +381,7 @@ async function applyEditsBatch(
     const missingCreates: Array<{ file: number; message: string }> = [];
     for (const item of resolved) {
       try {
-        planned.push(await planFileMutation(item.file, item.inputPath, cwd, signal, item.lockKey));
+        planned.push(await planFileMutation(item.file, item.inputPath, cwd, signal, item.targetKey));
       } catch (error) {
         if (allRewrites && error instanceof MissingCreateOptInError) {
           missingCreates.push({ file: item.index, message: error.message });
@@ -512,23 +480,42 @@ async function applyEditsBatch(
       }
 
       const changed = detailsList.filter((item) => item.operation !== "no_change");
-      const added = detailsList.reduce((sum, item) => sum + item.addedLines, 0);
-      const deleted = detailsList.reduce((sum, item) => sum + item.deletedLines, 0);
-      const counts = added + deleted > 0 ? ` (+${added}/-${deleted})` : "";
       if (changed.length === 0) {
         return {
           summary: `No change: ${detailsList.length} file${detailsList.length === 1 ? "" : "s"} already match.`,
           details: { files: detailsList },
         };
       }
-      const names = changed.map((item) => item.path).join(", ");
+      const countsKnown = changed.every(
+        (item) => item.addedLines !== undefined && item.deletedLines !== undefined,
+      );
+      const added = changed.reduce((sum, item) => sum + (item.addedLines ?? 0), 0);
+      const deleted = changed.reduce((sum, item) => sum + (item.deletedLines ?? 0), 0);
+      const counts = countsKnown && added + deleted > 0 ? ` (+${added}/-${deleted})` : "";
+      const visibleNames = changed.slice(0, 8).map((item) => item.path).join(", ");
+      const names = changed.length > 8
+        ? `${visibleNames}, … ${changed.length - 8} more`
+        : visibleNames;
+      const warnings = detailsList.flatMap((item) => item.warnings);
+      const visibleWarnings = warnings.slice(0, 4).join(" ");
+      const warningText = warnings.length > 0
+        ? ` Warning: ${visibleWarnings}${warnings.length > 4 ? ` … ${warnings.length - 4} more` : ""}`
+        : "";
       return {
-        summary: `Updated ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}.`,
+        summary: `Updated ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}.${warningText}`,
         details: { files: detailsList },
       };
     } finally {
+      const cleanupFailures: string[] = [];
       for (const prepared of preparedGroups.values()) {
-        await discardPreparedNestedFiles(prepared);
+        try {
+          await discardPreparedNestedFiles(prepared);
+        } catch (error) {
+          cleanupFailures.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      if (cleanupFailures.length > 0) {
+        throw new Error(`Staged create cleanup was incomplete: ${cleanupFailures.join("; ")}`);
       }
     }
   });
@@ -546,18 +533,18 @@ function nestedCreateRootKey(plan: PlannedMutation): string | undefined {
 }
 
 function rejectAncestorPathConflicts(
-  resolved: Array<{ lockKey: string; inputPath: string; index: number }>,
+  resolved: Array<{ targetKey: string; inputPath: string; index: number }>,
 ): void {
   // Batch sizes are small; pairwise checking avoids collation-order assumptions (`a`, `a-`, `a/x`).
   for (let i = 0; i < resolved.length; i++) {
     for (let j = i + 1; j < resolved.length; j++) {
       const left = resolved[i]!;
       const right = resolved[j]!;
-      const leftPrefix = left.lockKey.endsWith(sep) ? left.lockKey : `${left.lockKey}${sep}`;
-      const rightPrefix = right.lockKey.endsWith(sep) ? right.lockKey : `${right.lockKey}${sep}`;
-      const ancestor = right.lockKey.startsWith(leftPrefix)
+      const leftPrefix = left.targetKey.endsWith(sep) ? left.targetKey : `${left.targetKey}${sep}`;
+      const rightPrefix = right.targetKey.endsWith(sep) ? right.targetKey : `${right.targetKey}${sep}`;
+      const ancestor = right.targetKey.startsWith(leftPrefix)
         ? left
-        : left.lockKey.startsWith(rightPrefix)
+        : left.targetKey.startsWith(rightPrefix)
           ? right
           : undefined;
       if (!ancestor) continue;
@@ -670,6 +657,8 @@ async function commitPlannedMutation(
   publicationWarnings?: string[],
 ): Promise<ApplyEditsExecution> {
   if (!plan.needsWrite) {
+    throwIfAborted(signal);
+    if (plan.snapshot) await assertSnapshotCurrent(plan.snapshot);
     const details = buildDetails(
       plan.displayPath,
       "no_change",
@@ -704,8 +693,8 @@ async function commitPlannedMutation(
     : await publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan));
   details.warnings.push(...warnings);
   const corrected = plan.matches.filter((item) => item.strategy !== "exact").length;
-  const counts = details.addedLines + details.deletedLines > 0
-    ? ` (+${details.addedLines}/-${details.deletedLines})`
+  const counts = (details.addedLines ?? 0) + (details.deletedLines ?? 0) > 0
+    ? ` (+${details.addedLines ?? 0}/-${details.deletedLines ?? 0})`
     : "";
   const correction = corrected > 0
     ? `; ${corrected} edit${corrected === 1 ? "" : "s"} matched safely after normalization`
@@ -740,6 +729,9 @@ function validateRequest(input: ApplyEditsRequest): void {
   }
   if (hasFiles) {
     if (!input.files || input.files.length === 0) throw new Error("files must contain at least one entry");
+    if (input.files.length > MAX_BATCH_FILES) {
+      throw new Error(`files cannot contain more than ${MAX_BATCH_FILES} entries`);
+    }
     return;
   }
   validateInput(input as ApplyEditsInput);
@@ -758,6 +750,9 @@ function validateInput(input: ApplyEditsInput): void {
     throw new Error("Provide exactly one of edits or rewrite");
   }
   if (hasEdits && input.edits?.length === 0) throw new Error("edits must contain at least one replacement");
+  if (hasEdits && input.edits && input.edits.length > MAX_EDITS_PER_FILE) {
+    throw new Error(`edits cannot contain more than ${MAX_EDITS_PER_FILE} entries`);
+  }
   if (hasRewrite && input.rewrite?.includes("\0")) throw new Error("rewrite cannot contain NUL bytes");
   if (hasRewrite && input.rewrite && hasUnpairedSurrogate(input.rewrite)) {
     throw new Error("rewrite must contain valid Unicode text");
@@ -785,14 +780,33 @@ function findMatch(
   maxResultLength: number,
 ): MatchResult | undefined {
   const maximumReplacementLength = convertLineEndings(newText, "\r\n").length;
-  const removedPerMatch = insert ? 0 : oldText.length;
-  const expansionPerMatch = maximumReplacementLength - removedPerMatch;
-  const maximumExpansionMatches = applyAll && expansionPerMatch > 0
-    ? Math.floor((maxResultLength - content.length) / expansionPerMatch)
-    : Number.POSITIVE_INFINITY;
-  // Stop scanning before even the offsets array can consume the heap for a doomed expansion.
-  const exactLimit = Math.min(MAX_REPLACEMENTS + 1, maximumExpansionMatches + 1);
-  const exactOffsets = findOccurrences(content, oldText, exactLimit);
+  const findExact = (search: string) => {
+    const removedPerMatch = insert ? 0 : search.length;
+    const expansionPerMatch = maximumReplacementLength - removedPerMatch;
+    const maximumExpansionMatches = applyAll && expansionPerMatch > 0
+      ? Math.floor((maxResultLength - content.length) / expansionPerMatch)
+      : Number.POSITIVE_INFINITY;
+    // Stop scanning before even the offsets array can consume the heap for a doomed expansion.
+    const exactLimit = Math.min(MAX_REPLACEMENTS + 1, maximumExpansionMatches + 1);
+    return {
+      search,
+      removedPerMatch,
+      maximumExpansionMatches,
+      offsets: findOccurrences(content, search, exactLimit),
+    };
+  };
+  let exactResult = findExact(oldText);
+  if (exactResult.offsets.length === 0) {
+    const ending = uniformLineEnding(content);
+    const converted = ending ? convertLineEndings(oldText, ending) : oldText;
+    if (converted !== oldText) exactResult = findExact(converted);
+  }
+  const {
+    search: matchedOldText,
+    removedPerMatch,
+    maximumExpansionMatches,
+    offsets: exactOffsets,
+  } = exactResult;
   if (exactOffsets.length > maximumExpansionMatches) throwExpansionError();
   if (exactOffsets.length > MAX_REPLACEMENTS) {
     throw new Error(
@@ -812,7 +826,7 @@ function findMatch(
   const exactEndings = lineEndingsAt(content, exactOffsets);
   const replacementsByEnding = new Map<LineEnding, string>();
   const exact = exactOffsets.map((start, index) => {
-    const end = start + oldText.length;
+    const end = start + matchedOldText.length;
     const replacement = convertedReplacement(
       newText,
       exactEndings[index] ?? "\n",
@@ -847,27 +861,29 @@ function toReplacement(
   return { start, end, matchStart: start, matchEnd: end, text, line };
 }
 
-async function mutationQueueKey(filePath: string): Promise<string> {
+async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string; queueKey: string }> {
   const resolvedPath = resolve(filePath);
   try {
-    return await realpath(resolvedPath);
+    const key = await realpath(resolvedPath);
+    return { targetKey: key, queueKey: key };
   } catch (error) {
     if (!isMissingPathError(error)) throw error;
   }
 
-  // Missing targets: canonicalize deepest existing ancestor + remaining suffix so
-  // symlink parents and case-aliases of the same create path share one lock/dedupe key.
+  // Serialize creates under one missing root, while retaining the full path for batch dedupe.
   const missing: string[] = [];
   let current = resolvedPath;
   while (true) {
     const parent = dirname(current);
     if (parent === current) {
-      return normalizeLockKey(resolvedPath, missing);
+      const targetKey = normalizeLockKey(resolvedPath, missing);
+      return { targetKey, queueKey: targetKey };
     }
     try {
       const realParent = await realpath(parent);
       missing.unshift(basename(current));
-      return normalizeLockKey(realParent, missing);
+      const targetKey = normalizeLockKey(realParent, missing);
+      return { targetKey, queueKey: normalizeLockKey(realParent, missing.slice(0, 1)) };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
       missing.unshift(basename(current));
@@ -890,30 +906,13 @@ function normalizeLockKey(existingPrefix: string, missingParts: string[]): strin
   // Prefer over-dedupe on default macOS/Windows volumes over deterministic partial batch writes.
   const foldCase = process.platform === "darwin" || process.platform === "win32";
   const parts = missingParts.map((part) => {
+    if (!foldCase) return part;
     const normalized = part.normalize("NFC");
     // upper→lower is a closer caseless key than lower alone for APFS aliases:
     // ſ/s, ς/σ, ß/ss, and ﬀ/ff all collapse consistently.
-    return foldCase
-      ? normalized.toLowerCase().toUpperCase().toLowerCase().normalize("NFC")
-      : normalized;
+    return normalized.toLowerCase().toUpperCase().toLowerCase().normalize("NFC");
   });
   return join(existingPrefix, ...parts);
-}
-
-function insertAlreadyApplied(
-  content: string,
-  item: Replacement,
-  insert: InsertPosition,
-  newText: string,
-): boolean {
-  if (item.text.length === 0) return false;
-  // Short inserts without a newline collide with ordinary neighboring characters too often.
-  if (newText.length < 4 && !newText.includes("\n") && !newText.includes("\r")) return false;
-  if (insert === "before") {
-    const from = item.matchStart - item.text.length;
-    return from >= 0 && content.slice(from, item.matchStart) === item.text;
-  }
-  return content.slice(item.matchEnd, item.matchEnd + item.text.length) === item.text;
 }
 
 function findOccurrences(content: string, search: string, limit = Number.POSITIVE_INFINITY): number[] {
@@ -984,7 +983,7 @@ function findLineBlockMatches(
     // Insert keeps caller indentation; only full indent-normalized replacements reindent.
     const text = insert || !ignoreBaseIndent
       ? localReplacement
-      : reindentReplacement(localReplacement, baseIndent(bodies));
+      : reindentReplacement(localReplacement, searchBodies, bodies);
     if (applyAll || matches.length === 0) {
       projectedLength += text.length - (insert ? 0 : matchEnd - matchStart);
       if (projectedLength > maxResultLength) throwExpansionError();
@@ -1058,24 +1057,18 @@ function minimumIndentWidth(lines: string[]): number {
   return widths.length > 0 ? Math.min(...widths) : 0;
 }
 
-function baseIndent(lines: string[]): string {
-  const candidates = lines
-    .filter((line) => line.trim().length > 0)
-    .map((line) => leadingWhitespace(line));
-  if (candidates.length === 0) return "";
-  return candidates.reduce((best, value) =>
-    indentationWidth(value) < indentationWidth(best) ? value : best,
-  );
-}
-
-function reindentReplacement(replacement: string, indent: string): string {
-  const lines = splitLines(replacement);
-  if (lines.length === 0) return replacement;
-  const common = minimumIndentWidth(lines.map((line) => line.body));
-  return lines
+function reindentReplacement(
+  replacement: string,
+  searchLines: string[],
+  candidateLines: string[],
+): string {
+  const delta = minimumIndentWidth(candidateLines) - minimumIndentWidth(searchLines);
+  return splitLines(replacement)
     .map((line) => {
       if (line.body.trim().length === 0) return line.ending;
-      return `${indent}${removeIndentWidth(line.body, common)}${line.ending}`;
+      const indent = leadingWhitespace(line.body);
+      const width = Math.max(0, indentationWidth(indent) + delta);
+      return `${" ".repeat(width)}${line.body.slice(indent.length)}${line.ending}`;
     })
     .join("");
 }
@@ -1088,20 +1081,6 @@ function indentationWidth(value: string): number {
   let width = 0;
   for (const char of value) width = char === "\t" ? width + (4 - (width % 4)) : width + 1;
   return width;
-}
-
-function removeIndentWidth(line: string, width: number): string {
-  let consumed = 0;
-  let index = 0;
-  while (index < line.length && consumed < width) {
-    const char = line[index];
-    if (char !== " " && char !== "\t") break;
-    const next = char === "\t" ? consumed + (4 - (consumed % 4)) : consumed + 1;
-    index++;
-    if (next > width) return `${" ".repeat(next - width)}${line.slice(index)}`;
-    consumed = next;
-  }
-  return line.slice(index);
 }
 
 function sameStrings(left: string[], right: string[]): boolean {
@@ -1190,9 +1169,15 @@ function missingEditMessage(
 
 function fileHeadHint(content: string): string {
   if (content.length === 0) return "\nFile is empty. Re-read the target area and retry with the current text.";
-  const lines = content.split(/\r\n|\n|\r/).slice(0, 8);
-  const excerpt = truncateUtf8(lines.join("\n"), DIAGNOSTIC_LIMIT_BYTES).text;
-  const more = countTextLines(content) > lines.length ? "\n..." : "";
+  let end = 0;
+  let lines = 1;
+  const scanLimit = Math.min(content.length, DIAGNOSTIC_LIMIT_BYTES);
+  while (end < scanLimit && lines <= 8) {
+    const char = content[end++];
+    if (char === "\n" || (char === "\r" && content[end] !== "\n")) lines++;
+  }
+  const excerpt = truncateUtf8(content.slice(0, end).replace(/\r\n|\r/g, "\n"), DIAGNOSTIC_LIMIT_BYTES).text;
+  const more = end < content.length ? "\n..." : "";
   return (
     `\nFile starts with:\n${excerpt}${more}\n` +
     "Re-read the target area and retry with the current text."
@@ -1306,6 +1291,22 @@ function lineEndingsAt(content: string, offsets: number[]): LineEnding[] {
   return endings;
 }
 
+function uniformLineEnding(text: string): LineEnding | undefined {
+  let found: LineEnding | undefined;
+  for (let index = 0; index < text.length; index++) {
+    let ending: LineEnding | undefined;
+    if (text[index] === "\r" && text[index + 1] === "\n") {
+      ending = "\r\n";
+      index++;
+    } else if (text[index] === "\n") ending = "\n";
+    else if (text[index] === "\r") ending = "\r";
+    if (!ending) continue;
+    if (found && ending !== found) return undefined;
+    found = ending;
+  }
+  return found;
+}
+
 function detectLineEnding(text: string): LineEnding {
   let crlf = 0;
   let lf = 0;
@@ -1399,7 +1400,7 @@ function buildDetails(
       ? `[Diff omitted because the before/after inputs exceed the bounded diff budget.]`
       : generateUnifiedPatch(path, oldText, newText, 3);
   const { addedLines, deletedLines } = diffTooExpensive
-    ? { addedLines: 0, deletedLines: 0 }
+    ? { addedLines: undefined, deletedLines: undefined }
     : countPatchLines(patch);
   const truncated = truncateUtf8(patch, DIFF_LIMIT_BYTES);
   return {
@@ -1456,23 +1457,6 @@ function truncateUtf8(value: string, maxBytes: number): { text: string; truncate
     }
   }
   return { text: "", truncated: true };
-}
-
-function pathExists(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      (error.code === "ENOENT" || error.code === "ENOTDIR")
-    ) {
-      return false;
-    }
-    throw error;
-  }
 }
 
 function displayPathFor(path: string, cwd: string): string {

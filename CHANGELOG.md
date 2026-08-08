@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-08-08
+
+- Canonicalize replacement parents, publish from private staging containers inside the validated ancestor, verify staged create trees, and quarantine cleanup so swapped-in files or directories are preserved.
+- Serialize sibling creates under one missing root, revalidate create parents immediately before publication and no-change snapshots before return, sync every staged directory, and make all file writes cancellation-aware.
+- Keep uncertain partial creates for inspection instead of deleting a possibly replaced path, and use basename-independent temporary names so maximum-length filenames remain editable.
+- Remove ambiguous insert-idempotence guessing, fix indentation-delta correction, and let ordered LF anchors match prior output in uniform CRLF files.
+- Treat `~` and `file://` as literal paths, preserve distinct Linux Unicode spellings, bound diagnostics, and report unavailable diff counts honestly.
+- Tighten argument schemas and batch limits, consume compact retries only when execution begins, surface batch warnings, and fix warning/diff rendering.
+- Keep built-in mutation tools when replacement prerequisites are unavailable or another extension owns `apply_edits`; validate against Pi 0.84.1 in CI.
 
 ## 0.3.0 — 2026-08-06
 

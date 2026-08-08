@@ -4,6 +4,8 @@ import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import {
   applyEditsToFile,
+  MAX_BATCH_FILES,
+  MAX_EDITS_PER_FILE,
   type ApplyEditsBatchDetails,
   type ApplyEditsInput,
   type ApplyEditsRequest,
@@ -11,6 +13,7 @@ import {
   type ApplyEditsToolDetails,
   RetryableApplyEditsError,
 } from "../src/apply-edits.ts";
+import { supportsExistingFileReplacement } from "../src/file-system.ts";
 
 const editSchema = Type.Object({
   oldText: Type.String({
@@ -30,11 +33,11 @@ const editSchema = Type.Object({
   insert: Type.Optional(
     StringEnum(["before", "after"] as const, {
       description:
-        'Insert newText before or after the matched oldText instead of replacing it. ' +
+        'Insert newText exactly before or after the matched oldText instead of replacing it; no separator is added. ' +
         'Example: insert an import after "import fs from \\"node:fs\\";".',
     }),
   ),
-});
+}, { additionalProperties: false });
 
 const retrySchema = Type.Object(
   {
@@ -50,7 +53,10 @@ const retrySchema = Type.Object(
       }),
     ),
   },
-  { description: "Single-use compact retry exactly as returned by a retryable apply_edits error." },
+  {
+    additionalProperties: false,
+    description: "Single-use compact retry exactly as returned by a retryable apply_edits error.",
+  },
 );
 
 const requireMissingSchema = Type.Optional(
@@ -60,10 +66,11 @@ const requireMissingSchema = Type.Optional(
 );
 
 const fileSchema = Type.Object({
-  path: Type.String({ description: "File path, relative to the session working directory or absolute." }),
+  path: Type.String({ minLength: 1, description: "File path, relative to the session working directory or absolute." }),
   edits: Type.Optional(
     Type.Array(editSchema, {
       minItems: 1,
+      maxItems: MAX_EDITS_PER_FILE,
       description:
         "Ordered replacements/inserts. Each edit sees the result of prior edits. " +
         "The file is committed only if all succeed.",
@@ -80,15 +87,16 @@ const fileSchema = Type.Object({
     }),
   ),
   requireMissing: requireMissingSchema,
-});
+}, { additionalProperties: false });
 
 export const applyEditsSchema = Type.Object({
   path: Type.Optional(
-    Type.String({ description: "Single-file path. Omit when using files for a multi-file batch." }),
+    Type.String({ minLength: 1, description: "Single-file path. Omit when using files for a multi-file batch." }),
   ),
   edits: Type.Optional(
     Type.Array(editSchema, {
       minItems: 1,
+      maxItems: MAX_EDITS_PER_FILE,
       description:
         "Single-file ordered replacements/inserts. Each edit sees the result of prior edits. " +
         "The file is committed only if all succeed.",
@@ -108,6 +116,7 @@ export const applyEditsSchema = Type.Object({
   files: Type.Optional(
     Type.Array(fileSchema, {
       minItems: 1,
+      maxItems: MAX_BATCH_FILES,
       description:
         "Multi-file batch. Every file is planned first; nothing is written unless every file " +
         "mutation can be computed. Prefer this when changing several files together. " +
@@ -115,7 +124,7 @@ export const applyEditsSchema = Type.Object({
     }),
   ),
   retry: Type.Optional(retrySchema),
-});
+}, { additionalProperties: false });
 
 export type ApplyEditsParameters = Static<typeof applyEditsSchema>;
 type RetryParameters = Static<typeof retrySchema>;
@@ -128,6 +137,10 @@ interface StoredRetry {
 type RetryStore = Map<string, StoredRetry>;
 
 const MAX_PENDING_RETRIES = 4;
+const SINGLE_FILE_ARGUMENT_KEYS = [
+  "path", "file_path", "filePath", "edits", "rewrite", "content", "onMissing", "on_missing",
+  "requireMissing", "oldText", "old_string", "newText", "new_string", "all", "replace_all", "insert",
+] as const;
 const RETRY_UNAVAILABLE =
   "Compact retry is unavailable or does not match this failure. Send a normal apply_edits request.";
 
@@ -137,30 +150,13 @@ export function prepareApplyEditsArguments(raw: unknown): ApplyEditsParameters {
   if (value.retry !== undefined) throw new Error(RETRY_UNAVAILABLE);
 
   if (value.files !== undefined) {
-    const strayTopLevel = [
-      "path",
-      "file_path",
-      "filePath",
-      "edits",
-      "rewrite",
-      "content",
-      "onMissing",
-      "on_missing",
-      "requireMissing",
-      "retry",
-      "oldText",
-      "old_string",
-      "newText",
-      "new_string",
-      "all",
-      "replace_all",
-      "insert",
-    ].filter((name) => value[name] !== undefined);
+    const strayTopLevel = SINGLE_FILE_ARGUMENT_KEYS.filter((name) => value[name] !== undefined);
     if (strayTopLevel.length > 0) {
       throw new Error(
         `files cannot be combined with top-level ${strayTopLevel.join(", ")}`,
       );
     }
+    assertSupportedFields(value, ["files"], "apply_edits input");
     let files = value.files;
     if (typeof files === "string") {
       try {
@@ -223,8 +219,7 @@ function expandRetry(raw: unknown, retries: RetryStore): ApplyEditsParameters {
       input.onMissing = "create";
       input.requireMissing = true;
     }
-    retries.delete(retry.from);
-    return request as ApplyEditsParameters;
+    return { ...request, retry } as ApplyEditsParameters;
   }
 
   if (retry.oldText === undefined) throw new Error(RETRY_UNAVAILABLE);
@@ -234,9 +229,8 @@ function expandRetry(raw: unknown, retries: RetryStore): ApplyEditsParameters {
     : request.files?.[stored.retry.file];
   const edit = input?.edits?.[stored.retry.edit];
   if (!edit) throw new Error(RETRY_UNAVAILABLE);
-  retries.delete(retry.from);
   edit.oldText = retry.oldText;
-  return request as ApplyEditsParameters;
+  return { ...request, retry } as ApplyEditsParameters;
 }
 
 function parseRetry(raw: unknown): RetryParameters {
@@ -250,6 +244,16 @@ function parseRetry(raw: unknown): RetryParameters {
     throw new Error("retry.oldText must be a non-empty string");
   }
   return { from: raw.from, oldText: raw.oldText };
+}
+
+function consumeRetry(
+  params: ApplyEditsParameters,
+  retries: RetryStore,
+): ApplyEditsRequest {
+  const retry = parseRetry(params.retry);
+  if (!retries.delete(retry.from)) throw new Error(RETRY_UNAVAILABLE);
+  const { retry: _retry, ...request } = params;
+  return request as ApplyEditsRequest;
 }
 
 function rememberRetry(
@@ -304,31 +308,29 @@ function createApplyEditsToolWithStore(
     promptSnippet:
       "File writes: rewrite whole files, edits/inserts for small patches, files:[] for plan-first multi-file batches.",
     promptGuidelines: [
-      "Use apply_edits for file mutations when available; it replaces built-in edit and write by default.",
-      'Whole-file replace or new file: rewrite with the full contents (onMissing: "create" only when ' +
-        "creating). One call, no oldText matching; ideal for large prompt/markdown/config rewrites.",
-      'Small surgical change: edits with a short unique oldText. Use insert: "before"|"after" to add ' +
-        "text at an anchor (imports, cases, list items) without restating surrounding code. Ordered " +
-        "edits apply in memory and commit together only after all succeed.",
-      "Multi-file change: pass files: [{path, edits|rewrite}, ...] so the whole batch is planned before " +
-        "any write. Prefer this over several separate apply_edits calls when the edits belong together.",
-      "When apply_edits returns a compact retry payload, use it instead of resending unchanged content.",
+      "Use apply_edits for file mutations when available; it replaces built-in edit and write when safe.",
+      'Use rewrite for full files or creates; use edits with short unique anchors and insert: "before"|"after" ' +
+        "for surgical changes.",
+      "Use files: [...] for plan-first batches. Reuse an exact compact retry payload when one is returned.",
     ],
     parameters: applyEditsSchema,
     prepareArguments: (raw) => prepareToolArguments(raw, retries),
     executionMode: "parallel",
 
     async execute(toolCallId, params, signal, _onUpdate, context) {
+      const request = params.retry
+        ? consumeRetry(params, retries)
+        : params as ApplyEditsRequest;
       try {
-        const result = await applyEditsToFile(params as ApplyEditsRequest, context.cwd, signal);
+        const result = await applyEditsToFile(request, context.cwd, signal);
         return {
           content: [{ type: "text", text: result.summary }],
           details: result.details,
         };
       } catch (error) {
         if (!(error instanceof RetryableApplyEditsError)) throw error;
-        if (!rememberRetry(retries, toolCallId, params as ApplyEditsRequest, error.retry)) {
-          throw error;
+        if (!rememberRetry(retries, toolCallId, request, error.retry)) {
+          throw new Error(`${error.message}\nCompact retry unavailable because too many retries are pending.`);
         }
         throw new Error(`${error.message}\nCompact retry: ${retryPayload(toolCallId, error.retry)}`);
       }
@@ -354,32 +356,44 @@ function createApplyEditsToolWithStore(
         return new Text(visible.map((line) => theme.fg("error", line)).join("\n"), 0, 0);
       }
 
-      let text = theme.fg("success", `✓ ${message || "Applied"}`);
+      const hasWarnings = collectWarnings(result.details).length > 0;
+      let text = theme.fg(
+        hasWarnings ? "warning" : "success",
+        `${hasWarnings ? "⚠" : "✓"} ${message || "Applied"}`,
+      );
       const diffs = collectDiffs(result.details);
       if (diffs.length === 0 || !options.expanded) return new Text(text, 0, 0);
 
       const limit = 200;
       let shown = 0;
-      for (const { path, diff } of diffs) {
-        if (shown >= limit) break;
-        if (diffs.length > 1) {
-          text += `\n${theme.fg("muted", `--- ${path}`)}`;
-          shown += 1;
+      let hasMore = false;
+      const append = (
+        color: "muted" | "toolDiffAdded" | "toolDiffRemoved" | "toolDiffContext",
+        line: string,
+      ): boolean => {
+        if (shown >= limit) {
+          hasMore = true;
+          return false;
         }
+        text += `\n${theme.fg(color, line)}`;
+        shown += 1;
+        return true;
+      };
+      outer: for (const { path, diff } of diffs) {
+        if (diffs.length > 1 && !append("muted", `--- ${path}`)) break;
         let inHunk = false;
-        for (const line of diff.split("\n")) {
-          if (shown >= limit) break;
+        const lines = (diff.endsWith("\n") ? diff.slice(0, -1) : diff).split("\n");
+        for (const line of lines) {
           if (line.startsWith("@@")) inHunk = true;
           const color = inHunk && line.startsWith("+")
             ? "toolDiffAdded"
             : inHunk && line.startsWith("-")
               ? "toolDiffRemoved"
               : "toolDiffContext";
-          text += `\n${theme.fg(color, line)}`;
-          shown += 1;
+          if (!append(color, line)) break outer;
         }
       }
-      if (shown >= limit) {
+      if (hasMore) {
         text += `\n${theme.fg("muted", "... more diff lines")}`;
       }
       return new Text(text, 0, 0);
@@ -396,12 +410,20 @@ export default function applyEditsExtension(pi: ExtensionAPI): void {
     default: false,
     description: "Keep Pi's built-in edit and write tools active alongside apply_edits",
   });
-  pi.registerTool(createApplyEditsToolWithStore(retries));
+  const tool = createApplyEditsToolWithStore(retries);
+  pi.registerTool(tool);
 
-  pi.on("session_start", () => {
+  pi.on("session_start", async () => {
     clearRetries();
     const active = pi.getActiveTools();
-    if (!active.includes("apply_edits") || keepBuiltins(pi)) return;
+    const registered = pi.getAllTools().find((item) => item.name === "apply_edits");
+    const ownsActiveTool = registered?.parameters === tool.parameters;
+    if (
+      !active.includes("apply_edits") ||
+      !ownsActiveTool ||
+      keepBuiltins(pi) ||
+      !(await supportsExistingFileReplacement())
+    ) return;
     pi.setActiveTools(active.filter((name) => name !== "edit" && name !== "write"));
   });
   pi.on("agent_settled", clearRetries);
@@ -411,6 +433,7 @@ export default function applyEditsExtension(pi: ExtensionAPI): void {
 
 function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
   if (!isRecord(raw)) throw new Error("file entry must be an object");
+  assertSupportedFields(raw, SINGLE_FILE_ARGUMENT_KEYS, "file entry");
 
   const path = readAlias(raw, ["path", "file_path", "filePath"], "path");
   let edits = raw.edits;
@@ -442,6 +465,12 @@ function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
     edits = [{ oldText, newText, all, insert }];
   }
   if (Array.isArray(edits)) edits = edits.map(normalizeEditAliases);
+  if ((edits === undefined) === (rewrite === undefined)) {
+    throw new Error("Provide exactly one of edits or rewrite");
+  }
+  if (edits !== undefined && (onMissing !== undefined || requireMissing !== undefined)) {
+    throw new Error("onMissing and requireMissing are valid only with rewrite");
+  }
 
   return {
     path,
@@ -454,12 +483,26 @@ function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
 
 function normalizeEditAliases(value: unknown): unknown {
   if (!isRecord(value)) return value;
+  assertSupportedFields(
+    value,
+    ["oldText", "old_string", "newText", "new_string", "all", "replace_all", "insert"],
+    "edit",
+  );
   return {
     oldText: readAlias(value, ["oldText", "old_string"], "edit oldText"),
     newText: readAlias(value, ["newText", "new_string"], "edit newText"),
     all: readAlias(value, ["all", "replace_all"], "edit all"),
     insert: readAlias(value, ["insert"], "edit insert"),
   };
+}
+
+function assertSupportedFields(
+  value: Record<string, unknown>,
+  supported: readonly string[],
+  label: string,
+): void {
+  const extra = Object.keys(value).filter((key) => !supported.includes(key));
+  if (extra.length > 0) throw new Error(`${label} has unsupported fields: ${extra.join(", ")}`);
 }
 
 function callLabel(args: ApplyEditsParameters): { path: string; mode: string } {
@@ -505,6 +548,13 @@ function isBatchDetails(details: ApplyEditsToolDetails): details is ApplyEditsBa
   return "files" in details && Array.isArray(details.files);
 }
 
+function collectWarnings(details: ApplyEditsToolDetails | undefined): string[] {
+  if (!details) return [];
+  return isBatchDetails(details)
+    ? details.files.flatMap((file) => file.warnings)
+    : details.warnings;
+}
+
 function readAlias(
   value: Record<string, unknown>,
   names: string[],
@@ -524,7 +574,7 @@ function readAlias(
 function keepBuiltins(pi: ExtensionAPI): boolean {
   if (pi.getFlag("apply-edits-with-builtins") === true) return true;
   return ["1", "true", "yes", "on"].includes(
-    (process.env.PI_APPLY_EDITS_KEEP_BUILTINS ?? "").toLowerCase(),
+    (process.env.PI_APPLY_EDITS_KEEP_BUILTINS ?? "").trim().toLowerCase(),
   );
 }
 

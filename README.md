@@ -2,17 +2,17 @@
 
 A Pi package that provides one reliable file-mutation tool: `apply_edits`.
 
-Requires Pi 0.84.0 or later. Pi 0.83 and earlier are not supported.
+Requires Pi 0.84.1 or later. Pi 0.84.0 and earlier are not supported.
 
-By default, the extension keeps `apply_edits` active and removes Pi's built-in
-`edit` and `write` tools from the active tool set before the first model turn.
-It does not override those registry entries, so they can still coexist when
-requested.
+By default, the extension removes Pi's built-in `edit` and `write` tools before
+the first model turn when this package owns the active `apply_edits` registration
+and existing-file replacement is supported. It does not override those registry
+entries, so they remain active on unsupported platforms or when requested.
 
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits
+pi install git:github.com/fitchmultz/pi-apply-edits@v0.4.0
 ```
 
 Or load a checkout directly:
@@ -59,7 +59,7 @@ Provide `files: [...]`, a single-file `path` with exactly one of `edits` or
 }
 ```
 
-Insert without replacing the anchor:
+Insert without replacing the anchor. `newText` is inserted exactly; include any needed newline or separator:
 
 ```json
 {
@@ -132,10 +132,11 @@ Two pre-write failures can be retried without resending unchanged file bodies:
 The tool includes the appropriate payload in eligible error text. `create` is
 available only for rewrite-only requests and refuses to overwrite a target that
 appeared after the original failure. `oldText` is available only for edit-only
-requests and can change only the failing anchor. Both retries are single-use,
-expire when the current agent run settles or the session changes, and pass the
-reconstructed full request through normal validation and `tool_call` policy
-hooks before execution. Other failures require a normal request.
+requests and changes only the failing anchor; the original `newText` is preserved.
+Both retries are single-use when execution begins, remain available while a
+prepared call awaits approval, expire when the current agent run settles or the
+session changes, and pass the reconstructed full request through normal
+validation and `tool_call` policy hooks. Other failures require a normal request.
 
 ## Matching and failure behavior
 
@@ -155,11 +156,10 @@ are rejected rather than guessed.
 
 ## Filesystem behavior
 
-- Relative paths use the session working directory. Absolute, `~`, and
-  `file://` paths are accepted. An existing literal path wins over a transformed
-  path, and two existing candidates are rejected as ambiguous. Path characters
-  are otherwise literal; Unicode spaces and leading `@` segments are never
-  rewritten.
+- Relative paths use the session working directory. Absolute paths are accepted.
+  `..` and absolute paths can address files outside that directory; this tool is
+  not a filesystem sandbox. All other path characters are literal: `~`,
+  `file://`, Unicode spaces, and leading `@` segments are never expanded or rewritten.
 - Calls on the same file share Pi's mutation queue; calls on different files
   remain parallel.
 - Existing files are published by same-directory atomic replacement from a
@@ -175,19 +175,24 @@ are rejected rather than guessed.
   BOMs, and dominant line endings are preserved on macOS and Linux. Setuid and
   setgid files are rejected without mutation. Linux also requires `getcap` and
   rejects capability-bearing files because the kernel can clear capabilities
-  when content changes. Replacement relies on `/bin/cp` metadata cloning and
-  fails before mutation if metadata cannot be verified.
+  when content changes. Replacement relies on `/bin/cp` metadata cloning, requires
+  GNU `cp` on Linux, and fails before mutation if metadata cannot be verified.
 - Existing-file replacement fails closed on other platforms; keep Pi's
   built-ins enabled there until a native metadata-preserving publisher is
   implemented. Explicit create remains available.
-- Missing parent directories are created only for an explicit create.
+- Missing parent directories are created only for an explicit create. Creates
+  under one missing root serialize, and staged directory trees are private and
+  verified immediately before publication.
+- Cleanup atomically moves temporary, recovery, and staged paths into private
+  quarantine directories, rechecks identity, and preserves detected swaps for inspection.
 - Non-UTF-8, NUL-containing, non-regular, dangling-symlink, and hard-linked
   targets are rejected without mutation.
 - Corrective matching and diff generation have explicit work budgets.
   Oversized fuzzy matches fail for a more exact retry; expensive diffs are
   omitted from details before publication.
 - Diffs are kept out of model-facing result text but retained in bounded
-  structured details and shown when the TUI row is expanded.
+  structured details and shown when the TUI row is expanded. Requests are capped
+  at 64 files and 100 ordered edits per file.
 
 `apply_edits` is a distinct tool name. Extensions that specifically listen for
 `edit` or `write` tool-call events will not observe it and should add
@@ -196,9 +201,9 @@ are rejected rather than guessed.
 ## Development checks
 
 ```sh
-npm install
+npm ci
 npm run check
 ```
 
-The package has no runtime dependencies beyond Pi's public extension API.
-Validated against Pi 0.84.0.
+The package uses Pi's public peer APIs and declares TypeBox as its only direct
+runtime dependency. Validated against Pi 0.84.1.
