@@ -391,7 +391,10 @@ export async function publishReplacement(
         );
       }
     } catch (error) {
-      warnings.push(`The edit was committed, but recovery cleanup was incomplete: ${errorMessage(error)}`);
+      warnings.push(
+        `The edit was committed, but recovery cleanup was incomplete; the previous content ` +
+          `may remain at ${recovery} or elsewhere, possibly hard-linked to the target: ${errorMessage(error)}`,
+      );
     }
     const warning = await syncDirectory(directory);
     if (warning) warnings.push(warning);
@@ -413,7 +416,10 @@ export async function publishReplacement(
         }
       } catch (error) {
         temporaryCleanupFailed = true;
-        cleanupFailures.push(`${temporary}: ${errorMessage(error)}`);
+        cleanupFailures.push(
+          `the temporary replacement could not be verified or removed and may remain at ` +
+            `${temporary} or elsewhere: ${errorMessage(error)}`,
+        );
       }
     }
     if (recoveryLinked && !replacementPublished) {
@@ -426,7 +432,10 @@ export async function publishReplacement(
           );
         }
       } catch (error) {
-        cleanupFailures.push(`${recovery}: ${errorMessage(error)}`);
+        cleanupFailures.push(
+          `the pre-edit recovery link could not be verified or removed and may remain at ` +
+            `${recovery} or elsewhere, possibly hard-linked to the target: ${errorMessage(error)}`,
+        );
       }
     }
     if (temporaryDirectoryStats && !temporaryCleanupFailed) {
@@ -1126,7 +1135,10 @@ export async function publishNewFile(
       }
     } catch (error) {
       temporaryCleanupFailed = true;
-      warnings.push(`The file was created, but its temporary link remains at ${temporary}: ${errorMessage(error)}`);
+      warnings.push(
+        `The file was created, but its temporary link could not be verified or removed and ` +
+          `may remain at ${temporary} or elsewhere, possibly hard-linked to the created file: ${errorMessage(error)}`,
+      );
     }
     if (temporaryDirectoryStats && !temporaryCleanupFailed) {
       try {
@@ -1156,7 +1168,10 @@ export async function publishNewFile(
         }
       } catch (error) {
         temporaryCleanupFailed = true;
-        cleanupFailures.push(`${temporary}: ${errorMessage(error)}`);
+        cleanupFailures.push(
+          `the temporary create file could not be verified or removed and may remain at ` +
+            `${temporary} or elsewhere, possibly hard-linked to the created file: ${errorMessage(error)}`,
+        );
       }
       if (temporaryDirectoryStats && !temporaryCleanupFailed) {
         try {
@@ -1351,8 +1366,8 @@ async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<v
   );
   if (!containerStats) {
     throw new Error(
-      `Staged create container disappeared before cleanup; its location is uncertain and ` +
-        `an empty container may remain outside ${dirname(prepared.container)}`,
+      `Staged create container disappeared before cleanup; its location is uncertain, ` +
+        `the container may remain outside ${dirname(prepared.container)}, and it may not be empty`,
     );
   }
   try {
@@ -1360,8 +1375,8 @@ async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<v
   } catch (error) {
     if (isCode(error, "ENOENT")) {
       throw new Error(
-        `Staged create container disappeared during cleanup; its location is uncertain and ` +
-          `an empty container may remain outside ${dirname(prepared.container)}`,
+        `Staged create container disappeared during cleanup; its location is uncertain, ` +
+          `the container may remain outside ${dirname(prepared.container)}, and it may not be empty`,
       );
     }
     throw new Error(

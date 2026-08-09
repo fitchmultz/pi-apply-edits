@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2 — 2026-08-09
+
+- State that a moved staged-create container may not be empty when cleanup finds it missing, instead of describing it as an empty container.
+- Disclose unverifiable temporary and recovery entries precisely. When cleanup itself fails after a possible escape — on success paths and failure paths — the message now says the entry could not be verified or removed, names where it may remain, and notes possible remaining hard links, instead of asserting a stale path.
+- Cover the key-discovery root terminator with a live test: when `realpath` reports every ancestor missing, creates still serialize on the exact resolved path and publish correctly.
+- Cover the Windows path budget with a simulated-platform test: a 33000-code-unit target rejects during planning, in characters, naming the 32702-unit boundary, before any filesystem access.
+- Re-verified against Node 24 LTS: no dirfd-relative (`unlinkat`/`rmdirat`) or handle-returning `mkdir` primitives exist, so the documented check-then-act and `mkdir`-to-`lstat` windows remain; verification reads already use `O_NOFOLLOW` handles with stat sandwiches. Rechecked lock bookkeeping: Pi's per-key queue map drains when idle and this package holds two self-replacing promise chains, so no per-key growth exists.
+- Remove a redundant platform guard in lock-key normalization (behavior unchanged).
+
 ## 0.4.1 — 2026-08-08
 
 - Serialize mixed-case creates with later edits of the same path by keeping the exact-case target as Pi's single mutation-queue key.
