@@ -190,11 +190,16 @@ are rejected rather than guessed.
   deliberately serializes all operations that discover a missing target; existing-file
   operations remain parallel. If publication stops after a file name is claimed, the
   partial root and private staging tree are retained at named paths for inspection.
-- Cleanup atomically quarantines temporary and recovery paths in private directories.
-  Staged publish roots move into a reserved one-character slot inside their private container,
-  and empty containers move over a verified same-length sibling. Cleanup therefore never
-  lengthens deep paths past macOS `PATH_MAX`. Identity is rechecked after each move, and
-  detected swaps are preserved for inspection.
+- Cleanup atomically quarantines temporary and recovery files in private directories.
+  Staged publish roots move into a reserved one-character slot inside their private container.
+  Empty temporary and staging containers are removed in place, so a concurrent entry is never
+  relocated with its parent. Identity is rechecked after each file move, and detected swaps are
+  preserved for inspection.
+- Planning rejects a mutation before staging or any batch write when its longest computed
+  temporary, staging, or cleanup path exceeds 991 UTF-8 bytes on macOS, 4063 on Linux, or
+  32702 UTF-16 code units on Windows. These explicit support boundaries retain a 32-unit
+  POSIX or 64-unit Windows safety margin below the platform path limit. The error reports the
+  planned length and limit; no filesystem mutation occurs.
 - A newly claimed directory is owner-checked before publication or cleanup, so a
   cross-user substitution in a shared-writable ancestor is rejected and left untouched.
   A same-user process can still rename the new directory away and substitute its own in

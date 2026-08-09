@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import {
   access,
@@ -1212,7 +1212,7 @@ function assertCreatedDirectoryOwner(stats: BigIntStats, path: string): void {
   // through Stats, so the existing identity checks remain the boundary there.
   if (process.platform === "win32" || typeof process.geteuid !== "function") return;
   if (stats.uid !== BigInt(process.geteuid())) {
-    throw new Error(`Created entry owner changed at ${path}; it was left untouched.`);
+    throw new Error(`Created directory owner changed at ${path}; it was left untouched.`);
   }
 }
 
@@ -1351,77 +1351,21 @@ async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<v
   );
   if (!containerStats) {
     throw new Error(
-      `Staged create container disappeared before cleanup; an empty container may remain outside ${dirname(prepared.container)}`,
+      `Staged create container disappeared before cleanup; its location is uncertain and ` +
+        `an empty container may remain outside ${dirname(prepared.container)}`,
     );
   }
-
-  let quarantine: string | undefined;
-  let quarantineStats: BigIntStats | undefined;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const candidate = stagingContainerPath(dirname(prepared.container));
-    if (candidate === prepared.container) continue;
-    try {
-      await mkdir(candidate, { mode: 0o700 });
-      const stats = await lstat(candidate, { bigint: true });
-      assertCreatedDirectoryOwner(stats, candidate);
-      quarantine = candidate;
-      quarantineStats = stats;
-      break;
-    } catch (error) {
-      if (!isCode(error, "EEXIST")) throw error;
-    }
-  }
-  if (!quarantine || !quarantineStats) {
-    throw new Error(`Could not reserve cleanup quarantine beside ${prepared.container}`);
-  }
-
-  let quarantineExists = true;
-  if (process.platform === "win32") {
-    await removeEmptyOwnedDirectory(quarantine, quarantineStats, "Cleanup quarantine slot");
-    quarantineExists = false;
-  }
   try {
-    await rename(prepared.container, quarantine);
-  } catch (error) {
-    if (quarantineExists) {
-      await removeEmptyOwnedDirectory(quarantine, quarantineStats, "Cleanup quarantine slot");
-    }
-    if (isCode(error, "ENOENT")) {
-      throw new Error(
-        `Staged create container cleanup changed during quarantine; an empty container may remain outside ${dirname(prepared.container)}`,
-      );
-    }
-    throw error;
-  }
-  let movedStats: BigIntStats;
-  try {
-    movedStats = await lstat(quarantine, { bigint: true });
+    await rmdir(prepared.container);
   } catch (error) {
     if (isCode(error, "ENOENT")) {
       throw new Error(
-        `Staged create container disappeared during cleanup; an empty container may remain outside ${dirname(prepared.container)}`,
+        `Staged create container disappeared during cleanup; its location is uncertain and ` +
+          `an empty container may remain outside ${dirname(prepared.container)}`,
       );
     }
-    throw error;
-  }
-  if (!sameIdentity(containerStats, movedStats)) {
     throw new Error(
-      `Staged create container changed after validation and was preserved at ${quarantine}`,
-    );
-  }
-  let finalStats: BigIntStats | undefined;
-  try {
-    finalStats = await currentOwnedPath(quarantine, movedStats, "Staged create container");
-    if (finalStats) await rmdir(quarantine);
-  } catch (error) {
-    if (!isCode(error, "ENOENT")) {
-      throw new Error(`Staged create container remains at ${quarantine}: ${errorMessage(error)}`);
-    }
-    finalStats = undefined;
-  }
-  if (!finalStats) {
-    throw new Error(
-      `Staged create container disappeared during cleanup; an empty container may remain outside ${dirname(prepared.container)}`,
+      `Staged create container remains at ${prepared.container}: ${errorMessage(error)}`,
     );
   }
   prepared.containerStats = undefined;
@@ -1447,12 +1391,9 @@ async function currentOwnedPath(
 
 interface QuarantinedPath {
   path: string;
+  directory: string;
+  directoryStats: BigIntStats;
   stats: BigIntStats;
-}
-
-function quarantineSiblingName(name: string): string {
-  const byteLength = Buffer.byteLength(name);
-  return randomBytes(Math.ceil(byteLength / 2)).toString("hex").slice(0, byteLength);
 }
 
 async function quarantineOwnedPath(
@@ -1460,57 +1401,16 @@ async function quarantineOwnedPath(
   expected: BigIntStats | undefined,
   label: string,
 ): Promise<QuarantinedPath | undefined> {
-  const current = await currentOwnedPath(path, expected, label);
-  if (!current) return undefined;
-
-  // Quarantine over a reserved same-length sibling so cleanup never lengthens a path that
-  // already fits: a legal maximum-length entry stays removable within the PATH_MAX budget.
-  const directory = dirname(path);
-  let quarantined: string | undefined;
-  let placeholderStats: BigIntStats | undefined;
-  for (let attempt = 0; attempt < 3 && !quarantined; attempt++) {
-    const candidate = join(directory, quarantineSiblingName(basename(path)));
-    if (candidate === path) continue;
-    try {
-      if (current.isDirectory()) {
-        await mkdir(candidate, { mode: 0o700 });
-      } else {
-        const handle = await open(candidate, "wx", 0o600);
-        await handle.close();
-      }
-    } catch (error) {
-      if (isCode(error, "EEXIST")) continue;
-      throw error;
-    }
-    const stats = await lstat(candidate, { bigint: true });
-    assertCreatedDirectoryOwner(stats, candidate);
-    quarantined = candidate;
-    placeholderStats = stats;
-  }
-  if (!quarantined || !placeholderStats) {
-    throw new Error(`Could not reserve a cleanup slot beside ${path}`);
-  }
-
-  let placeholderExists = true;
-  if (process.platform === "win32") {
-    // rename cannot replace an existing entry on Windows; remove the verified slot first.
-    if (placeholderStats.isDirectory()) {
-      await removeEmptyOwnedDirectory(quarantined, placeholderStats, "Cleanup slot");
-    } else if (await currentOwnedPath(quarantined, placeholderStats, "Cleanup slot")) {
-      await unlink(quarantined);
-    }
-    placeholderExists = false;
-  }
+  if (!(await currentOwnedPath(path, expected, label))) return undefined;
+  const directory = temporaryDirectoryPath(path);
+  await mkdir(directory, { mode: 0o700 });
+  const directoryStats = await lstat(directory, { bigint: true });
+  assertCreatedDirectoryOwner(directoryStats, directory);
+  const quarantined = join(directory, "entry");
   try {
     await rename(path, quarantined);
   } catch (error) {
-    if (placeholderExists) {
-      if (placeholderStats.isDirectory()) {
-        await removeEmptyOwnedDirectory(quarantined, placeholderStats, "Cleanup slot");
-      } else if (await currentOwnedPath(quarantined, placeholderStats, "Cleanup slot")) {
-        await unlink(quarantined);
-      }
-    }
+    await removeEmptyOwnedDirectory(directory, directoryStats, "Cleanup quarantine");
     if (isCode(error, "ENOENT")) return undefined;
     throw error;
   }
@@ -1518,16 +1418,13 @@ async function quarantineOwnedPath(
   try {
     stats = await lstat(quarantined, { bigint: true });
   } catch (error) {
-    // The entry escaped between our rename and its verification; nothing of ours remains at
-    // the slot, so report the same missing-target fact the precheck does and let the caller
-    // word the uncertainty.
     if (isCode(error, "ENOENT")) return undefined;
     throw error;
   }
-  if (!sameIdentity(current, stats)) {
+  if (!expected || !sameIdentity(expected, stats)) {
     throw new Error(`${label} changed after validation and was preserved at ${quarantined}`);
   }
-  return { path: quarantined, stats };
+  return { path: quarantined, directory, directoryStats, stats };
 }
 
 async function removeEmptyOwnedDirectory(
@@ -1553,13 +1450,27 @@ async function unlinkOwnedPath(
     }
   }
   await unlink(quarantined.path);
+  await removeEmptyOwnedDirectory(
+    quarantined.directory,
+    quarantined.directoryStats,
+    "Cleanup quarantine",
+  );
   return true;
 }
 
 async function rmdirOwnedPath(path: string, expected: BigIntStats, label: string): Promise<void> {
-  const quarantined = await quarantineOwnedPath(path, expected, label);
-  if (!quarantined) return;
-  await rmdir(quarantined.path);
+  const current = await currentOwnedPath(path, expected, label);
+  if (!current) {
+    throw new Error(
+      `${label} is no longer at ${path}; its location is uncertain and an empty directory may remain elsewhere`,
+    );
+  }
+  if (!current.isDirectory() || current.isSymbolicLink()) {
+    throw new Error(`${label} changed identity and was left untouched at ${path}`);
+  }
+  // Do not quarantine a directory before learning that it is empty. A concurrent entry makes
+  // rmdir fail in place instead of relocating the directory and that entry as a unit.
+  await rmdir(path);
 }
 
 async function captureCreatedDirectoryIdentities(
