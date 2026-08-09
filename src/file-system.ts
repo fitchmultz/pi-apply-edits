@@ -444,7 +444,7 @@ export async function preparePlannedNestedFiles(
     }
   }
 
-  const container = join(firstPlan.ancestorPath, `.pi-apply-edits-${randomUUID()}.tmpdir`);
+  const container = stagingContainerPath(firstPlan.ancestorPath);
   const prepared: PreparedNestedFiles = {
     entries,
     firstPlan,
@@ -715,10 +715,10 @@ export async function publishPreparedNestedFiles(
     }
     if (prepared.containerStats && !prepared.stagingStats) {
       try {
-        await rmdirOwnedPath(prepared.container, prepared.containerStats, "Staged create container");
+        await removePreparedContainer(prepared);
       } catch (error) {
         prepared.warnings.push(
-          `The files were created, but their staging container remains at ${prepared.container}: ${errorMessage(error)}`,
+          `The files were created, but staging container cleanup was incomplete: ${errorMessage(error)}`,
         );
       }
     }
@@ -781,7 +781,7 @@ export async function discardPreparedNestedFiles(prepared: PreparedNestedFiles):
     prepared.quarantineStats = undefined;
   }
   if (prepared.containerStats) {
-    await rmdirOwnedPath(prepared.container, prepared.containerStats, "Staged create container");
+    await removePreparedContainer(prepared);
   }
 }
 
@@ -1235,7 +1235,11 @@ async function quarantinePreparedStaging(
   try {
     await rename(prepared.staging, prepared.quarantine);
   } catch (error) {
-    if (isCode(error, "ENOENT")) return undefined;
+    if (isCode(error, "ENOENT")) {
+      throw new Error(
+        `Staged create cleanup changed during quarantine; private state was preserved at ${prepared.container}`,
+      );
+    }
     throw error;
   }
   const movedStats = await lstat(prepared.quarantine, { bigint: true });
@@ -1246,6 +1250,60 @@ async function quarantinePreparedStaging(
     );
   }
   return { path: prepared.quarantine, stats: movedStats };
+}
+
+async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<void> {
+  const containerStats = await currentOwnedPath(
+    prepared.container,
+    prepared.containerStats,
+    "Staged create container",
+  );
+  if (!containerStats) return;
+
+  let quarantine: string | undefined;
+  let quarantineStats: BigIntStats | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const candidate = stagingContainerPath(dirname(prepared.container));
+    if (candidate === prepared.container) continue;
+    try {
+      await mkdir(candidate, { mode: 0o700 });
+      quarantine = candidate;
+      quarantineStats = await lstat(candidate, { bigint: true });
+      break;
+    } catch (error) {
+      if (!isCode(error, "EEXIST")) throw error;
+    }
+  }
+  if (!quarantine || !quarantineStats) {
+    throw new Error(`Could not reserve cleanup quarantine beside ${prepared.container}`);
+  }
+
+  let quarantineExists = true;
+  if (process.platform === "win32") {
+    await removeEmptyOwnedDirectory(quarantine, quarantineStats, "Cleanup quarantine slot");
+    quarantineExists = false;
+  }
+  try {
+    await rename(prepared.container, quarantine);
+  } catch (error) {
+    if (quarantineExists) {
+      await removeEmptyOwnedDirectory(quarantine, quarantineStats, "Cleanup quarantine slot");
+    }
+    if (isCode(error, "ENOENT")) return;
+    throw error;
+  }
+  const movedStats = await lstat(quarantine, { bigint: true });
+  if (!sameIdentity(containerStats, movedStats)) {
+    throw new Error(
+      `Staged create container changed after validation and was preserved at ${quarantine}`,
+    );
+  }
+  try {
+    await removeEmptyOwnedDirectory(quarantine, movedStats, "Staged create container");
+  } catch (error) {
+    throw new Error(`Staged create container remains at ${quarantine}: ${errorMessage(error)}`);
+  }
+  prepared.containerStats = undefined;
 }
 
 async function currentOwnedPath(
@@ -1520,6 +1578,10 @@ async function syncDirectory(directory: string): Promise<string | undefined> {
   } catch (error) {
     return `The edit was committed, but the parent directory could not be synced: ${errorMessage(error)}`;
   }
+}
+
+function stagingContainerPath(parent: string): string {
+  return join(parent, `.pi-apply-edits-${randomUUID()}.tmpdir`);
 }
 
 function temporaryPath(targetPath: string): string {

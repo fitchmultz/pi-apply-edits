@@ -3422,3 +3422,79 @@ test(
     });
   },
 );
+
+test(
+  "deep create removes its empty staging container without a longer quarantine path",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const canonicalDirectory = await realpath(directory);
+      let ancestor = canonicalDirectory;
+      let remaining = 953 - Buffer.byteLength(ancestor);
+      if (remaining % 2 === 1) {
+        ancestor = join(ancestor, "xx");
+        remaining -= 3;
+      }
+      while (remaining > 256) {
+        ancestor = join(ancestor, "x");
+        remaining -= 2;
+      }
+      ancestor = join(ancestor, "x".repeat(remaining - 1));
+      assert.equal(Buffer.byteLength(ancestor), 953);
+      await mkdir(ancestor, { recursive: true });
+
+      for (const rootName of ["a", "b"]) {
+        const result = await applyEditsToFile(
+          { path: join(ancestor, rootName, "f"), rewrite: "ok\n", onMissing: "create" },
+          canonicalDirectory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.doesNotMatch(warnings.join("\n"), /container cleanup was incomplete|ENAMETOOLONG/);
+      }
+      assert.deepEqual(
+        (await readdir(ancestor)).filter((name) => name.startsWith(".pi-apply-edits-")),
+        [],
+      );
+    });
+  },
+);
+
+test("nested create reports staging disappearance during cleanup quarantine", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const originalRm = nodeFs.promises.rm;
+    let retainedContainer = "";
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (
+          this: unknown,
+          source: Parameters<typeof promises.rename>[0],
+          target: Parameters<typeof promises.rename>[1],
+        ) {
+          if (basename(String(source)) === "publish" && basename(String(target)) === "q") {
+            retainedContainer = dirname(String(source));
+            await originalRm(source, { recursive: true });
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/child.txt", rewrite: "created\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /private staging cleanup was incomplete: Staged create cleanup changed during quarantine/,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert.equal(await readFile(join(directory, "missing/child.txt"), "utf8"), "created\n");
+    assert(retainedContainer);
+    assert.deepEqual(await readdir(retainedContainer), ["q"]);
+    await rm(retainedContainer, { recursive: true });
+  });
+});
