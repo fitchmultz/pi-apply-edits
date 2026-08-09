@@ -196,7 +196,11 @@ are rejected rather than guessed.
   `mkdir` nor dirfd-relative operations, so closing that gap cleanly needs a native
   primitive. Later identity checks still fail closed on detected swaps.
 - Non-UTF-8, NUL-containing, non-regular, dangling-symlink, and hard-linked
-  targets are rejected without mutation.
+  targets are rejected without mutation. A dangling symbolic-link batch entry is
+  rejected during key discovery, before Pi acquires any lock; otherwise its target
+  could appear and make two batch keys resolve to one queue. Pi 0.84.1 has no atomic
+  multi-key queue API, so an external process can still create both an alias and its
+  target after this check. Closing that final window requires an upstream primitive.
 - Corrective matching and diff generation have explicit work budgets.
   Oversized fuzzy matches fail for a more exact retry; expensive diffs are
   omitted from details before publication.

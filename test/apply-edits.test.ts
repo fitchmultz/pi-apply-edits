@@ -2923,3 +2923,62 @@ test(
     });
   },
 );
+
+test("a batch rejects a dangling alias before its lock can collapse onto the target", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const alias = join(directory, "a");
+    const target = join(directory, "b");
+    await symlink("b", alias);
+    const canonicalDirectory = await realpath(directory);
+    const queueAlias = join(canonicalDirectory, "a");
+    const originalRealpath = nodeFs.promises.realpath;
+    let aliasFailed = false;
+    let targetFailed = false;
+    let injected = false;
+
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+          const value = String(path);
+          // Both entries must first be classified as distinct missing targets. When Pi later
+          // resolves the first queue key, make the dangling alias resolve onto the second.
+          // Main then acquires that queue twice and waits on itself.
+          if (!injected && aliasFailed && targetFailed && value === queueAlias) {
+            await writeFile(target, "external\n");
+            injected = true;
+          }
+          try {
+            return await (originalRealpath as Function).call(this, path, ...args);
+          } catch (error) {
+            if (value === alias || value === queueAlias) aliasFailed = true;
+            if (value === target || value === join(canonicalDirectory, "b")) targetFailed = true;
+            throw error;
+          }
+        }) as typeof promises.realpath;
+      },
+      async (module) => {
+        const operation = module.applyEditsToFile(
+          {
+            files: [
+              { path: "a", rewrite: "one\n" },
+              { path: "b", rewrite: "two\n" },
+            ],
+          },
+          directory,
+        );
+        const outcome = await Promise.race([
+          operation.then(
+            () => "settled",
+            (error: unknown) => `rejected: ${String(error)}`,
+          ),
+          new Promise((resolve) => setTimeout(() => resolve("timeout"), 1000)),
+        ]);
+        assert.match(String(outcome), /^rejected: .*Cannot mutate dangling symbolic link/);
+        assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
+      },
+      "../src/apply-edits.ts",
+    );
+
+    await assert.rejects(lstat(target), /ENOENT/);
+  });
+});

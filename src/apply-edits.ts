@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
@@ -975,6 +975,20 @@ async function mutationQueueKeys(
     return { targetKey: key, queueKeys: [key], localKeys: [] };
   } catch (error) {
     if (!isMissingPathError(error)) throw error;
+  }
+
+  // A dangling symbolic link is not a missing path for mutation purposes. More importantly,
+  // a batch cannot safely queue both it and its missing target: if the target appears while
+  // Pi acquires its one-key locks, realpath makes the two keys collapse and the nested second
+  // acquisition waits on the batch's own first lock. Reject before acquiring any lock. There
+  // remains an inherent race if an external process creates both the link and its target after
+  // this lstat; closing that requires an atomic multi-key queue API from Pi.
+  const unresolvedEntry = await lstat(resolvedPath, { bigint: true }).catch((error: unknown) => {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  });
+  if (unresolvedEntry?.isSymbolicLink()) {
+    throw new Error(`Cannot mutate dangling symbolic link ${resolvedPath}. No changes were written.`);
   }
 
   // Exactly one Pi key per file. Pi canonicalizes each key with realpath at the moment it is
