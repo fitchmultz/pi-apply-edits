@@ -3887,3 +3887,141 @@ test("container disappearance before or during cleanup returns a warning", async
     });
   }
 });
+
+test("direct create warns when its temporary link escapes before unlink", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-temporary-link");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (!moved && basename(String(source)) === "create" && basename(String(target)) === "entry") {
+            await (originalRename as Function).call(this, source, escaped);
+            moved = true;
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /temporary link is no longer at.*may remain hard-linked/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert(moved);
+    const target = await stat(join(directory, "file"));
+    assert.equal(Number(target.nlink), 2);
+    assert.equal(target.ino, (await stat(escaped)).ino);
+  });
+});
+
+test("replacement warns when the recovery link escapes before unlink", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "file");
+    const escaped = join(directory, "escaped-recovery");
+    await writeFile(target, "old\n");
+    const { captureSnapshot, publishReplacement } = await import("../src/file-system.ts");
+    const snapshot = await captureSnapshot(target);
+    assert(snapshot);
+    const warnings = await publishReplacement(snapshot, Buffer.from("new\n"), undefined, {
+      beforeRecoveryCleanup: async ({ recovery }) => {
+        await rename(recovery, escaped);
+      },
+    });
+    assert.match(
+      warnings.join("\n"),
+      /recovery link is no longer at.*previous content may remain elsewhere/s,
+    );
+    assert.equal(await readFile(target, "utf8"), "new\n");
+    assert.equal(await readFile(escaped, "utf8"), "old\n");
+  });
+});
+
+test("partial publication does not claim absence when staging cannot be inspected", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLink = nodeFs.promises.link;
+    const originalLstat = nodeFs.promises.lstat;
+    let linkCalls = 0;
+    let publicationFailed = false;
+    let staging = "";
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.link = (async function (this: unknown, source: string, target: string) {
+          linkCalls += 1;
+          staging ||= dirname(String(source));
+          if (linkCalls === 2) {
+            publicationFailed = true;
+            throw Object.assign(new Error("injected publication failure"), { code: "EIO" });
+          }
+          return (originalLink as Function).call(this, source, target);
+        }) as typeof promises.link;
+        promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (publicationFailed && basename(String(path)) === "publish") {
+            throw Object.assign(new Error("injected staging inspection failure"), { code: "EACCES" });
+          }
+          return (originalLstat as Function).call(this, path, ...args);
+        }) as typeof promises.lstat;
+      },
+      async (module) => {
+        await assert.rejects(
+          module.applyEditsToFile(
+            {
+              files: [
+                { path: "missing/a", rewrite: "a\n", onMissing: "create" },
+                { path: "missing/b", rewrite: "b\n", onMissing: "create" },
+              ],
+            },
+            directory,
+          ),
+          (error: Error) => {
+            assert.match(error.message, /could not be verified at.*may remain linked/s);
+            assert.doesNotMatch(error.message, /no longer at its recorded path/);
+            return true;
+          },
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert((await lstat(staging)).isDirectory());
+  });
+});
+
+test("container escape after quarantine rename returns a warning", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-container");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalRename as Function).call(this, source, target);
+          if (!moved && basename(String(source)).endsWith(".tmpdir") && basename(String(target)).endsWith(".tmpdir")) {
+            moved = true;
+            await (originalRename as Function).call(this, target, escaped);
+          }
+          return result;
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "ok\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(warnings.join("\n"), /container disappeared during cleanup.*may remain outside/s);
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+    assert.equal((await stat(escaped)).isDirectory(), true);
+  });
+});

@@ -382,8 +382,14 @@ export async function publishReplacement(
       );
     }
     try {
-      await unlinkOwnedPath(recovery, recoveryState.stats, "Recovery link", recoveryState);
+      const removed = await unlinkOwnedPath(recovery, recoveryState.stats, "Recovery link", recoveryState);
       recoveryLinked = false;
+      if (!removed) {
+        warnings.push(
+          `The edit was committed, but the pre-edit recovery link is no longer at ${recovery}; ` +
+            "its location is uncertain and the previous content may remain elsewhere.",
+        );
+      }
     } catch (error) {
       warnings.push(`The edit was committed, but recovery cleanup was incomplete: ${errorMessage(error)}`);
     }
@@ -740,12 +746,17 @@ export async function publishPreparedNestedFiles(
     await copyHandle?.close().catch(() => undefined);
     if (publishedFiles.length > 0) {
       prepared.discardAttempted = true;
-      const stagingLocation = (await currentOwnedPath(staging, prepared.stagingStats, "Staged create directory").catch(
-        () => undefined,
-      ))
-        ? `private staging remains at ${staging}.`
-        : "private staging is no longer at its recorded path; its location is uncertain and " +
+      let stagingLocation: string;
+      try {
+        stagingLocation = (await currentOwnedPath(staging, prepared.stagingStats, "Staged create directory"))
+          ? `private staging remains at ${staging}.`
+          : "private staging is no longer at its recorded path; its location is uncertain and " +
+            "the published files may remain linked to it.";
+      } catch {
+        stagingLocation =
+          `private staging could not be verified at ${staging}; ` +
           "the published files may remain linked to it.";
+      }
       throw new PartialCreatePublishError(
         `${errorMessage(error)} Partial create publication retained ${publishedFiles.length} file` +
           `${publishedFiles.length === 1 ? "" : "s"} at ${publishedFiles.join(", ")}; ` +
@@ -1094,7 +1105,13 @@ export async function publishNewFile(
       warnings.push("Atomic hard-link publication was unavailable; used exclusive write publication.");
     }
     try {
-      await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary create file");
+      const removed = await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary create file");
+      if (!removed) {
+        warnings.push(
+          `The file was created, but its temporary link is no longer at ${temporary}; ` +
+            "its location is uncertain and the created file may remain hard-linked to it.",
+        );
+      }
     } catch (error) {
       temporaryCleanupFailed = true;
       warnings.push(`The file was created, but its temporary link remains at ${temporary}: ${errorMessage(error)}`);
@@ -1346,7 +1363,17 @@ async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<v
     }
     throw error;
   }
-  const movedStats = await lstat(quarantine, { bigint: true });
+  let movedStats: BigIntStats;
+  try {
+    movedStats = await lstat(quarantine, { bigint: true });
+  } catch (error) {
+    if (isCode(error, "ENOENT")) {
+      throw new Error(
+        `Staged create container disappeared during cleanup; an empty container may remain outside ${dirname(prepared.container)}`,
+      );
+    }
+    throw error;
+  }
   if (!sameIdentity(containerStats, movedStats)) {
     throw new Error(
       `Staged create container changed after validation and was preserved at ${quarantine}`,
