@@ -281,8 +281,9 @@ export async function publishReplacement(
   try {
     try {
       await mkdir(temporaryDirectory, { mode: 0o700 });
-      temporaryDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
-      assertCreatedDirectoryOwner(temporaryDirectoryStats, temporaryDirectory);
+      const createdDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
+      assertCreatedDirectoryOwner(createdDirectoryStats, temporaryDirectory);
+      temporaryDirectoryStats = createdDirectoryStats;
       await cloneWithMetadata(snapshot.actualPath, temporary, signal);
     } catch (error) {
       throwIfAborted(signal);
@@ -464,14 +465,17 @@ export async function preparePlannedNestedFiles(
     throwIfAborted(signal);
     for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
     await mkdir(prepared.container, { mode: 0o700 });
-    prepared.containerStats = await lstat(prepared.container, { bigint: true });
-    assertCreatedDirectoryOwner(prepared.containerStats, prepared.container);
+    const containerStats = await lstat(prepared.container, { bigint: true });
+    assertCreatedDirectoryOwner(containerStats, prepared.container);
+    prepared.containerStats = containerStats;
     await mkdir(prepared.quarantine, { mode: 0o700 });
-    prepared.quarantineStats = await lstat(prepared.quarantine, { bigint: true });
-    assertCreatedDirectoryOwner(prepared.quarantineStats, prepared.quarantine);
+    const quarantineStats = await lstat(prepared.quarantine, { bigint: true });
+    assertCreatedDirectoryOwner(quarantineStats, prepared.quarantine);
+    prepared.quarantineStats = quarantineStats;
     await mkdir(prepared.staging, { mode: 0o777 });
-    prepared.stagingStats = await lstat(prepared.staging, { bigint: true });
-    assertCreatedDirectoryOwner(prepared.stagingStats, prepared.staging);
+    const stagingStats = await lstat(prepared.staging, { bigint: true });
+    assertCreatedDirectoryOwner(stagingStats, prepared.staging);
+    prepared.stagingStats = stagingStats;
     stagedDirectories.add(prepared.container);
     stagedDirectories.add(prepared.staging);
 
@@ -931,8 +935,9 @@ export async function publishNewFile(
 
     if (plan) await assertNewFilePlanCurrent(plan);
     await mkdir(temporaryDirectory, { mode: 0o700 });
-    temporaryDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
-    assertCreatedDirectoryOwner(temporaryDirectoryStats, temporaryDirectory);
+    const createdDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
+    assertCreatedDirectoryOwner(createdDirectoryStats, temporaryDirectory);
+    temporaryDirectoryStats = createdDirectoryStats;
     handle = await open(temporary, "wx", 0o666);
     temporaryIdentity = await handle.stat({ bigint: true });
     await handle.writeFile(bytes, { signal });
@@ -1212,15 +1217,10 @@ async function quarantinePreparedStaging(
     "Cleanup quarantine slot",
   );
   if (!stagingStats) {
-    if (quarantineStats) {
-      await removeEmptyOwnedDirectory(
-        prepared.quarantine,
-        quarantineStats,
-        "Cleanup quarantine slot",
-      );
-      prepared.quarantineStats = undefined;
-    }
-    return undefined;
+    throw new Error(
+      "Staged create directory disappeared before cleanup quarantine; its location is uncertain " +
+        "and the published target may remain linked to private staging",
+    );
   }
   if (!quarantineStats?.isDirectory()) {
     throw new Error(`Cleanup quarantine slot changed identity at ${prepared.quarantine}`);

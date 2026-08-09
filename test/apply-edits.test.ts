@@ -3628,3 +3628,96 @@ test("staging quarantine ENOENT reports an uncertain location", async () => {
     assert.equal((await stat(join(directory, "missing/file"))).nlink, 2);
   });
 });
+
+test(
+  "owner-rejected initial private directories never enter cleanup state",
+  { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
+  async () => {
+    for (const flow of ["nested", "replacement", "direct-create"] as const) {
+      await inTemporaryDirectory(async (directory) => {
+        const originalMkdir = nodeFs.promises.mkdir;
+        const originalLstat = nodeFs.promises.lstat;
+        let privateDirectory = "";
+        let spoofed = false;
+        await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+          (promises) => {
+            promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+              const result = await (originalMkdir as Function).call(this, path, ...args);
+              const name = basename(String(path));
+              if (!privateDirectory && name.startsWith(".pi-apply-edits-") && name.endsWith(".tmpdir")) {
+                privateDirectory = String(path);
+              }
+              return result;
+            }) as typeof promises.mkdir;
+            promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+              const stats = await (originalLstat as Function).call(this, path, ...args);
+              if (!spoofed && privateDirectory && String(path) === privateDirectory) {
+                spoofed = true;
+                return new Proxy(stats, {
+                  get(target, property, receiver) {
+                    if (property === "uid") return target.uid + 1n;
+                    return Reflect.get(target, property, receiver);
+                  },
+                });
+              }
+              return stats;
+            }) as typeof promises.lstat;
+          },
+          async (module) => {
+            if (flow === "replacement") await writeFile(join(directory, "f.txt"), "old\n");
+            const path = flow === "nested" ? "missing/file" : flow === "replacement" ? "f.txt" : "new.txt";
+            await assert.rejects(
+              module.applyEditsToFile(
+                { path, rewrite: "new\n", ...(flow === "replacement" ? {} : { onMissing: "create" as const }) },
+                directory,
+              ),
+              /owner changed.*left untouched/,
+              flow,
+            );
+          },
+          "../src/apply-edits.ts",
+        );
+
+        assert(spoofed, flow);
+        await lstat(privateDirectory);
+      });
+    }
+  },
+);
+
+test("nested create warns when staging disappears before quarantine precheck", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLstat = nodeFs.promises.lstat;
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-staging");
+    let stagingChecks = 0;
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (basename(String(path)) === "publish" && ++stagingChecks === 6) {
+            await (originalRename as Function).call(this, path, escaped);
+            moved = true;
+          }
+          return (originalLstat as Function).call(this, path, ...args);
+        }) as typeof promises.lstat;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /private staging cleanup was incomplete.*location is uncertain.*may remain linked/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert(moved);
+    assert.equal((await stat(join(directory, "missing/file"))).nlink, 2);
+    assert.equal((await stat(join(escaped, "file"))).nlink, 2);
+  });
+});
