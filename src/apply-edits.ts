@@ -8,6 +8,7 @@ import {
   discardPreparedNestedFiles,
   planNewFile,
   preparePlannedNestedFiles,
+  PartialCreatePublishError,
   publishNewFile,
   publishPreparedNestedFiles,
   publishReplacement,
@@ -379,11 +380,15 @@ async function applyEditsBatch(
       (input) => typeof input.rewrite === "string" && input.edits === undefined,
     );
     const missingCreates: Array<{ file: number; message: string }> = [];
+    const missingTargets = new Set<number>();
     for (const item of resolved) {
       try {
-        planned.push(await planFileMutation(item.file, item.inputPath, cwd, signal, item.targetKey));
+        const plan = await planFileMutation(item.file, item.inputPath, cwd, signal, item.targetKey);
+        planned.push(plan);
+        if (plan.operation === "create") missingTargets.add(item.index);
       } catch (error) {
         if (allRewrites && error instanceof MissingCreateOptInError) {
+          missingTargets.add(item.index);
           missingCreates.push({ file: item.index, message: error.message });
           continue;
         }
@@ -393,7 +398,7 @@ async function applyEditsBatch(
     if (missingCreates.length > 0) {
       throw new RetryableApplyEditsError(
         missingCreates.map(({ file, message }) => `files[${file}]: ${message}`).join("\n"),
-        { kind: "create", files: missingCreates.map(({ file }) => file) },
+        { kind: "create", files: [...missingTargets].sort((left, right) => left - right) },
       );
     }
 
@@ -420,6 +425,7 @@ async function applyEditsBatch(
     // Build every nested-create staging tree before any target publication.
     const preparedExecutions = new Map<number, ApplyEditsExecution>();
     const preparedGroups = new Map<string, PreparedNestedFiles>();
+    let failure: unknown;
     try {
       for (const [key, group] of nestedGroups) {
         for (const groupIndex of group) {
@@ -472,9 +478,12 @@ async function applyEditsBatch(
           detailsList[index] = execution.details as ApplyEditsDetails;
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
+          const completed = written + (error instanceof PartialCreatePublishError
+            ? error.publishedFiles
+            : 0);
           throw new Error(
             `Multi-file batch failed while writing files[${index}] (${plan.displayPath}) ` +
-              `after ${written} successful write${written === 1 ? "" : "s"}. ${reason}`,
+              `after ${completed} successful write${completed === 1 ? "" : "s"}. ${reason}`,
           );
         }
       }
@@ -505,6 +514,9 @@ async function applyEditsBatch(
         summary: `Updated ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}.${warningText}`,
         details: { files: detailsList },
       };
+    } catch (error) {
+      failure = error;
+      throw error;
     } finally {
       const cleanupFailures: string[] = [];
       for (const prepared of preparedGroups.values()) {
@@ -515,7 +527,12 @@ async function applyEditsBatch(
         }
       }
       if (cleanupFailures.length > 0) {
-        throw new Error(`Staged create cleanup was incomplete: ${cleanupFailures.join("; ")}`);
+        const cleanup = `Staged create cleanup was incomplete: ${cleanupFailures.join("; ")}`;
+        if (failure instanceof Error) {
+          failure.message = `${failure.message} ${cleanup}`;
+          throw failure;
+        }
+        throw new Error(`${failure === undefined ? "" : `${String(failure)} `}${cleanup}`);
       }
     }
   });

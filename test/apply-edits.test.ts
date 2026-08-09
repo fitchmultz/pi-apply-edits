@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import nodeFs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
   chmod,
   link,
@@ -53,6 +56,27 @@ async function inTemporaryDirectory(run: (directory: string) => Promise<void>): 
     await run(directory);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+}
+
+type FileSystemModule = typeof import("../src/file-system.ts");
+
+/**
+ * Loads a private copy of the file-system module with `node:fs/promises` patched, so a rename or
+ * symlink swap can be injected in the middle of a publication syscall. Patches are reverted after.
+ */
+async function withRacingFileSystem(
+  patch: (promises: typeof nodeFs.promises) => void,
+  run: (module: FileSystemModule) => Promise<void>,
+): Promise<void> {
+  const originals = { ...nodeFs.promises };
+  try {
+    patch(nodeFs.promises);
+    syncBuiltinESMExports();
+    await run((await import(`../src/file-system.ts?race=${randomUUID()}`)) as FileSystemModule);
+  } finally {
+    Object.assign(nodeFs.promises, originals);
+    syncBuiltinESMExports();
   }
 }
 
@@ -831,7 +855,7 @@ test(
   },
 );
 
-test("replacement stays bound to a canonical parent when its alias is swapped", async () => {
+test("replacement rejects a canonical parent alias swapped before rename", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalParent = join(directory, "original");
     const otherParent = join(directory, "other");
@@ -844,18 +868,80 @@ test("replacement stays bound to a canonical parent when its alias is swapped", 
     const snapshot = await captureSnapshot(join(alias, "file.txt"));
     assert.ok(snapshot);
 
-    await publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
-      beforeRename: async ({ temporary }) => {
-        assert.equal((await lstat(dirname(temporary))).mode & 0o777, 0o700);
-        await unlink(alias);
-        await symlink(otherParent, alias);
-      },
-    });
+    await assert.rejects(
+      publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+        beforeRename: async ({ temporary }) => {
+          assert.equal((await lstat(dirname(temporary))).mode & 0o777, 0o700);
+          await unlink(alias);
+          await symlink(otherParent, alias);
+        },
+      }),
+      /File path changed before commit/,
+    );
 
-    assert.equal(await readFile(join(originalParent, "file.txt"), "utf8"), "after\n");
+    assert.equal(await readFile(join(originalParent, "file.txt"), "utf8"), "before\n");
     assert.equal(await readFile(join(otherParent, "file.txt"), "utf8"), "outside\n");
   });
 });
+
+test("replacement rejects a final target changed into a symbolic link", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "target.txt");
+    const saved = join(directory, "saved.txt");
+    await writeFile(target, "before\n");
+    const snapshot = await captureSnapshot(target);
+    assert.ok(snapshot);
+
+    await assert.rejects(
+      publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+        beforeRename: async () => {
+          await rename(target, saved);
+          await symlink(saved, target);
+        },
+      }),
+      /File path changed before commit/,
+    );
+
+    assert.equal((await lstat(target)).isSymbolicLink(), true);
+    assert.equal(await readFile(target, "utf8"), "before\n");
+    assert.equal(await readFile(saved, "utf8"), "before\n");
+  });
+});
+
+test(
+  "replacement rejects an extended-attribute change after the recovery link",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const target = join(directory, "target.txt");
+      await writeFile(target, "before\n");
+      const snapshot = await captureSnapshot(target);
+      assert.ok(snapshot);
+
+      await assert.rejects(
+        publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+          beforeRename: async () => {
+            await execFile("/usr/bin/xattr", [
+              "-w",
+              "com.pi-apply-edits.concurrent",
+              "kept",
+              target,
+            ]);
+          },
+        }),
+        /changed before commit/,
+      );
+
+      assert.equal(await readFile(target, "utf8"), "before\n");
+      const { stdout } = await execFile("/usr/bin/xattr", [
+        "-p",
+        "com.pi-apply-edits.concurrent",
+        target,
+      ]);
+      assert.equal(stdout.trim(), "kept");
+    });
+  },
+);
 
 test("replacement honors an abort from the final rename hook", async () => {
   await inTemporaryDirectory(async (directory) => {
@@ -1336,6 +1422,13 @@ test("multi-file batch publishes sibling creates under one missing root together
     assert.equal(
       (await stat(join(directory, "shared"))).mode & 0o777,
       0o777 & ~process.umask(),
+    );
+    assert.equal((await stat(join(directory, "shared/a.txt"))).nlink, 1);
+    assert.equal((await stat(join(directory, "shared/b.txt"))).nlink, 1);
+    assert.equal((await stat(join(directory, "shared/nested/c.txt"))).nlink, 1);
+    assert.equal(
+      (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
+      false,
     );
   });
 });
@@ -1965,6 +2058,62 @@ test("direct create rejects a replaced parent immediately before publication", a
   });
 });
 
+test("planned nested create never replaces a directory appearing at final reservation", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "missing", "child.txt");
+    const plan = await planNewFile(target);
+    let appearedStats: Awaited<ReturnType<typeof lstat>> | undefined;
+
+    await assert.rejects(
+      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+        beforeRootReserve: async ({ target: publishRoot }) => {
+          await mkdir(publishRoot);
+          appearedStats = await lstat(publishRoot);
+        },
+      }),
+      /Create parent changed after planning/,
+    );
+
+    const current = await lstat(join(directory, "missing"));
+    assert.equal(current.ino, appearedStats?.ino);
+    assert.deepEqual(await readdir(join(directory, "missing")), []);
+    assert.equal(
+      (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
+      false,
+    );
+  });
+});
+
+test("planned nested create preserves an entry appearing inside its reserved root", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const firstPlan = await planNewFile(join(directory, "shared", "a.txt"));
+    const secondPlan = await planNewFile(join(directory, "shared", "b.txt"));
+    const prepared = await preparePlannedNestedFiles(
+      [
+        { plan: firstPlan, bytes: Buffer.from("A\n") },
+        { plan: secondPlan, bytes: Buffer.from("B\n") },
+      ],
+      undefined,
+      {
+        afterRootReserve: async ({ target: publishRoot }) => {
+          await writeFile(join(publishRoot, "b.txt"), "EXTERNAL\n");
+        },
+      },
+    );
+
+    await assert.rejects(
+      publishPreparedNestedFiles(prepared),
+      /File appeared before create.*Partial create publication retained 1 file.*private staging remains/s,
+    );
+
+    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
+    assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "EXTERNAL\n");
+    assert.equal(await readFile(join(prepared.staging, "a.txt"), "utf8"), "A\n");
+    await rm(join(directory, "shared"), { recursive: true });
+    await rm(prepared.container, { recursive: true });
+  });
+});
+
 test("planned nested create rejects staged content tampering", async () => {
   await inTemporaryDirectory(async (directory) => {
     const inputPath = join(directory, "missing", "nested", "child.txt");
@@ -2012,6 +2161,46 @@ test("planned nested cleanup leaves a swapped-in directory untouched", async () 
     await assert.rejects(readFile(target), /ENOENT/);
     await rm(staging, { recursive: true });
     await rm(displaced, { recursive: true });
+  });
+});
+
+test("planned nested create revalidates its ancestor at final root reservation", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const ancestor = join(directory, "ancestor");
+    const moved = join(directory, "moved");
+    const target = join(ancestor, "missing", "child.txt");
+    await mkdir(ancestor);
+    const plan = await planNewFile(target);
+
+    await assert.rejects(
+      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+        beforeRootReserve: async () => {
+          await rename(ancestor, moved);
+          await mkdir(ancestor);
+        },
+      }),
+      /Create parent changed after planning.*Cleanup was incomplete/s,
+    );
+
+    await assert.rejects(readFile(target), /ENOENT/);
+    await assert.rejects(readFile(join(moved, "missing", "child.txt")), /ENOENT/);
+    await rm(moved, { recursive: true });
+  });
+});
+
+test("planned nested create preserves inherited setgid directory mode", {
+  skip: process.platform === "win32",
+}, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const parent = join(directory, "setgid-parent");
+    const target = join(parent, "missing", "child.txt");
+    await mkdir(parent);
+    await chmod(parent, 0o2775);
+    const plan = await planNewFile(target);
+
+    await publishNewFile(target, Buffer.from("created\n"), undefined, plan);
+
+    assert.equal((await stat(join(parent, "missing"))).mode & 0o2000, 0o2000);
   });
 });
 
@@ -2226,3 +2415,144 @@ test("multi-file batch rejects unwritable target directories during plan", async
     }
   });
 });
+
+test(
+  "create rejects a target entry swapped for a symbolic link after linking",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const input = join(directory, "target.txt");
+      const saved = join(directory, "saved.txt");
+      const originalLstat = nodeFs.promises.lstat;
+      let target = "";
+      let armed = false;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (armed && String(path) === target) {
+              armed = false;
+              await rename(target, saved);
+              await symlink(saved, target);
+            }
+            return (originalLstat as Function).call(this, path, ...args);
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          target = plan.targetPath;
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                beforeFilePublish() {
+                  armed = true;
+                },
+              }),
+            /changed during publication/,
+          );
+        },
+      );
+
+      assert.equal((await lstat(input)).isSymbolicLink(), true);
+      assert.equal(await readFile(saved, "utf8"), "created\n");
+    });
+  },
+);
+
+test(
+  "create reports an uncertain commit when the parent moves after exclusive open",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const parent = join(directory, "parent");
+      await mkdir(parent);
+      const input = join(parent, "target.txt");
+      const moved = join(directory, "moved");
+      const originalStat = nodeFs.promises.stat;
+      let ancestor = "";
+      let armed = false;
+      let checks = 0;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.link = async () => {
+            throw Object.assign(new Error("forced"), { code: "EPERM" });
+          };
+          promises.stat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (armed && String(path) === ancestor && ++checks === 3) {
+              await rename(ancestor, moved);
+              await mkdir(ancestor);
+            }
+            return (originalStat as Function).call(this, path, ...args);
+          }) as typeof promises.stat;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          ancestor = plan.ancestorPath;
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                beforeFilePublish() {
+                  armed = true;
+                },
+              }),
+            /Commit status is uncertain/,
+          );
+        },
+      );
+
+      assert.equal((await readFile(join(moved, "target.txt"))).length, 0);
+    });
+  },
+);
+
+test(
+  "replacement rejects a parent alias swapped during target validation",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const original = join(directory, "original");
+      const other = join(directory, "other");
+      const alias = join(directory, "alias");
+      await mkdir(original);
+      await mkdir(other);
+      await writeFile(join(original, "file.txt"), "before\n");
+      await writeFile(join(other, "file.txt"), "outside\n");
+      await symlink(original, alias);
+
+      const originalOpen = nodeFs.promises.open;
+      let actual = "";
+      let armed = false;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.open = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (armed && String(path) === actual) {
+              armed = false;
+              await unlink(alias);
+              await symlink(other, alias);
+            }
+            return (originalOpen as Function).call(this, path, ...args);
+          }) as typeof promises.open;
+        },
+        async (module) => {
+          const snapshot = await module.captureSnapshot(join(alias, "file.txt"));
+          assert.ok(snapshot);
+          actual = snapshot.actualPath;
+          await assert.rejects(
+            () =>
+              module.publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+                beforeRename() {
+                  armed = true;
+                },
+              }),
+            /File path changed before commit/,
+          );
+        },
+      );
+
+      assert.equal(await readFile(join(original, "file.txt"), "utf8"), "before\n");
+      assert.equal(await readFile(join(other, "file.txt"), "utf8"), "outside\n");
+    });
+  },
+);

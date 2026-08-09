@@ -45,12 +45,24 @@ export interface NewFilePlan {
 export interface NewFilePublishHooks {
   beforeDirectoryPublish?: (paths: { staging: string; target: string }) => void | Promise<void>;
   beforeDirectoryCommit?: (paths: { staging: string; target: string }) => void | Promise<void>;
+  beforeRootReserve?: (paths: { staging: string; target: string }) => void | Promise<void>;
+  afterRootReserve?: (paths: { staging: string; target: string }) => void | Promise<void>;
   beforeFilePublish?: (paths: { temporary: string; target: string }) => void | Promise<void>;
 }
 
 export interface PlannedNewFile {
   plan: NewFilePlan;
   bytes: Buffer;
+}
+
+export class PartialCreatePublishError extends Error {
+  readonly publishedFiles: number;
+
+  constructor(message: string, publishedFiles: number) {
+    super(message);
+    this.name = "PartialCreatePublishError";
+    this.publishedFiles = publishedFiles;
+  }
 }
 
 export interface PreparedNestedFiles {
@@ -304,11 +316,11 @@ export async function publishReplacement(
     throwIfAborted(signal);
     await link(snapshot.actualPath, recovery);
     recoveryLinked = true;
-    await assertLinkedTargetCurrent(snapshot);
+    const linkedBaseline = await assertLinkedTargetCurrent(snapshot);
     await hooks?.beforeRename?.({ target: snapshot.actualPath, temporary });
     throwIfAborted(signal);
     await assertPreparedFileCurrent(temporary, temporaryStats, bytes, "Temporary replacement");
-    await assertLinkedActualCurrent(snapshot);
+    await assertLinkedTargetCurrent(snapshot, linkedBaseline);
     throwIfAborted(signal);
     await rename(temporary, snapshot.actualPath);
     replacementPublished = true;
@@ -492,6 +504,10 @@ export async function publishPreparedNestedFiles(
   signal?: AbortSignal,
 ): Promise<string[]> {
   const { entries, firstPlan, publishRoot, staging } = prepared;
+  const publishedDirectories = new Map<string, BigIntStats>();
+  const stagedAfterPublish = new Map(prepared.stagedIdentities);
+  const publishedFiles: string[] = [];
+  let copyHandle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     await prepared.hooks?.beforeDirectoryPublish?.({ staging, target: publishRoot });
     throwIfAborted(signal);
@@ -500,26 +516,19 @@ export async function publishPreparedNestedFiles(
     throwIfAborted(signal);
     for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
     await inspectPreparedTree(prepared, prepared.stagedIdentities);
-    // Keep the final parent/path checks adjacent to rename; Node has no portable renameat-style API.
     await assertNewFilePlanCurrent(firstPlan);
+    await prepared.hooks?.beforeRootReserve?.({ staging, target: publishRoot });
+    throwIfAborted(signal);
+    await assertNewFilePlanCurrent(firstPlan);
+    throwIfAborted(signal);
+
     try {
-      await lstat(publishRoot);
-      throw new Error(
-        `Create parent changed after planning ${firstPlan.inputPath}. No changes were written.`,
-      );
-    } catch (error) {
-      if (!isCode(error, "ENOENT")) throw error;
-    }
-    try {
-      throwIfAborted(signal);
-      await rename(staging, publishRoot);
-      prepared.published = true;
+      await mkdir(publishRoot, { mode: 0o700 });
     } catch (error) {
       if (
         isCode(error, "EEXIST") ||
-        isCode(error, "ENOTEMPTY") ||
         isCode(error, "ENOTDIR") ||
-        isCode(error, "EISDIR")
+        isCode(error, "ENOENT")
       ) {
         throw new Error(
           `Create parent changed after planning ${firstPlan.inputPath}. No changes were written.`,
@@ -527,8 +536,176 @@ export async function publishPreparedNestedFiles(
       }
       throw error;
     }
+    const rootStats = await lstat(publishRoot, { bigint: true });
+    publishedDirectories.set(publishRoot, rootStats);
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+      throw new Error(`Reserved create directory changed identity at ${publishRoot}.`);
+    }
+    await assertNewFilePlanCurrent(firstPlan);
+    await prepared.hooks?.afterRootReserve?.({ staging, target: publishRoot });
+    throwIfAborted(signal);
+    await assertNewFilePlanCurrent(firstPlan);
 
-    if (prepared.containerStats) {
+    const stagedIdentities = prepared.stagedIdentities;
+    if (!stagedIdentities) throw new Error("Staged create identities were not recorded.");
+    const relativeDirectories = [...stagedIdentities]
+      .filter(([relativePath, stats]) => relativePath.length > 0 && stats.isDirectory())
+      .sort(([left], [right]) => left.length - right.length);
+    for (const [relativePath] of relativeDirectories) {
+      throwIfAborted(signal);
+      await assertPublishedDirectoriesCurrent(publishedDirectories);
+      const targetDirectory = join(publishRoot, relativePath);
+      try {
+        throwIfAborted(signal);
+        await mkdir(targetDirectory, { mode: 0o700 });
+      } catch (error) {
+        if (isCode(error, "EEXIST") || isCode(error, "ENOTDIR")) {
+          throw new Error(`Create path appeared before publication: ${targetDirectory}.`);
+        }
+        throw error;
+      }
+      const actualDirectory = await realpath(targetDirectory);
+      const targetStats = await lstat(actualDirectory, { bigint: true });
+      if (!targetStats.isDirectory() || targetStats.isSymbolicLink()) {
+        throw new Error(`Created directory changed identity at ${actualDirectory}.`);
+      }
+      try {
+        await assertPublishedDirectoriesCurrent(publishedDirectories);
+      } catch (error) {
+        try {
+          await removeEmptyOwnedDirectory(actualDirectory, targetStats, "Escaped create directory");
+        } catch (cleanupError) {
+          throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`);
+        }
+        throw error;
+      }
+      publishedDirectories.set(targetDirectory, targetStats);
+    }
+
+    for (const { plan, bytes } of entries) {
+      throwIfAborted(signal);
+      const relativePath = stagedRelativePath(plan);
+      const stagedTarget = join(staging, relativePath);
+      const target = join(publishRoot, relativePath);
+      const stagedIdentity = stagedIdentities.get(relativePath);
+      await assertPreparedFileCurrent(stagedTarget, stagedIdentity, bytes, "Staged create file");
+      await assertPublishedDirectoriesCurrent(publishedDirectories);
+      let linked = true;
+      try {
+        throwIfAborted(signal);
+        await link(stagedTarget, target);
+        publishedFiles.push(target);
+      } catch (error) {
+        if (isCode(error, "EEXIST")) {
+          throw new Error(`File appeared before create: ${target}.`);
+        }
+        if (!isCode(error, "EPERM") && !isCode(error, "ENOTSUP") && !isCode(error, "ENOSYS")) {
+          throw error;
+        }
+        linked = false;
+        await assertPublishedDirectoriesCurrent(publishedDirectories);
+        throwIfAborted(signal);
+        copyHandle = await open(target, "wx", 0o666);
+        publishedFiles.push(target);
+        const openedStats = await copyHandle.stat({ bigint: true });
+        const pathStats = await lstat(target, { bigint: true });
+        if (!pathStats.isFile() || pathStats.isSymbolicLink() || !sameIdentity(openedStats, pathStats)) {
+          throw new Error(`Created file path changed during publication: ${target}.`);
+        }
+        try {
+          await assertPublishedDirectoriesCurrent(publishedDirectories);
+          throwIfAborted(signal);
+        } catch (error) {
+          try {
+            const removed = await unlinkOwnedPath(target, openedStats, "Escaped fallback create file");
+            if (!removed) throw new Error(`Fallback create file location changed before cleanup: ${target}.`);
+            publishedFiles.pop();
+          } catch (cleanupError) {
+            throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`);
+          } finally {
+            await copyHandle.close();
+            copyHandle = undefined;
+          }
+          throw error;
+        }
+        await copyHandle.writeFile(bytes, { signal });
+        await copyHandle.sync();
+        const copiedStats = await copyHandle.stat({ bigint: true });
+        await copyHandle.close();
+        copyHandle = undefined;
+        const copiedState = await readStableRegularEntry(target);
+        if (!samePublishedState(copiedStats, copiedState.stats) || !copiedState.bytes.equals(bytes)) {
+          throw new Error(`Created file changed during publication: ${target}.`);
+        }
+        prepared.warnings.push(
+          `Atomic hard-link publication was unavailable for ${target}; exclusive create fallback was used.`,
+        );
+      }
+
+      const publishedState = await readStableRegularEntry(target);
+      if (!publishedState.bytes.equals(bytes)) {
+        throw new Error(`Created file changed during publication: ${target}.`);
+      }
+      if (linked) {
+        const stagedState = await readStableFile(stagedTarget);
+        if (!sameIdentity(stagedState.stats, publishedState.stats) || !stagedState.bytes.equals(bytes)) {
+          throw new Error(`Staged create file changed during publication: ${stagedTarget}.`);
+        }
+        stagedAfterPublish.set(relativePath, stagedState.stats);
+      }
+      try {
+        await assertPublishedDirectoriesCurrent(publishedDirectories);
+      } catch (error) {
+        if (linked) {
+          try {
+            const removed = await unlinkOwnedPath(target, publishedState.stats, "Escaped create file");
+            if (!removed) throw new Error(`Created file location changed before cleanup: ${target}.`);
+            const restoredStaging = await readStableFile(stagedTarget);
+            if (!stagedIdentity || !sameIdentity(stagedIdentity, restoredStaging.stats) || !restoredStaging.bytes.equals(bytes)) {
+              throw new Error(`Staged create file changed during rollback: ${stagedTarget}.`);
+            }
+            prepared.stagedIdentities?.set(relativePath, restoredStaging.stats);
+            stagedAfterPublish.set(relativePath, restoredStaging.stats);
+            publishedFiles.pop();
+          } catch (cleanupError) {
+            throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`);
+          }
+        }
+        throw error;
+      }
+    }
+
+    await assertPublishedDirectoriesCurrent(publishedDirectories);
+    await inspectPreparedTree(prepared, stagedAfterPublish);
+    const ancestorMode = (await stat(firstPlan.ancestorPath, { bigint: true })).mode;
+    const finalDirectoryModes = new Map<string, bigint>();
+    for (const [targetDirectory, publishedStats] of [...publishedDirectories].sort(
+      ([left], [right]) => left.length - right.length,
+    )) {
+      const relativePath = targetDirectory === publishRoot ? "" : targetDirectory.slice(publishRoot.length + 1);
+      const stagedStats = stagedIdentities.get(relativePath);
+      if (!stagedStats) throw new Error(`Missing staged directory metadata for ${targetDirectory}.`);
+      const parentMode = finalDirectoryModes.get(dirname(targetDirectory)) ?? ancestorMode;
+      const finalMode = (stagedStats.mode & 0o777n) | (parentMode & 0o2000n);
+      await chmodOwnedDirectory(targetDirectory, publishedStats, Number(finalMode));
+      finalDirectoryModes.set(targetDirectory, finalMode);
+    }
+    for (const [targetDirectory] of [...publishedDirectories].sort(
+      ([left], [right]) => right.length - left.length,
+    )) {
+      const warning = await syncDirectory(targetDirectory);
+      if (warning) prepared.warnings.push(warning);
+    }
+
+    prepared.published = true;
+    try {
+      await removePreparedStaging(prepared, stagedAfterPublish);
+    } catch (error) {
+      prepared.warnings.push(
+        `The files were created, but private staging cleanup was incomplete: ${errorMessage(error)}`,
+      );
+    }
+    if (prepared.containerStats && !prepared.stagingStats) {
       try {
         await rmdirOwnedPath(prepared.container, prepared.containerStats, "Staged create container");
       } catch (error) {
@@ -541,12 +718,32 @@ export async function publishPreparedNestedFiles(
     if (ancestorWarning) prepared.warnings.push(ancestorWarning);
     return prepared.warnings;
   } catch (error) {
+    await copyHandle?.close().catch(() => undefined);
+    if (publishedFiles.length > 0) {
+      prepared.discardAttempted = true;
+      throw new PartialCreatePublishError(
+        `${errorMessage(error)} Partial create publication retained ${publishedFiles.length} file` +
+          `${publishedFiles.length === 1 ? "" : "s"} at ${publishedFiles.join(", ")}; ` +
+          `private staging remains at ${staging}.`,
+        publishedFiles.length,
+      );
+    }
+
+    const cleanupFailures: string[] = [];
+    for (const [path, stats] of [...publishedDirectories].reverse()) {
+      try {
+        await removeEmptyOwnedDirectory(path, stats, "Reserved create directory");
+      } catch (cleanupError) {
+        cleanupFailures.push(`${path}: ${errorMessage(cleanupError)}`);
+      }
+    }
     try {
       await discardPreparedNestedFiles(prepared);
     } catch (cleanupError) {
-      throw new Error(
-        `${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
-      );
+      cleanupFailures.push(errorMessage(cleanupError));
+    }
+    if (cleanupFailures.length > 0) {
+      throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${cleanupFailures.join("; ")}`);
     }
     throw error;
   }
@@ -557,28 +754,22 @@ export async function discardPreparedNestedFiles(prepared: PreparedNestedFiles):
   prepared.discardAttempted = true;
   if (prepared.stagingStats) {
     if (prepared.stagedIdentities) {
-      await inspectPreparedTree(prepared, prepared.stagedIdentities);
-    }
-    const quarantined = await quarantineOwnedPath(
-      prepared.staging,
-      prepared.stagingStats,
-      "Staged create directory",
-    );
-    if (quarantined) {
-      if (prepared.stagedIdentities) {
-        const identities = new Map(prepared.stagedIdentities);
-        identities.set("", quarantined.stats);
-        await inspectPreparedTree(
-          { ...prepared, staging: quarantined.path },
-          identities,
-        );
-      }
-      await rm(quarantined.path, { recursive: true });
-      await removeEmptyOwnedDirectory(
-        quarantined.directory,
-        quarantined.directoryStats,
-        "Cleanup quarantine",
+      await removePreparedStaging(prepared, prepared.stagedIdentities);
+    } else {
+      const quarantined = await quarantineOwnedPath(
+        prepared.staging,
+        prepared.stagingStats,
+        "Staged create directory",
       );
+      if (quarantined) {
+        await rm(quarantined.path, { recursive: true });
+        await removeEmptyOwnedDirectory(
+          quarantined.directory,
+          quarantined.directoryStats,
+          "Cleanup quarantine",
+        );
+        prepared.stagingStats = undefined;
+      }
     }
   }
   if (prepared.containerStats) {
@@ -644,7 +835,7 @@ async function inspectPreparedTree(
         continue;
       }
       const bytes = expected.get(relativePath);
-      if (!stats.isFile() || stats.nlink !== 1n || !bytes) {
+      if (!stats.isFile() || (!expectedIdentities && stats.nlink !== 1n) || !bytes) {
         throw new Error(`Staged create tree contains an unexpected entry: ${path}. No changes were written.`);
       }
       const current = await readStableFile(path);
@@ -748,6 +939,24 @@ export async function publishNewFile(
       if (plan) await assertNewFilePlanCurrent(plan);
       throwIfAborted(signal);
       await link(temporary, targetPath);
+      const targetState = await readStableRegularEntry(targetPath);
+      const temporaryState = await readStableFile(temporary);
+      if (!sameIdentity(temporaryState.stats, targetState.stats) || !targetState.bytes.equals(bytes)) {
+        throw new Error(`Created file changed during publication: ${targetPath}.`);
+      }
+      try {
+        if (plan) await assertNewFilePlanCurrent(plan);
+      } catch (parentError) {
+        try {
+          const removed = await unlinkOwnedPath(targetPath, targetState.stats, "Escaped create file");
+          if (!removed) throw new Error(`Created file location changed before cleanup: ${targetPath}.`);
+        } catch (cleanupError) {
+          throw new Error(
+            `${errorMessage(parentError)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
+          );
+        }
+        throw parentError;
+      }
       published = true;
     } catch (error) {
       if (isCode(error, "EEXIST")) {
@@ -758,22 +967,69 @@ export async function publishNewFile(
       }
       let target: Awaited<ReturnType<typeof open>> | undefined;
       let targetStats: BigIntStats | undefined;
+      let targetActualPath: string | undefined;
+      let targetWriteCompleted = false;
       try {
         if (plan) await assertNewFilePlanCurrent(plan);
         throwIfAborted(signal);
         target = await open(targetPath, "wx", 0o666);
         targetStats = await target.stat({ bigint: true });
+        targetActualPath = targetPath;
+        const pathStats = await lstat(targetPath, { bigint: true });
+        if (!pathStats.isFile() || pathStats.isSymbolicLink() || !sameIdentity(targetStats, pathStats)) {
+          throw new Error(`Created file path changed during publication: ${targetPath}.`);
+        }
+        if (plan) await assertNewFilePlanCurrent(plan);
+        throwIfAborted(signal);
         await target.writeFile(bytes, { signal });
         await target.sync();
+        const copiedStats = await target.stat({ bigint: true });
         await target.close();
         target = undefined;
+        const copiedState = await readStableRegularEntry(targetActualPath);
+        if (!samePublishedState(copiedStats, copiedState.stats) || !copiedState.bytes.equals(bytes)) {
+          throw new Error(`Created file changed during publication: ${targetActualPath}.`);
+        }
+        targetWriteCompleted = true;
         published = true;
+        if (plan) {
+          try {
+            await assertNewFilePlanCurrent(plan);
+          } catch (parentError) {
+            throw new Error(
+              `${errorMessage(parentError)} The created file and temporary source were retained at ` +
+                `${targetActualPath} and ${temporary}.`,
+            );
+          }
+        }
       } catch (writeError) {
         await target?.close().catch(() => undefined);
+        if (targetStats && !targetWriteCompleted && targetActualPath) {
+          let removed: boolean;
+          try {
+            removed = await unlinkOwnedPath(
+              targetActualPath,
+              targetStats,
+              "Incomplete fallback create file",
+            );
+          } catch (cleanupError) {
+            throw new Error(
+              `${errorMessage(writeError)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
+            );
+          }
+          if (!removed) {
+            published = true;
+            throw new Error(
+              `Create publication location changed after exclusive open. ` +
+                `Commit status is uncertain; inspect the moved parent.`,
+            );
+          }
+          targetStats = undefined;
+        }
         if (targetStats) {
           throw new Error(
-            `Create failed after ${targetPath} became visible. It may be partial and was left untouched: ` +
-              errorMessage(writeError),
+            `Create failed after ${targetActualPath ?? targetPath} became visible. ` +
+              `It may be partial and was left untouched: ${errorMessage(writeError)}`,
           );
         }
         if (isCode(writeError, "EEXIST")) {
@@ -852,6 +1108,64 @@ async function assertPreparedFileCurrent(
   }
 }
 
+function stagedRelativePath(plan: NewFilePlan): string {
+  return join(...plan.missingDirectories.slice(1), basename(plan.targetPath));
+}
+
+async function assertPublishedDirectoriesCurrent(
+  directories: Map<string, BigIntStats>,
+): Promise<void> {
+  for (const [path, expected] of directories) {
+    const current = await currentOwnedPath(path, expected, "Published create directory");
+    if (!current || !current.isDirectory() || current.isSymbolicLink()) {
+      throw new Error(`Published create directory changed identity at ${path}.`);
+    }
+  }
+}
+
+async function chmodOwnedDirectory(
+  path: string,
+  expected: BigIntStats | undefined,
+  mode: number,
+): Promise<void> {
+  if (process.platform === "win32") return;
+  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const current = await handle.stat({ bigint: true });
+    if (!expected || !sameIdentity(expected, current) || !current.isDirectory()) {
+      throw new Error(`Published create directory changed identity at ${path}.`);
+    }
+    await handle.chmod(mode);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function removePreparedStaging(
+  prepared: PreparedNestedFiles,
+  expectedIdentities: Map<string, BigIntStats>,
+): Promise<void> {
+  if (!prepared.stagingStats) return;
+  await inspectPreparedTree(prepared, expectedIdentities);
+  const quarantined = await quarantineOwnedPath(
+    prepared.staging,
+    prepared.stagingStats,
+    "Staged create directory",
+  );
+  if (!quarantined) return;
+  const identities = new Map(expectedIdentities);
+  identities.set("", quarantined.stats);
+  await inspectPreparedTree({ ...prepared, staging: quarantined.path }, identities);
+  await rm(quarantined.path, { recursive: true });
+  await removeEmptyOwnedDirectory(
+    quarantined.directory,
+    quarantined.directoryStats,
+    "Cleanup quarantine",
+  );
+  prepared.stagingStats = undefined;
+  prepared.stagedIdentities = undefined;
+}
+
 async function currentOwnedPath(
   path: string,
   expected: BigIntStats | undefined,
@@ -914,9 +1228,9 @@ async function unlinkOwnedPath(
   expected: BigIntStats | undefined,
   label: string,
   expectedFile?: { stats: BigIntStats; bytes: Buffer },
-): Promise<void> {
+): Promise<boolean> {
   const quarantined = await quarantineOwnedPath(path, expected, label);
-  if (!quarantined) return;
+  if (!quarantined) return false;
   if (expectedFile) {
     const current = await readStableFile(quarantined.path);
     if (!samePublishedState(expectedFile.stats, current.stats) || !expectedFile.bytes.equals(current.bytes)) {
@@ -929,6 +1243,7 @@ async function unlinkOwnedPath(
     quarantined.directoryStats,
     "Cleanup quarantine",
   );
+  return true;
 }
 
 async function rmdirOwnedPath(path: string, expected: BigIntStats, label: string): Promise<void> {
@@ -1016,7 +1331,17 @@ export async function assertSnapshotCurrent(snapshot: FileSnapshot): Promise<voi
   }
 }
 
-async function assertLinkedTargetCurrent(snapshot: FileSnapshot): Promise<void> {
+async function assertLinkedTargetCurrent(
+  snapshot: FileSnapshot,
+  linkedBaseline?: BigIntStats,
+): Promise<BigIntStats> {
+  await assertLinkedInputCurrent(snapshot);
+  const current = await assertLinkedActualCurrent(snapshot, linkedBaseline);
+  await assertLinkedInputCurrent(snapshot);
+  return current;
+}
+
+async function assertLinkedInputCurrent(snapshot: FileSnapshot): Promise<void> {
   const currentInput = await lstat(snapshot.inputPath, { bigint: true }).catch(() => undefined);
   if (!currentInput || !sameIdentity(snapshot.inputStats, currentInput)) {
     throw new Error(`File path changed before commit: ${snapshot.inputPath}. No changes were written.`);
@@ -1024,14 +1349,27 @@ async function assertLinkedTargetCurrent(snapshot: FileSnapshot): Promise<void> 
   if (snapshot.symbolicLink && (await realpath(snapshot.inputPath)) !== snapshot.actualPath) {
     throw new Error(`Symbolic-link target changed before commit: ${snapshot.inputPath}. No changes were written.`);
   }
-  await assertLinkedActualCurrent(snapshot);
 }
 
-async function assertLinkedActualCurrent(snapshot: FileSnapshot): Promise<void> {
+async function assertLinkedActualCurrent(
+  snapshot: FileSnapshot,
+  linkedBaseline?: BigIntStats,
+): Promise<BigIntStats> {
+  const pathStats = await lstat(snapshot.actualPath, { bigint: true }).catch(() => undefined);
+  const matchesExpected = pathStats && (linkedBaseline
+    ? sameSnapshotStats(linkedBaseline, pathStats)
+    : sameLinkedSnapshot(snapshot.stats, pathStats));
+  if (!matchesExpected) {
+    throw new Error(`File path changed before commit: ${snapshot.inputPath}. No changes were written.`);
+  }
+
   const handle = await open(snapshot.actualPath, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     const before = await handle.stat({ bigint: true });
-    if (!sameLinkedSnapshot(snapshot.stats, before)) {
+    const handleMatches = linkedBaseline
+      ? sameSnapshotStats(linkedBaseline, before)
+      : sameLinkedSnapshot(snapshot.stats, before);
+    if (!handleMatches) {
       throw new Error(`File changed before commit: ${snapshot.inputPath}. No changes were written.`);
     }
     const bytes = await handle.readFile();
@@ -1039,6 +1377,33 @@ async function assertLinkedActualCurrent(snapshot: FileSnapshot): Promise<void> 
     if (!sameSnapshotStats(before, after) || !bytes.equals(snapshot.bytes)) {
       throw new Error(`File content changed before commit: ${snapshot.inputPath}. No changes were written.`);
     }
+    return after;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readStableRegularEntry(path: string): Promise<{ stats: BigIntStats; bytes: Buffer }> {
+  const entryBefore = await lstat(path, { bigint: true });
+  if (!entryBefore.isFile() || entryBefore.isSymbolicLink()) {
+    throw new Error(`Created file path changed during publication: ${path}`);
+  }
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+  );
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!sameSnapshotStats(entryBefore, before)) {
+      throw new Error(`Created file path changed during publication: ${path}`);
+    }
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    const entryAfter = await lstat(path, { bigint: true });
+    if (!sameSnapshotStats(before, after) || !sameSnapshotStats(after, entryAfter)) {
+      throw new Error(`Created file changed during publication: ${path}`);
+    }
+    return { stats: after, bytes };
   } finally {
     await handle.close();
   }

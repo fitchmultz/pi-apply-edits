@@ -130,8 +130,9 @@ Two pre-write failures can be retried without resending unchanged file bodies:
 ```
 
 The tool includes the appropriate payload in eligible error text. `create` is
-available only for rewrite-only requests and refuses to overwrite a target that
-appeared after the original failure. `oldText` is available only for edit-only
+available only for rewrite-only requests and refuses to overwrite every target
+observed missing during the original failure if any of them appears before retry.
+`oldText` is available only for edit-only
 requests and changes only the failing anchor; the original `newText` is preserved.
 Both retries are single-use when execution begins, remain available while a
 prepared call awaits approval, expire when the current agent run settles or the
@@ -164,8 +165,8 @@ are rejected rather than guessed.
   remain parallel.
 - Existing files are published by same-directory atomic replacement from a
   metadata-preserving native clone.
-- A best-effort descriptor/content recheck runs immediately before rename.
-  Portable Node has no compare-and-swap rename, so an external writer in the
+- A best-effort directory-entry, metadata, and content recheck runs immediately
+  before rename. Portable Node has no compare-and-swap rename, so an external writer in the
   final system-call window can still win or be overwritten. Post-rename
   verification reports success only for the prepared target. If either inode
   changes, it never attempts rollback: the target is left untouched and a named
@@ -181,8 +182,10 @@ are rejected rather than guessed.
   built-ins enabled there until a native metadata-preserving publisher is
   implemented. Explicit create remains available.
 - Missing parent directories are created only for an explicit create. Creates
-  under one missing root serialize, and staged directory trees are private and
-  verified immediately before publication.
+  under one missing root serialize and are fully staged before publication. The
+  missing root and every file name are then claimed with exclusive no-clobber
+  operations. If publication stops after a file name is claimed, the partial root
+  and private staging tree are retained at named paths for inspection.
 - Cleanup atomically moves temporary, recovery, and staged paths into private
   quarantine directories, rechecks identity, and preserves detected swaps for inspection.
 - Non-UTF-8, NUL-containing, non-regular, dangling-symlink, and hard-linked

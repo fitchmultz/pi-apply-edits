@@ -451,6 +451,48 @@ test("compact create retry reuses full bodies and is single-use", async () => {
   }
 });
 
+test("compact create retry guards every target observed missing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-create-retry-guard-"));
+  try {
+    const tool = createApplyEditsTool();
+    const original = {
+      files: [
+        { path: "already-opted.txt", rewrite: "OPTED\n", onMissing: "create" as const },
+        { path: "needs-opt-in.txt", rewrite: "RETRY\n" },
+      ],
+    };
+    await assert.rejects(
+      tool.execute(
+        "call-create-guard",
+        prepare(tool, original),
+        undefined,
+        undefined,
+        { cwd: directory } as never,
+      ),
+      /Compact retry/,
+    );
+
+    const expanded = prepare(tool, { retry: { from: "call-create-guard" } });
+    assert.equal(expanded.files?.[0]?.requireMissing, true);
+    assert.equal(expanded.files?.[1]?.requireMissing, true);
+    await writeFile(join(directory, "already-opted.txt"), "EXTERNAL\n");
+    await assert.rejects(
+      tool.execute(
+        "call-create-guard-retry",
+        expanded,
+        undefined,
+        undefined,
+        { cwd: directory } as never,
+      ),
+      /File now exists/,
+    );
+    assert.equal(await readFile(join(directory, "already-opted.txt"), "utf8"), "EXTERNAL\n");
+    await assert.rejects(readFile(join(directory, "needs-opt-in.txt")), /ENOENT/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("retry capacity never invalidates an advertised handle", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-retry-capacity-"));
   try {
