@@ -891,25 +891,31 @@ async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string;
     if (!isMissingPathError(error)) throw error;
   }
 
-  // Key a create on its full target, so a later edit of that path lands on the same queue.
+  // Exactly one Pi key per file. Pi canonicalizes each key with realpath at the moment it is
+  // acquired, so any two keys an operation holds can collapse onto one queue and deadlock it
+  // against itself: a deeper path is not safely distinct from its parent, because a symbolic
+  // link can resolve it back up.
+  //
+  // That key must be the exact-case path. Once the create publishes, an edit of the same file
+  // resolves through realpath, which returns the spelling on disk, which is the spelling this
+  // create is about to use. A case-folded key would name a different queue after publication
+  // and let the edit run against a half-published file. Case folding is kept for targetKey,
+  // which only feeds batch duplicate detection, and for the local keys below, which are never
+  // canonicalized and so can fold safely.
   const missing: string[] = [];
   let current = resolvedPath;
   while (true) {
     const parent = dirname(current);
     if (parent === current) {
-      const targetKey = normalizeLockKey(resolvedPath, missing);
-      return { targetKey, queueKeys: [targetKey] };
+      return { targetKey: normalizeLockKey(resolvedPath, missing), queueKeys: [resolvedPath] };
     }
     try {
       const realParent = await realpath(parent);
       missing.unshift(basename(current));
-      // Exactly one key per file. Pi canonicalizes each lock key with realpath at the moment
-      // it is acquired, so any two keys an operation holds can collapse onto one queue and
-      // deadlock it against itself: a deeper path is not safely distinct from its parent,
-      // because a symbolic link can resolve it back up. Coordinating sibling creates under a
-      // shared missing root therefore needs a mutex that is not keyed by a resolvable path.
-      const targetKey = normalizeLockKey(realParent, missing);
-      return { targetKey, queueKeys: [targetKey] };
+      return {
+        targetKey: normalizeLockKey(realParent, missing),
+        queueKeys: [join(realParent, ...missing)],
+      };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
       missing.unshift(basename(current));

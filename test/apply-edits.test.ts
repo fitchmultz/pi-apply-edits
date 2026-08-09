@@ -2667,12 +2667,9 @@ test(
   },
 );
 
-// Only lowercase is covered. On darwin and win32 a missing path's lock key is case-folded
-// while a published path resolves through realpath with its on-disk spelling, so a mixed-case
-// target still takes two different keys across publication. That asymmetry predates this
-// package's create locking and is tracked as a follow-up; it cannot be closed by holding both
-// keys, because Pi canonicalizes each key at acquisition and the two collapse into one queue.
-for (const relative of ["missing/target.txt"]) {
+// Mixed case is covered because the Pi key for a create is the exact-case path. A folded key
+// would name a different queue than the realpath-derived key an edit takes after publication.
+for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
   test(
     `a rewrite of ${relative} while it is being created waits for the create to finish`,
     { skip: process.platform === "win32" },
