@@ -948,13 +948,7 @@ async function mutationQueueKeys(
   // acquisition waits on the batch's own first lock. Reject before acquiring any lock. There
   // remains an inherent race if an external process creates both the link and its target after
   // this lstat; closing that requires an atomic multi-key queue API from Pi.
-  const unresolvedEntry = await lstat(resolvedPath, { bigint: true }).catch((error: unknown) => {
-    if (isMissingPathError(error)) return undefined;
-    throw error;
-  });
-  if (unresolvedEntry?.isSymbolicLink()) {
-    throw new Error(`Cannot mutate dangling symbolic link ${resolvedPath}. No changes were written.`);
-  }
+  await assertNotDanglingSymbolicLink(resolvedPath);
 
   // Exactly one Pi key per file. Pi canonicalizes each key with realpath at the moment it is
   // acquired, so any two keys an operation holds can collapse onto one queue and deadlock it
@@ -986,9 +980,20 @@ async function mutationQueueKeys(
       return { targetKey, queueKeys: [join(realParent, ...missing)], localKeys };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
+      await assertNotDanglingSymbolicLink(parent);
       missing.unshift(basename(current));
       current = parent;
     }
+  }
+}
+
+async function assertNotDanglingSymbolicLink(path: string): Promise<void> {
+  const entry = await lstat(path, { bigint: true }).catch((error: unknown) => {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  });
+  if (entry?.isSymbolicLink()) {
+    throw new Error(`Cannot mutate dangling symbolic link ${path}. No changes were written.`);
   }
 }
 

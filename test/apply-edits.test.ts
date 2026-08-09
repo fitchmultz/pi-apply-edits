@@ -3005,3 +3005,64 @@ test("insert results state that no separator was inferred", async () => {
     );
   });
 });
+
+test("a batch rejects a dangling ancestor before its lock can collapse onto the target", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const aliasParent = join(directory, "a");
+    const targetParent = join(directory, "b");
+    const alias = join(aliasParent, "child.txt");
+    const target = join(targetParent, "child.txt");
+    await symlink("b", aliasParent);
+    const canonicalDirectory = await realpath(directory);
+    const queueAlias = join(canonicalDirectory, "a", "child.txt");
+    const originalRealpath = nodeFs.promises.realpath;
+    let aliasFailed = false;
+    let targetFailed = false;
+    let injected = false;
+
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+          const value = String(path);
+          if (!injected && aliasFailed && targetFailed && value === queueAlias) {
+            await mkdir(targetParent);
+            await writeFile(target, "external\n");
+            injected = true;
+          }
+          try {
+            return await (originalRealpath as Function).call(this, path, ...args);
+          } catch (error) {
+            if (value === alias || value === queueAlias) aliasFailed = true;
+            if (value === target || value === join(canonicalDirectory, "b", "child.txt")) {
+              targetFailed = true;
+            }
+            throw error;
+          }
+        }) as typeof promises.realpath;
+      },
+      async (module) => {
+        const operation = module.applyEditsToFile(
+          {
+            files: [
+              { path: "a/child.txt", rewrite: "one\n" },
+              { path: "b/child.txt", rewrite: "two\n" },
+            ],
+          },
+          directory,
+        );
+        const outcome = await Promise.race([
+          operation.then(
+            () => "settled",
+            (error: unknown) => `rejected: ${String(error)}`,
+          ),
+          new Promise((resolve) => setTimeout(() => resolve("timeout"), 1000)),
+        ]);
+        assert.match(String(outcome), /^rejected: .*Cannot mutate dangling symbolic link/);
+        assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
+      },
+      "../src/apply-edits.ts",
+    );
+
+    await assert.rejects(lstat(targetParent), /ENOENT/);
+  });
+});
