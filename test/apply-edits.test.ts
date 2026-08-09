@@ -3721,3 +3721,169 @@ test("nested create warns when staging disappears before quarantine precheck", a
     assert.equal((await stat(join(escaped, "file"))).nlink, 2);
   });
 });
+
+test(
+  "owner-rejected entries inside the container block container cleanup entirely",
+  { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
+  async () => {
+    for (const rejectedName of ["q", "publish"] as const) {
+      await inTemporaryDirectory(async (directory) => {
+        const originalLstat = nodeFs.promises.lstat;
+        let rejectedPath = "";
+        let rejectedIdentity: { dev: bigint; ino: bigint } | undefined;
+        await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+          (promises) => {
+            promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+              const stats = await (originalLstat as Function).call(this, path, ...args);
+              if (!rejectedPath && basename(String(path)) === rejectedName) {
+                rejectedPath = String(path);
+                rejectedIdentity = { dev: stats.dev, ino: stats.ino };
+                return new Proxy(stats, {
+                  get(target, property, receiver) {
+                    if (property === "uid") return target.uid + 1n;
+                    return Reflect.get(target, property, receiver);
+                  },
+                });
+              }
+              return stats;
+            }) as typeof promises.lstat;
+          },
+          async (module) => {
+            await assert.rejects(
+              module.applyEditsToFile(
+                { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+                directory,
+              ),
+              /owner changed.*left untouched.*container was left untouched/s,
+              rejectedName,
+            );
+          },
+          "../src/apply-edits.ts",
+        );
+
+        const current = await lstat(rejectedPath, { bigint: true });
+        assert.equal(current.dev, rejectedIdentity!.dev, rejectedName);
+        assert.equal(current.ino, rejectedIdentity!.ino, rejectedName);
+      });
+    }
+  },
+);
+
+test(
+  "unplanned create leaves a rejected temporary directory in place without moving parents",
+  { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const originalLstat = nodeFs.promises.lstat;
+      let rejectedPath = "";
+      let rejectedIdentity: { dev: bigint; ino: bigint } | undefined;
+      await withRacingFileSystem<typeof import("../src/file-system.ts")>(
+        (promises) => {
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            const stats = await (originalLstat as Function).call(this, path, ...args);
+            const name = basename(String(path));
+            if (!rejectedPath && name.startsWith(".pi-apply-edits-") && name.endsWith(".tmpdir")) {
+              rejectedPath = String(path);
+              rejectedIdentity = { dev: stats.dev, ino: stats.ino };
+              return new Proxy(stats, {
+                get(target, property, receiver) {
+                  if (property === "uid") return target.uid + 1n;
+                  return Reflect.get(target, property, receiver);
+                },
+              });
+            }
+            return stats;
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          await assert.rejects(
+            module.publishNewFile(join(directory, "new-parent", "file"), Buffer.from("x\n")),
+            /owner changed.*left untouched/,
+          );
+        },
+        "../src/file-system.ts",
+      );
+
+      const current = await lstat(rejectedPath, { bigint: true });
+      assert.equal(current.dev, rejectedIdentity!.dev);
+      assert.equal(current.ino, rejectedIdentity!.ino);
+    });
+  },
+);
+
+test("partial publication reports a moved staging tree as uncertain", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLink = nodeFs.promises.link;
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-staging");
+    let movedStaging = "";
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.link = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalLink as Function).call(this, source, target);
+          if (!movedStaging && String(source).includes(".tmpdir/publish/")) {
+            movedStaging = dirname(String(source));
+            await (originalRename as Function).call(this, movedStaging, escaped);
+          }
+          return result;
+        }) as typeof promises.link;
+      },
+      async (module) => {
+        await assert.rejects(
+          module.applyEditsToFile(
+            { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+            directory,
+          ),
+          (error: Error) => {
+            assert.match(error.message, /location is uncertain.*may remain linked/s);
+            assert.doesNotMatch(error.message, /private staging remains at/);
+            return true;
+          },
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert(movedStaging);
+    assert.equal((await stat(join(escaped, "file"))).nlink, 2);
+  });
+});
+
+test("container disappearance before or during cleanup returns a warning", async () => {
+  for (const triggerCheck of [3, 6]) {
+    await inTemporaryDirectory(async (directory) => {
+      const originalLstat = nodeFs.promises.lstat;
+      const originalRename = nodeFs.promises.rename;
+      const escaped = join(directory, "escaped-container");
+      let checks = 0;
+      let moved = false;
+      await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+        (promises) => {
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            const name = basename(String(path));
+            if (name.startsWith(".pi-apply-edits-") && name.endsWith(".tmpdir") && ++checks === triggerCheck) {
+              await (originalRename as Function).call(this, path, escaped);
+              moved = true;
+            }
+            return (originalLstat as Function).call(this, path, ...args);
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          const result = await module.applyEditsToFile(
+            { path: "missing/file", rewrite: "ok\n", onMissing: "create" },
+            directory,
+          );
+          const warnings = "warnings" in result.details ? result.details.warnings : [];
+          assert.match(
+            warnings.join("\n"),
+            /container cleanup was incomplete.*container may remain outside/s,
+            `trigger check ${triggerCheck}`,
+          );
+        },
+        "../src/apply-edits.ts",
+      );
+      assert(moved, `trigger check ${triggerCheck}`);
+      assert.equal((await stat(escaped)).isDirectory(), true);
+    });
+  }
+});
