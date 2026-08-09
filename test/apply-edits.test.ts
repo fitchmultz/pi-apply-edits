@@ -1148,7 +1148,7 @@ test("post-commit cleanup and sync failures return explicit warnings", {
     assert.equal(await readFile(recovery, "utf8"), "before\n");
     assert.match(
       warnings.join(" "),
-      /recovery cleanup was incomplete; the previous content may remain at .* or elsewhere/,
+      /recovery cleanup failed and its final state is unknown; the previous content may remain at .* or elsewhere, or only leftover temporary directories may remain/,
     );
     assert.match(warnings.join(" "), /parent directory could not be synced/);
     await unlink(recovery);
@@ -4224,7 +4224,7 @@ test("replacement failure discloses an unverifiable recovery link", async () => 
         await writeFile(join(directory, "file"), "before\n");
         await assert.rejects(
           module.applyEditsToFile({ path: "file", rewrite: "after\n" }, directory),
-          /the pre-edit recovery link could not be verified or removed and may remain at .* or elsewhere, possibly hard-linked to the target/s,
+          /the pre-edit recovery link's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, possibly hard-linked to the target, or only leftover temporary directories may remain/s,
         );
       },
       "../src/apply-edits.ts",
@@ -4263,7 +4263,7 @@ test("successful create discloses an unverifiable temporary link", async () => {
         const warnings = "warnings" in result.details ? result.details.warnings : [];
         assert.match(
           warnings.join("\n"),
-          /temporary link could not be verified or removed and may remain at .* or elsewhere, possibly hard-linked to the created file/s,
+          /temporary link's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, possibly hard-linked to the created file, or only leftover temporary directories may remain/s,
         );
       },
       "../src/apply-edits.ts",
@@ -4271,6 +4271,51 @@ test("successful create discloses an unverifiable temporary link", async () => {
     assert(published);
     assert.equal(await readFile(join(directory, "file"), "utf8"), "secret\n");
     assert.equal(Number((await stat(join(directory, "file"))).nlink), 2);
+  });
+});
+
+test("post-unlink quarantine failure reports unknown state, not a retained link", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLink = nodeFs.promises.link;
+    const originalRmdir = nodeFs.promises.rmdir;
+    let published = false;
+    let forced = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.link = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalLink as Function).call(this, source, target);
+          if (basename(String(source)) === "create" && basename(String(target)) === "file") {
+            published = true;
+          }
+          return result;
+        }) as typeof promises.link;
+        promises.rmdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+          // The entry is already verified, quarantined, and unlinked; only the empty
+          // quarantine directory removal fails. The warning must not claim the link remains.
+          if (published && !forced && basename(String(path)).endsWith(".tmpdir")) {
+            forced = true;
+            throw Object.assign(new Error("forced quarantine directory failure"), { code: "EACCES" });
+          }
+          return (originalRmdir as Function).call(this, path, ...args);
+        }) as typeof promises.rmdir;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /temporary link's cleanup failed and its final state is unknown.*or only leftover temporary directories may remain/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(forced);
+    assert.equal(await readFile(join(directory, "file"), "utf8"), "secret\n");
+    // The temporary link really was removed; only directories linger. nlink must be 1.
+    assert.equal(Number((await stat(join(directory, "file"))).nlink), 1);
   });
 });
 
@@ -4287,7 +4332,7 @@ test("create succeeds when realpath is unavailable for every ancestor", async ()
           // Fail every ancestor during key discovery so the walk reaches the root terminator;
           // later callers (planning, Pi's queue) see the real filesystem again.
           if (!walked) {
-            if (String(path) === "/") walked = true;
+            if (dirname(String(path)) === String(path)) walked = true;
             throw Object.assign(new Error("forced missing"), { code: "ENOENT" });
           }
           return (originalRealpath as Function).call(this, path, ...args);
@@ -4313,7 +4358,45 @@ test("create succeeds when realpath is unavailable for every ancestor", async ()
   });
 });
 
-test("simulated Windows path budget rejects in UTF-16 code units before any filesystem access", async () => {
+test("batch ancestor rejection survives realpath loss on every ancestor", async () => {
+  await inTemporaryDirectory(async (unresolved) => {
+    const directory = await realpath(unresolved);
+    const originalRealpath = nodeFs.promises.realpath;
+    let rootMisses = 0;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+          // Both batch entries must walk to the root terminator, so keep failing until the
+          // second walk arrives there; the corrupted-key regression only shows on that branch.
+          if (rootMisses < 2) {
+            if (dirname(String(path)) === String(path)) rootMisses += 1;
+            throw Object.assign(new Error("forced missing"), { code: "ENOENT" });
+          }
+          return (originalRealpath as Function).call(this, path, ...args);
+        }) as typeof promises.realpath;
+      },
+      async (module) => {
+        await assert.rejects(
+          module.applyEditsToFile(
+            {
+              files: [
+                { path: "a", rewrite: "parent\n", onMissing: "create" },
+                { path: join("a", "b"), rewrite: "child\n", onMissing: "create" },
+              ],
+            },
+            directory,
+          ),
+          /is nested under files\[0\].*cannot target a path and one of its ancestors/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert.equal(rootMisses, 2); // both discovery walks really reached the root terminator
+    await assert.rejects(lstat(join(directory, "a")), /ENOENT/); // nothing was written
+  });
+});
+
+test("simulated Windows path budget rejects the overlong path during planning", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRealpath = nodeFs.promises.realpath;
     const originalLstat = nodeFs.promises.lstat;
@@ -4340,10 +4423,24 @@ test("simulated Windows path budget rejects in UTF-16 code units before any file
           }) as typeof promises.lstat;
         },
         async (module) => {
-          const target = join(directory, "x".repeat(33000));
+          // Astral characters make UTF-16 units differ from UTF-8 bytes, pinning the unit choice.
+          const target = join(directory, "\u{1F642}".repeat(17000));
           await assert.rejects(
             module.applyEditsToFile({ path: target, rewrite: "x\n", onMissing: "create" }, directory),
-            /planned staging and cleanup require a \d+-character path, beyond the supported 32702 characters on Windows \(64-unit safety margin below PATH_MAX 32767\)\. No changes were written\./,
+            (error: unknown) => {
+              const message = error instanceof Error ? error.message : String(error);
+              const planned = message.match(
+                /planned staging and cleanup require a (\d+)-character path, beyond the supported 32702 characters on Windows \(64-unit safety margin below PATH_MAX 32767\)\. No changes were written\./,
+              );
+              assert(planned, `unexpected rejection: ${message}`);
+              const units = Number(planned[1]);
+              assert(units >= 34000, `planned length ${units} must count the 34000-unit basename`);
+              assert(
+                units < Buffer.byteLength(target),
+                `planned length ${units} must count UTF-16 units, not UTF-8 bytes`,
+              );
+              return true;
+            },
           );
         },
         "../src/apply-edits.ts",
@@ -4363,7 +4460,6 @@ test("create failure discloses an unverifiable temporary file", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalLink = nodeFs.promises.link;
     const originalLstat = nodeFs.promises.lstat;
-    const originalOpen = nodeFs.promises.open;
     let failed = false;
     await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
       (promises) => {
@@ -4374,12 +4470,6 @@ test("create failure discloses an unverifiable temporary file", async () => {
           }
           return (originalLink as Function).call(this, source, target);
         }) as typeof promises.link;
-        promises.open = (async function (this: unknown, path: string, flags: unknown, ...args: unknown[]) {
-          if (failed && basename(String(path)) === "file" && flags === "wx") {
-            throw Object.assign(new Error("forced fallback failure"), { code: "EACCES" });
-          }
-          return (originalOpen as Function).call(this, path, flags, ...args);
-        }) as typeof promises.open;
         promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
           if (failed && basename(String(path)) === "create") {
             throw Object.assign(new Error("forced verification failure"), { code: "EACCES" });
@@ -4393,7 +4483,7 @@ test("create failure discloses an unverifiable temporary file", async () => {
             { path: "file", rewrite: "secret\n", onMissing: "create" },
             directory,
           ),
-          /the temporary create file could not be verified or removed and may remain at .* or elsewhere, possibly hard-linked to the created file/s,
+          /the temporary create file's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, or only leftover temporary directories may remain/s,
         );
       },
       "../src/apply-edits.ts",

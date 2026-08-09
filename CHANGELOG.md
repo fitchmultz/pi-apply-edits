@@ -2,10 +2,11 @@
 
 ## 0.4.2 — 2026-08-09
 
+- Fix the batch dedupe key produced by the key-discovery root terminator. When `realpath` failed for every ancestor, the missing components were appended to a path that already contained them, so a batch targeting a path and its ancestor bypassed the nested-entry rejection and could complete a partial write. The root branch now rebuilds the key from the filesystem root, and a regression drives both batch walks to the root terminator.
 - State that a moved staged-create container may not be empty when cleanup finds it missing, instead of describing it as an empty container.
-- Disclose unverifiable temporary and recovery entries precisely. When cleanup itself fails after a possible escape — on success paths and failure paths — the message now says the entry could not be verified or removed, names where it may remain, and notes possible remaining hard links, instead of asserting a stale path.
+- Disclose failed cleanup honestly in both directions. When temporary or recovery cleanup itself fails — on success paths and failure paths — the message now says cleanup failed and the final state is unknown: the entry may remain at its recorded path or elsewhere, possibly hard-linked, or may already be removed with only leftover temporary directories behind. The previous wording asserted the entry still existed even when only a quarantine directory removal had failed after a successful unlink.
 - Cover the key-discovery root terminator with a live test: when `realpath` reports every ancestor missing, creates still serialize on the exact resolved path and publish correctly.
-- Cover the Windows path budget with a simulated-platform test: a 33000-code-unit target rejects during planning, in characters, naming the 32702-unit boundary, before any filesystem access.
+- Cover the Windows path budget with a simulated-platform test: a 34000-code-unit astral target rejects during planning, counted in UTF-16 units rather than bytes, naming the 32702-unit boundary, without the overlong path ever reaching the real filesystem.
 - Re-verified against Node 24 LTS: no dirfd-relative (`unlinkat`/`rmdirat`) or handle-returning `mkdir` primitives exist, so the documented check-then-act and `mkdir`-to-`lstat` windows remain; verification reads already use `O_NOFOLLOW` handles with stat sandwiches. Rechecked lock bookkeeping: Pi's per-key queue map drains when idle and this package holds two self-replacing promise chains, so no per-key growth exists.
 - Remove a redundant platform guard in lock-key normalization (behavior unchanged).
 

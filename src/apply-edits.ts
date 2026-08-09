@@ -1055,8 +1055,10 @@ async function mutationQueueKeys(
   while (true) {
     const parent = dirname(current);
     if (parent === current) {
+      // current is the filesystem root here, so the missing components rebuild the full path.
+      // Passing resolvedPath instead would double-append them and corrupt batch dedupe keys.
       const missing = [...missingReversed].reverse();
-      const targetKey = normalizeLockKey(resolvedPath, missing);
+      const targetKey = normalizeLockKey(current, missing);
       return { targetKey, queueKeys: [resolvedPath], needsCreateLock: true };
     }
     try {

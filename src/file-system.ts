@@ -392,8 +392,9 @@ export async function publishReplacement(
       }
     } catch (error) {
       warnings.push(
-        `The edit was committed, but recovery cleanup was incomplete; the previous content ` +
-          `may remain at ${recovery} or elsewhere, possibly hard-linked to the target: ${errorMessage(error)}`,
+        `The edit was committed, but recovery cleanup failed and its final state is unknown; ` +
+          `the previous content may remain at ${recovery} or elsewhere, ` +
+          `or only leftover temporary directories may remain: ${errorMessage(error)}`,
       );
     }
     const warning = await syncDirectory(directory);
@@ -417,8 +418,9 @@ export async function publishReplacement(
       } catch (error) {
         temporaryCleanupFailed = true;
         cleanupFailures.push(
-          `the temporary replacement could not be verified or removed and may remain at ` +
-            `${temporary} or elsewhere: ${errorMessage(error)}`,
+          `the temporary replacement's cleanup failed and its final state is unknown; ` +
+            `it may remain at ${temporary} or elsewhere, ` +
+            `or only leftover temporary directories may remain: ${errorMessage(error)}`,
         );
       }
     }
@@ -433,8 +435,9 @@ export async function publishReplacement(
         }
       } catch (error) {
         cleanupFailures.push(
-          `the pre-edit recovery link could not be verified or removed and may remain at ` +
-            `${recovery} or elsewhere, possibly hard-linked to the target: ${errorMessage(error)}`,
+          `the pre-edit recovery link's cleanup failed and its final state is unknown; ` +
+            `it may remain at ${recovery} or elsewhere, possibly hard-linked to the target, ` +
+            `or only leftover temporary directories may remain: ${errorMessage(error)}`,
         );
       }
     }
@@ -1136,8 +1139,9 @@ export async function publishNewFile(
     } catch (error) {
       temporaryCleanupFailed = true;
       warnings.push(
-        `The file was created, but its temporary link could not be verified or removed and ` +
-          `may remain at ${temporary} or elsewhere, possibly hard-linked to the created file: ${errorMessage(error)}`,
+        `The file was created, but its temporary link's cleanup failed and its final state is ` +
+          `unknown; it may remain at ${temporary} or elsewhere, possibly hard-linked to the ` +
+          `created file, or only leftover temporary directories may remain: ${errorMessage(error)}`,
       );
     }
     if (temporaryDirectoryStats && !temporaryCleanupFailed) {
@@ -1169,8 +1173,9 @@ export async function publishNewFile(
       } catch (error) {
         temporaryCleanupFailed = true;
         cleanupFailures.push(
-          `the temporary create file could not be verified or removed and may remain at ` +
-            `${temporary} or elsewhere, possibly hard-linked to the created file: ${errorMessage(error)}`,
+          `the temporary create file's cleanup failed and its final state is unknown; ` +
+            `it may remain at ${temporary} or elsewhere, ` +
+            `or only leftover temporary directories may remain: ${errorMessage(error)}`,
         );
       }
       if (temporaryDirectoryStats && !temporaryCleanupFailed) {
