@@ -944,12 +944,13 @@ export async function publishNewFile(
       try {
         targetState = await readStableRegularEntry(targetPath);
       } catch (verifyError) {
-        // The link succeeded, so a file exists under whatever the parent is now. Claiming
-        // nothing was written would be wrong; name both retained paths instead.
+        // The link succeeded, so both hard links still exist, but the parent may have moved
+        // out from under them. Name where they were created, not where they are now.
         published = true;
         throw new Error(
           `Create publication could not be verified at ${targetPath}. Commit status is uncertain; ` +
-            `the created file and its temporary source were retained at ${targetPath} and ${temporary}. ` +
+            `two hard links to the created file were retained, originally at ${targetPath} and ` +
+            `${temporary}. Their current locations are unknown if a parent directory moved. ` +
             `Cause: ${errorMessage(verifyError)}`,
         );
       }

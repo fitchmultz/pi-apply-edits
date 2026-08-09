@@ -903,9 +903,12 @@ async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string;
       missing.unshift(basename(current));
       const targetKey = normalizeLockKey(realParent, missing);
       // Hold the missing root so sibling creates serialize, and the target itself so an edit
-      // of the same path serializes with the create that publishes it.
+      // of the same path serializes with the create that publishes it. The exact-case target
+      // is held too: once published, the same file resolves through realpath, which keeps the
+      // on-disk spelling and would otherwise miss the case-folded key on darwin and win32.
       const rootKey = normalizeLockKey(realParent, missing.slice(0, 1));
-      return { targetKey, queueKeys: rootKey === targetKey ? [targetKey] : [rootKey, targetKey] };
+      const exactKey = join(realParent, ...missing);
+      return { targetKey, queueKeys: [rootKey, targetKey, exactKey] };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
       missing.unshift(basename(current));

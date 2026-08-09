@@ -2654,64 +2654,86 @@ test(
                   armed = true;
                 },
               }),
-            /Commit status is uncertain/,
+            /two hard links to the created file were retained, originally at/,
           );
         },
       );
 
+      // Both hard links survive under the moved parent, and they are the same inode.
       assert.equal(await readFile(join(moved, "target.txt"), "utf8"), "created\n");
-    });
-  },
-);
-
-test(
-  "a rewrite of a path being created waits for the create to finish",
-  { skip: process.platform === "win32" },
-  async () => {
-    await inTemporaryDirectory(async (directory) => {
-      const originalRm = nodeFs.promises.rm;
-      let heldOnce = false;
-      let signalLinked = () => {};
-      const linked = new Promise<void>((resolve) => {
-        signalLinked = resolve;
-      });
-      let releaseTemporary = () => {};
-      const held = new Promise<void>((resolve) => {
-        releaseTemporary = resolve;
-      });
-
-      await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
-        (promises) => {
-          promises.rm = (async function (this: unknown, path: string, ...args: unknown[]) {
-            // Hold the staged copy so the published target stays at two links, widening the
-            // window in which a concurrent rewrite could observe a transient hard link.
-            if (!heldOnce && String(path).includes(".tmpdir")) {
-              heldOnce = true;
-              signalLinked();
-              await held;
-            }
-            return (originalRm as Function).call(this, path, ...args);
-          }) as typeof promises.rm;
-        },
-        async (module) => {
-          const create = module.applyEditsToFile(
-            { path: "missing/target.txt", rewrite: "created\n", onMissing: "create" },
-            directory,
-          );
-          await linked;
-          const rewrite = module.applyEditsToFile(
-            { path: "missing/target.txt", rewrite: "rewritten\n" },
-            directory,
-          );
-          await new Promise((resolve) => setTimeout(resolve, 50));
-          releaseTemporary();
-          await create;
-          await rewrite;
-        },
-        "../src/apply-edits.ts",
+      const survivors = (await readdir(moved, { recursive: true, withFileTypes: true })).filter(
+        (entry) => entry.isFile(),
       );
-
-      assert.equal(await readFile(join(directory, "missing", "target.txt"), "utf8"), "rewritten\n");
+      assert.equal(survivors.length, 2);
+      const inodes = new Set<string>();
+      for (const entry of survivors) {
+        inodes.add(String((await stat(join(entry.parentPath, entry.name), { bigint: true })).ino));
+      }
+      assert.equal(inodes.size, 1);
     });
   },
 );
+
+// Mixed case matters on darwin and win32, where the missing-path lock key is case-folded but
+// a published path resolves through realpath with its on-disk spelling.
+for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
+  test(
+    `a rewrite of ${relative} while it is being created waits for the create to finish`,
+    { skip: process.platform === "win32" },
+    async () => {
+      await inTemporaryDirectory(async (directory) => {
+        const originalRm = nodeFs.promises.rm;
+        let heldOnce = false;
+        let signalLinked = () => {};
+        const linked = new Promise<void>((resolve) => {
+          signalLinked = resolve;
+        });
+        let releaseTemporary = () => {};
+        const held = new Promise<void>((resolve) => {
+          releaseTemporary = resolve;
+        });
+
+        await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+          (promises) => {
+            promises.rm = (async function (this: unknown, path: string, ...args: unknown[]) {
+              // Hold the staged copy so the published target stays at two links, widening the
+              // window in which a concurrent rewrite could observe a transient hard link.
+              if (!heldOnce && String(path).includes(".tmpdir")) {
+                heldOnce = true;
+                signalLinked();
+                await held;
+              }
+              return (originalRm as Function).call(this, path, ...args);
+            }) as typeof promises.rm;
+          },
+          async (module) => {
+            const create = module.applyEditsToFile(
+              { path: relative, rewrite: "created\n", onMissing: "create" },
+              directory,
+            );
+            await linked;
+            let rewriteSettled = false;
+            const settle = <T,>(value: T) => {
+              rewriteSettled = true;
+              return value;
+            };
+            const rewrite = module
+              .applyEditsToFile({ path: relative, rewrite: "rewritten\n" }, directory)
+              .then(settle, (error: unknown) => {
+                settle(undefined);
+                throw error;
+              });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            assert.equal(rewriteSettled, false, "the rewrite must wait for the create lock");
+            releaseTemporary();
+            await create;
+            await rewrite;
+          },
+          "../src/apply-edits.ts",
+        );
+
+        assert.equal(await readFile(join(directory, relative), "utf8"), "rewritten\n");
+      });
+    },
+  );
+}
