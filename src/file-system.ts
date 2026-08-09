@@ -537,10 +537,11 @@ export async function publishPreparedNestedFiles(
       throw error;
     }
     const rootStats = await lstat(publishRoot, { bigint: true });
-    publishedDirectories.set(publishRoot, rootStats);
     if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
       throw new Error(`Reserved create directory changed identity at ${publishRoot}.`);
     }
+    assertCreatedDirectoryOwner(rootStats, publishRoot);
+    publishedDirectories.set(publishRoot, rootStats);
     await assertNewFilePlanCurrent(firstPlan);
     await prepared.hooks?.afterRootReserve?.({ staging, target: publishRoot });
     throwIfAborted(signal);
@@ -570,6 +571,7 @@ export async function publishPreparedNestedFiles(
       if (!targetStats.isDirectory() || targetStats.isSymbolicLink()) {
         throw new Error(`Created directory changed identity at ${targetDirectory}.`);
       }
+      assertCreatedDirectoryOwner(targetStats, targetDirectory);
       try {
         await assertPublishedDirectoriesCurrent(publishedDirectories);
       } catch (error) {
@@ -1124,6 +1126,19 @@ async function assertPreparedFileCurrent(
 
 function stagedRelativePath(plan: NewFilePlan): string {
   return join(...plan.missingDirectories.slice(1), basename(plan.targetPath));
+}
+
+function assertCreatedDirectoryOwner(stats: BigIntStats, path: string): void {
+  // mkdir does not return a handle or identity, and Node exposes no mkdirat/openat API, so a
+  // same-user process can still rename our directory away and substitute its own in the gap
+  // before lstat. The owner check closes the cross-user variant in a shared-writable parent
+  // and, critically, runs before the entry is recorded for cleanup: an entry owned by another
+  // user is left untouched rather than adopted as ours. Windows ACL ownership is not exposed
+  // through Stats, so the existing identity checks remain the boundary there.
+  if (process.platform === "win32" || typeof process.geteuid !== "function") return;
+  if (stats.uid !== BigInt(process.geteuid())) {
+    throw new Error(`Created directory owner changed at ${path}; it was left untouched.`);
+  }
 }
 
 async function assertPublishedDirectoriesCurrent(

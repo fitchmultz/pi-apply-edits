@@ -189,6 +189,12 @@ are rejected rather than guessed.
   and private staging tree are retained at named paths for inspection.
 - Cleanup atomically moves temporary, recovery, and staged paths into private
   quarantine directories, rechecks identity, and preserves detected swaps for inspection.
+- A newly claimed directory is owner-checked before publication or cleanup, so a
+  cross-user substitution in a shared-writable ancestor is rejected and left untouched.
+  A same-user process can still rename the new directory away and substitute its own in
+  the `mkdir`-to-`lstat` gap. Portable Node exposes neither the identity created by
+  `mkdir` nor dirfd-relative operations, so closing that gap cleanly needs a native
+  primitive. Later identity checks still fail closed on detected swaps.
 - Non-UTF-8, NUL-containing, non-regular, dangling-symlink, and hard-linked
   targets are rejected without mutation.
 - Corrective matching and diff generation have explicit work budgets.

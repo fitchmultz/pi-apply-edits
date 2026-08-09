@@ -2875,3 +2875,51 @@ test(
     });
   },
 );
+
+test(
+  "a newly claimed directory owned by another user is never adopted for publication or cleanup",
+  { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const input = join(directory, "missing", "sub", "child.txt");
+      const originalLstat = nodeFs.promises.lstat;
+      let publishRoot = "";
+      let armed = false;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            const stats = await (originalLstat as Function).call(this, path, ...args);
+            if (!armed || String(path) !== publishRoot) return stats;
+            armed = false;
+            // Stand in for a cross-user rename swap in the mkdir-to-lstat gap. Only uid is
+            // changed: the name and inode still look internally consistent, so main adopts
+            // the entry, publishes into it, and records it for cleanup.
+            return new Proxy(stats, {
+              get(target, property, receiver) {
+                if (property === "uid") return target.uid + 1n;
+                return Reflect.get(target, property, receiver);
+              },
+            });
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                beforeRootReserve({ target }) {
+                  publishRoot = target;
+                  armed = true;
+                },
+              }),
+            /owner changed.*left untouched/,
+          );
+        },
+      );
+
+      assert.equal((await lstat(publishRoot)).isDirectory(), true);
+      assert.deepEqual(await readdir(publishRoot), []);
+    });
+  },
+);
