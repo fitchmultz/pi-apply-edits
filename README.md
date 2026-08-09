@@ -190,8 +190,10 @@ are rejected rather than guessed.
   deliberately serializes all operations that discover a missing target; existing-file
   operations remain parallel. If publication stops after a file name is claimed, the
   partial root and private staging tree are retained at named paths for inspection.
-- Cleanup atomically moves temporary, recovery, and staged paths into private
-  quarantine directories, rechecks identity, and preserves detected swaps for inspection.
+- Cleanup atomically quarantines temporary and recovery paths in private directories.
+  Staged publish roots move into a reserved one-character slot inside their private container,
+  so cleanup does not lengthen deep paths past macOS `PATH_MAX`. Identity is rechecked after
+  each move, and detected swaps are preserved for inspection.
 - A newly claimed directory is owner-checked before publication or cleanup, so a
   cross-user substitution in a shared-writable ancestor is rejected and left untouched.
   A same-user process can still rename the new directory away and substitute its own in

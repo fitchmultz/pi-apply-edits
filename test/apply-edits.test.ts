@@ -3389,3 +3389,36 @@ test("an already-aborted batch does no filesystem key discovery", async () => {
   );
   assert.equal(filesystemCalls, 0);
 });
+
+test(
+  "deep nested create cleanup does not extend staged paths past macOS PATH_MAX",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const canonicalDirectory = await realpath(directory);
+      let relative = "";
+      while (Buffer.byteLength(join(canonicalDirectory, relative, "f")) < 900) {
+        relative = relative ? `${relative}/x` : "x";
+      }
+      relative += "/f";
+
+      const result = await applyEditsToFile(
+        { path: relative, rewrite: "ok\n", onMissing: "create" },
+        canonicalDirectory,
+      );
+      const warnings = "warnings" in result.details ? result.details.warnings : [];
+      assert.doesNotMatch(warnings.join("\n"), /cleanup was incomplete/);
+      assert.equal((await stat(join(canonicalDirectory, relative))).nlink, 1);
+
+      await applyEditsToFile(
+        { path: relative, rewrite: "next\n" },
+        canonicalDirectory,
+      );
+      assert.equal(await readFile(join(canonicalDirectory, relative), "utf8"), "next\n");
+      assert.deepEqual(
+        (await readdir(canonicalDirectory)).filter((name) => name.startsWith(".pi-apply-edits-")),
+        [],
+      );
+    });
+  },
+);

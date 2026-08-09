@@ -71,12 +71,14 @@ export interface PreparedNestedFiles {
   publishRoot: string;
   container: string;
   staging: string;
+  quarantine: string;
   warnings: string[];
   hooks?: NewFilePublishHooks;
   published: boolean;
   discardAttempted: boolean;
   containerStats?: BigIntStats;
   stagingStats?: BigIntStats;
+  quarantineStats?: BigIntStats;
   stagedIdentities?: Map<string, BigIntStats>;
 }
 
@@ -449,6 +451,7 @@ export async function preparePlannedNestedFiles(
     publishRoot: join(firstPlan.ancestorPath, firstMissing),
     container,
     staging: join(container, "publish"),
+    quarantine: join(container, "q"),
     warnings: [],
     hooks,
     published: false,
@@ -461,6 +464,8 @@ export async function preparePlannedNestedFiles(
     for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
     await mkdir(prepared.container, { mode: 0o700 });
     prepared.containerStats = await lstat(prepared.container, { bigint: true });
+    await mkdir(prepared.quarantine, { mode: 0o700 });
+    prepared.quarantineStats = await lstat(prepared.quarantine, { bigint: true });
     await mkdir(prepared.staging, { mode: 0o777 });
     prepared.stagingStats = await lstat(prepared.staging, { bigint: true });
     stagedDirectories.add(prepared.container);
@@ -759,21 +764,21 @@ export async function discardPreparedNestedFiles(prepared: PreparedNestedFiles):
     if (prepared.stagedIdentities) {
       await removePreparedStaging(prepared, prepared.stagedIdentities);
     } else {
-      const quarantined = await quarantineOwnedPath(
-        prepared.staging,
-        prepared.stagingStats,
-        "Staged create directory",
-      );
+      const quarantined = await quarantinePreparedStaging(prepared);
       if (quarantined) {
         await rm(quarantined.path, { recursive: true });
-        await removeEmptyOwnedDirectory(
-          quarantined.directory,
-          quarantined.directoryStats,
-          "Cleanup quarantine",
-        );
         prepared.stagingStats = undefined;
+        prepared.quarantineStats = undefined;
       }
     }
+  }
+  if (!prepared.stagingStats && prepared.quarantineStats) {
+    await removeEmptyOwnedDirectory(
+      prepared.quarantine,
+      prepared.quarantineStats,
+      "Cleanup quarantine slot",
+    );
+    prepared.quarantineStats = undefined;
   }
   if (prepared.containerStats) {
     await rmdirOwnedPath(prepared.container, prepared.containerStats, "Staged create container");
@@ -1176,23 +1181,71 @@ async function removePreparedStaging(
 ): Promise<void> {
   if (!prepared.stagingStats) return;
   await inspectPreparedTree(prepared, expectedIdentities);
-  const quarantined = await quarantineOwnedPath(
-    prepared.staging,
-    prepared.stagingStats,
-    "Staged create directory",
-  );
+  const quarantined = await quarantinePreparedStaging(prepared);
   if (!quarantined) return;
   const identities = new Map(expectedIdentities);
   identities.set("", quarantined.stats);
   await inspectPreparedTree({ ...prepared, staging: quarantined.path }, identities);
   await rm(quarantined.path, { recursive: true });
-  await removeEmptyOwnedDirectory(
-    quarantined.directory,
-    quarantined.directoryStats,
-    "Cleanup quarantine",
-  );
   prepared.stagingStats = undefined;
+  prepared.quarantineStats = undefined;
   prepared.stagedIdentities = undefined;
+}
+
+async function quarantinePreparedStaging(
+  prepared: PreparedNestedFiles,
+): Promise<{ path: string; stats: BigIntStats } | undefined> {
+  await currentOwnedPath(prepared.container, prepared.containerStats, "Staged create container");
+  const stagingStats = await currentOwnedPath(
+    prepared.staging,
+    prepared.stagingStats,
+    "Staged create directory",
+  );
+  const quarantineStats = await currentOwnedPath(
+    prepared.quarantine,
+    prepared.quarantineStats,
+    "Cleanup quarantine slot",
+  );
+  if (!stagingStats) {
+    if (quarantineStats) {
+      await removeEmptyOwnedDirectory(
+        prepared.quarantine,
+        quarantineStats,
+        "Cleanup quarantine slot",
+      );
+      prepared.quarantineStats = undefined;
+    }
+    return undefined;
+  }
+  if (!quarantineStats?.isDirectory()) {
+    throw new Error(`Cleanup quarantine slot changed identity at ${prepared.quarantine}`);
+  }
+
+  // The short slot avoids making deep staged paths longer during identity quarantine.
+  // POSIX rename atomically replaces our verified empty directory. Windows does not replace
+  // directories, so remove the owned slot first; the private 0700 container limits that gap.
+  if (process.platform === "win32") {
+    await removeEmptyOwnedDirectory(
+      prepared.quarantine,
+      quarantineStats,
+      "Cleanup quarantine slot",
+    );
+    prepared.quarantineStats = undefined;
+  }
+  try {
+    await rename(prepared.staging, prepared.quarantine);
+  } catch (error) {
+    if (isCode(error, "ENOENT")) return undefined;
+    throw error;
+  }
+  const movedStats = await lstat(prepared.quarantine, { bigint: true });
+  prepared.quarantineStats = undefined;
+  if (!sameIdentity(stagingStats, movedStats)) {
+    throw new Error(
+      `Staged create directory changed after validation and was preserved at ${prepared.quarantine}`,
+    );
+  }
+  return { path: prepared.quarantine, stats: movedStats };
 }
 
 async function currentOwnedPath(
