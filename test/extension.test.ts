@@ -11,6 +11,7 @@ import applyEditsExtension, {
   prepareApplyEditsArguments,
 } from "../extensions/apply-edits.ts";
 import type { ApplyEditsDetails } from "../src/apply-edits.ts";
+import { supportsExistingFileReplacement } from "../src/file-system.ts";
 
 function singleDetails(details: unknown): ApplyEditsDetails {
   if (!details || typeof details !== "object" || "files" in details) {
@@ -24,7 +25,8 @@ interface ExtensionHarness {
   active: string[];
   flag: boolean;
   tool?: ToolDefinition;
-  sessionStart?: () => void;
+  registryTool?: ToolDefinition;
+  sessionStart?: () => void | Promise<void>;
   agentSettled?: () => void;
 }
 
@@ -48,6 +50,12 @@ function createHarness(active: string[], flag = false): { api: ExtensionAPI; sta
       if (event === "agent_settled") state.agentSettled = handler;
     },
     getActiveTools: () => state.active,
+    getAllTools: () => {
+      const tool = state.registryTool ?? state.tool;
+      return tool
+        ? [{ ...tool, sourceInfo: { path: "test", source: "test", scope: "temporary", origin: "top-level" } }]
+        : [];
+    },
     setActiveTools: (tools: string[]) => {
       state.active = tools;
     },
@@ -121,40 +129,58 @@ test("argument preparation rejects conflicting aliases instead of choosing one",
     /cannot be combined/,
   );
 
-  const bothModes = prepareApplyEditsArguments({
-    path: "a.ts",
-    edits: [{ oldText: "a", newText: "b" }],
-    content: "whole file",
-  });
-  assert.equal(Array.isArray(bothModes.edits), true);
-  assert.equal(bothModes.rewrite, "whole file");
+  assert.throws(
+    () => prepareApplyEditsArguments({
+      path: "a.ts",
+      edits: [{ oldText: "a", newText: "b" }],
+      content: "whole file",
+    }),
+    /exactly one of edits or rewrite/,
+  );
 });
 
-test("factory registers apply_edits and hides built-ins at session start", () => {
+test("argument preparation rejects unknown fields instead of stripping them", () => {
+  assert.throws(
+    () => prepareApplyEditsArguments({ path: "a.ts", rewrite: "x", typo: true }),
+    /unsupported fields: typo/,
+  );
+  assert.throws(
+    () => prepareApplyEditsArguments({
+      files: [{ path: "a.ts", edits: [{ oldText: "a", newText: "b", typo: true }] }],
+    }),
+    /files\[0\].*edit has unsupported fields: typo/,
+  );
+});
+
+test("factory registers apply_edits and hides built-ins at session start when replacement is supported", async () => {
   const { api, state } = createHarness(["read", "bash", "edit", "write", "apply_edits"]);
   applyEditsExtension(api);
 
   assert.equal(state.tool?.name, "apply_edits");
-  state.sessionStart?.();
-  assert.deepEqual(state.active, ["read", "bash", "apply_edits"]);
+  await state.sessionStart?.();
+  const supported = await supportsExistingFileReplacement();
+  assert.deepEqual(
+    state.active,
+    supported ? ["read", "bash", "apply_edits"] : ["read", "bash", "edit", "write", "apply_edits"],
+  );
 
   state.active = ["read", "edit", "write", "apply_edits"];
-  state.sessionStart?.();
-  assert.deepEqual(state.active, ["read", "apply_edits"]);
+  await state.sessionStart?.();
+  assert.deepEqual(state.active, supported ? ["read", "apply_edits"] : ["read", "edit", "write", "apply_edits"]);
 });
 
-test("factory respects CLI, environment, and registry availability", () => {
+test("factory respects CLI, environment, registry availability, and tool ownership", async () => {
   const withFlag = createHarness(["edit", "write", "apply_edits"], true);
   applyEditsExtension(withFlag.api);
-  withFlag.state.sessionStart?.();
+  await withFlag.state.sessionStart?.();
   assert.deepEqual(withFlag.state.active, ["edit", "write", "apply_edits"]);
 
   const prior = process.env.PI_APPLY_EDITS_KEEP_BUILTINS;
-  process.env.PI_APPLY_EDITS_KEEP_BUILTINS = "yes";
+  process.env.PI_APPLY_EDITS_KEEP_BUILTINS = "  YES  ";
   try {
     const withEnvironment = createHarness(["edit", "write", "apply_edits"]);
     applyEditsExtension(withEnvironment.api);
-    withEnvironment.state.sessionStart?.();
+    await withEnvironment.state.sessionStart?.();
     assert.deepEqual(withEnvironment.state.active, ["edit", "write", "apply_edits"]);
   } finally {
     if (prior === undefined) delete process.env.PI_APPLY_EDITS_KEEP_BUILTINS;
@@ -163,8 +189,20 @@ test("factory respects CLI, environment, and registry availability", () => {
 
   const excluded = createHarness(["edit", "write"]);
   applyEditsExtension(excluded.api);
-  excluded.state.sessionStart?.();
+  await excluded.state.sessionStart?.();
   assert.deepEqual(excluded.state.active, ["edit", "write"]);
+
+  const collision = createHarness(["edit", "write", "apply_edits"]);
+  applyEditsExtension(collision.api);
+  collision.state.registryTool = {
+    name: "apply_edits",
+    label: "other",
+    description: "other",
+    parameters: {} as never,
+    execute: async () => ({ content: [], details: undefined }),
+  };
+  await collision.state.sessionStart?.();
+  assert.deepEqual(collision.state.active, ["edit", "write", "apply_edits"]);
 });
 
 test("factory clears unused compact retries when the agent settles", async () => {
@@ -253,6 +291,37 @@ test("renderer keeps collapsed output compact and exposes the diff when expanded
   for (const line of [...collapsedLines, ...expandedLines]) assert(visibleWidth(line) <= 80);
 });
 
+test("renderer uses warning styling and does not invent a 201st diff line", () => {
+  const tool = createApplyEditsTool();
+  const theme = {
+    fg: (color: string, text: string) => `<${color}>${text}`,
+    bold: (text: string) => text,
+  } as never;
+  const details: ApplyEditsDetails = {
+    path: "file.txt",
+    operation: "edit",
+    editsRequested: 1,
+    editsApplied: 1,
+    matches: [],
+    bytesBefore: 1,
+    bytesAfter: 1,
+    addedLines: 1,
+    deletedLines: 1,
+    diff: `${Array.from({ length: 200 }, () => "context").join("\n")}\n`,
+    diffTruncated: false,
+    warnings: ["directory sync failed"],
+  };
+  const rendered = tool.renderResult?.(
+    { content: [{ type: "text", text: "Edited with warning" }], details },
+    { expanded: true, isPartial: false },
+    theme,
+    { isError: false } as never,
+  );
+  const text = rendered?.render(200).join("\n") ?? "";
+  assert.match(text, /<warning>⚠ Edited with warning/);
+  assert.doesNotMatch(text, /more diff lines/);
+});
+
 test("tool contract covers rewrite, insert, and multi-file batch", () => {
   const tool = createApplyEditsTool();
   assert.match(tool.description, /multi-file batch/);
@@ -261,9 +330,10 @@ test("tool contract covers rewrite, insert, and multi-file batch", () => {
   assert.match(tool.description, /easy whole-file path/);
   assert.match(tool.description, /compact retry/);
   assert.match(tool.promptSnippet ?? "", /files:\[\]/);
-  assert(tool.promptGuidelines?.some((g) => /no oldText matching/.test(g)));
+  assert(tool.promptGuidelines?.some((g) => /rewrite for full files/.test(g)));
   assert(tool.promptGuidelines?.some((g) => /insert: "before"\|\"after"/.test(g)));
-  assert(tool.promptGuidelines?.some((g) => /files: \[\{path/.test(g)));
+  assert(tool.promptGuidelines?.some((g) => /files: \[\.\.\.\]/.test(g)));
+  assert.equal((tool.parameters as { additionalProperties?: boolean }).additionalProperties, false);
 });
 
 test("argument preparation accepts multi-file batches and insert", () => {
@@ -353,7 +423,7 @@ test("compact create retry reuses full bodies and is single-use", async () => {
     );
     const retry = { retry: { from: "call-create" } };
     const expanded = prepare(tool, retry);
-    assert.equal(expanded.retry, undefined);
+    assert.deepEqual(expanded.retry, { from: "call-create", oldText: undefined });
     assert.equal(expanded.files?.[0]?.rewrite, "A body\n");
     assert.equal(expanded.files?.[1]?.rewrite, "after\n");
     assert.equal(expanded.files?.[2]?.rewrite, "B body\n");
@@ -363,7 +433,7 @@ test("compact create retry reuses full bodies and is single-use", async () => {
     assert.equal(expanded.files?.[1]?.requireMissing, undefined);
     assert.equal(expanded.files?.[2]?.onMissing, "create");
     assert.equal(expanded.files?.[2]?.requireMissing, true);
-    assert.throws(() => prepare(tool, retry), /Compact retry is unavailable/);
+    assert.deepEqual(prepare(tool, retry).files, expanded.files);
 
     await tool.execute(
       "call-create-retry",
@@ -375,6 +445,49 @@ test("compact create retry reuses full bodies and is single-use", async () => {
     assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "A body\n");
     assert.equal(await readFile(join(directory, "existing.txt"), "utf8"), "after\n");
     assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "B body\n");
+    assert.throws(() => prepare(tool, retry), /Compact retry is unavailable/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("compact create retry guards every target observed missing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-create-retry-guard-"));
+  try {
+    const tool = createApplyEditsTool();
+    const original = {
+      files: [
+        { path: "already-opted.txt", rewrite: "OPTED\n", onMissing: "create" as const },
+        { path: "needs-opt-in.txt", rewrite: "RETRY\n" },
+      ],
+    };
+    await assert.rejects(
+      tool.execute(
+        "call-create-guard",
+        prepare(tool, original),
+        undefined,
+        undefined,
+        { cwd: directory } as never,
+      ),
+      /Compact retry/,
+    );
+
+    const expanded = prepare(tool, { retry: { from: "call-create-guard" } });
+    assert.equal(expanded.files?.[0]?.requireMissing, true);
+    assert.equal(expanded.files?.[1]?.requireMissing, true);
+    await writeFile(join(directory, "already-opted.txt"), "EXTERNAL\n");
+    await assert.rejects(
+      tool.execute(
+        "call-create-guard-retry",
+        expanded,
+        undefined,
+        undefined,
+        { cwd: directory } as never,
+      ),
+      /File now exists/,
+    );
+    assert.equal(await readFile(join(directory, "already-opted.txt"), "utf8"), "EXTERNAL\n");
+    await assert.rejects(readFile(join(directory, "needs-opt-in.txt")), /ENOENT/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -400,7 +513,7 @@ test("retry capacity never invalidates an advertised handle", async () => {
     }
     assert.equal(errors.length, 5);
     assert.equal(errors.slice(0, 4).every((error) => error.includes("Compact retry:")), true);
-    assert.equal(errors[4]?.includes("Compact retry:"), false);
+    assert.match(errors[4] ?? "", /Compact retry unavailable because too many retries are pending/);
 
     const expanded = prepare(tool, { retry: { from: "call-0" } });
     await tool.execute(

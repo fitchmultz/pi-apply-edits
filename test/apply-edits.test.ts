@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import nodeFs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
   chmod,
   link,
@@ -8,6 +11,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
@@ -16,7 +20,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import {
@@ -35,9 +39,13 @@ function singleDetails(details: { files?: ApplyEditsDetails[] } | ApplyEditsDeta
 }
 
 import {
+  assertSnapshotCurrent,
   captureSnapshot,
+  discardPreparedNestedFiles,
   planNewFile,
+  preparePlannedNestedFiles,
   publishNewFile,
+  publishPreparedNestedFiles,
   publishReplacement,
 } from "../src/file-system.ts";
 
@@ -49,6 +57,28 @@ async function inTemporaryDirectory(run: (directory: string) => Promise<void>): 
     await run(directory);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+}
+
+type FileSystemModule = typeof import("../src/file-system.ts");
+
+/**
+ * Loads a private copy of the file-system module with `node:fs/promises` patched, so a rename or
+ * symlink swap can be injected in the middle of a publication syscall. Patches are reverted after.
+ */
+async function withRacingFileSystem<T = FileSystemModule>(
+  patch: (promises: typeof nodeFs.promises) => void,
+  run: (module: T) => Promise<void>,
+  specifier = "../src/file-system.ts",
+): Promise<void> {
+  const originals = { ...nodeFs.promises };
+  try {
+    patch(nodeFs.promises);
+    syncBuiltinESMExports();
+    await run((await import(`${specifier}?race=${randomUUID()}`)) as T);
+  } finally {
+    Object.assign(nodeFs.promises, originals);
+    syncBuiltinESMExports();
   }
 }
 
@@ -207,6 +237,20 @@ test("uniform indentation drift reindents the replacement", () => {
   assert.equal(result.matches[0]?.strategy, "indent-normalized");
 });
 
+test("indent-normalized replacements apply the candidate-versus-search indent delta", () => {
+  const result = applyTargetedEdits(
+    "  if (ready) {\n    start();\n  }\n",
+    [{
+      oldText: "    if (ready) {\n      start();\n    }",
+      newText: "if (ready) {\n  prepare();\n}",
+    }],
+    "file.ts",
+  );
+
+  assert.equal(result.text, "if (ready) {\nprepare();\n}\n");
+  assert.equal(result.matches[0]?.strategy, "indent-normalized");
+});
+
 test("indent correction preserves relative width when common indentation cuts through a tab", () => {
   const result = applyTargetedEdits(
     "    if (ready) {\n      start();\n    }\n",
@@ -221,6 +265,31 @@ test("indent correction preserves relative width when common indentation cuts th
 
   assert.equal(result.text, "    if (ready) {\n      prepare();\n    }\n");
   assert.equal(result.matches[0]?.strategy, "indent-normalized");
+});
+
+test("indent correction preserves non-indentation Unicode whitespace", () => {
+  const result = applyTargetedEdits(
+    "  if (ready)\n    old\n",
+    [{ oldText: "if (ready)\n  old", newText: "if (ready)\n  \u00a0value" }],
+    "file.ts",
+  );
+
+  assert.equal(result.text, "  if (ready)\n    \u00a0value\n");
+  assert.equal(result.matches[0]?.strategy, "indent-normalized");
+});
+
+test("ordered edits can match prior CRLF output with LF anchors", () => {
+  const result = applyTargetedEdits(
+    "one\r\ntwo\r\n",
+    [
+      { oldText: "one", newText: "ONE\nadded" },
+      { oldText: "ONE\nadded", newText: "done" },
+    ],
+    "windows.txt",
+  );
+
+  assert.equal(result.text, "done\r\ntwo\r\n");
+  assert.deepEqual(result.matches.map((match) => match.strategy), ["exact", "exact"]);
 });
 
 test("ambiguous normalized matches fail without choosing one", () => {
@@ -265,6 +334,13 @@ test("missing text reports a bounded nearby block and possible idempotence", () 
   );
 });
 
+test("all must be a boolean even through the core API", () => {
+  assert.throws(
+    () => applyTargetedEdits("x\nx\n", [{ oldText: "x", newText: "y", all: 1 as never }], "file.txt"),
+    /all must be a boolean/,
+  );
+});
+
 test("empty, NUL, and no-op targeted edits fail", () => {
   assert.throws(() => applyTargetedEdits("x", [{ oldText: "", newText: "y" }], "f"), /must not be empty/);
   assert.throws(() => applyTargetedEdits("x", [{ oldText: "x", newText: "x" }], "f"), /no change/);
@@ -272,6 +348,23 @@ test("empty, NUL, and no-op targeted edits fail", () => {
   assert.throws(
     () => applyTargetedEdits("x", [{ oldText: "x", newText: "\ud800" }], "f"),
     /valid Unicode/,
+  );
+});
+
+test("request size limits bound files and ordered edits", async () => {
+  assert.throws(
+    () => applyTargetedEdits("x", Array.from({ length: 101 }, () => ({ oldText: "x", newText: "y" })), "f"),
+    /more than 100 entries/,
+  );
+  await assert.rejects(
+    applyEditsToFile({
+      files: Array.from({ length: 65 }, (_, index) => ({
+        path: `${index}.txt`,
+        rewrite: "x",
+        onMissing: "create" as const,
+      })),
+    }, process.cwd()),
+    /more than 64 entries/,
   );
 });
 
@@ -764,6 +857,142 @@ test(
   },
 );
 
+test("replacement rejects a canonical parent alias swapped before rename", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalParent = join(directory, "original");
+    const otherParent = join(directory, "other");
+    const alias = join(directory, "alias");
+    await mkdir(originalParent);
+    await mkdir(otherParent);
+    await writeFile(join(originalParent, "file.txt"), "before\n");
+    await writeFile(join(otherParent, "file.txt"), "outside\n");
+    await symlink(originalParent, alias);
+    const snapshot = await captureSnapshot(join(alias, "file.txt"));
+    assert.ok(snapshot);
+
+    await assert.rejects(
+      publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+        beforeRename: async ({ temporary }) => {
+          assert.equal((await lstat(dirname(temporary))).mode & 0o777, 0o700);
+          await unlink(alias);
+          await symlink(otherParent, alias);
+        },
+      }),
+      /File path changed before commit/,
+    );
+
+    assert.equal(await readFile(join(originalParent, "file.txt"), "utf8"), "before\n");
+    assert.equal(await readFile(join(otherParent, "file.txt"), "utf8"), "outside\n");
+  });
+});
+
+test("replacement rejects a final target changed into a symbolic link", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "target.txt");
+    const saved = join(directory, "saved.txt");
+    await writeFile(target, "before\n");
+    const snapshot = await captureSnapshot(target);
+    assert.ok(snapshot);
+
+    await assert.rejects(
+      publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+        beforeRename: async () => {
+          await rename(target, saved);
+          await symlink(saved, target);
+        },
+      }),
+      /File path changed before commit/,
+    );
+
+    assert.equal((await lstat(target)).isSymbolicLink(), true);
+    assert.equal(await readFile(target, "utf8"), "before\n");
+    assert.equal(await readFile(saved, "utf8"), "before\n");
+  });
+});
+
+test(
+  "replacement rejects an extended-attribute change after the recovery link",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const target = join(directory, "target.txt");
+      await writeFile(target, "before\n");
+      const snapshot = await captureSnapshot(target);
+      assert.ok(snapshot);
+
+      await assert.rejects(
+        publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+          beforeRename: async () => {
+            await execFile("/usr/bin/xattr", [
+              "-w",
+              "com.pi-apply-edits.concurrent",
+              "kept",
+              target,
+            ]);
+          },
+        }),
+        /changed before commit/,
+      );
+
+      assert.equal(await readFile(target, "utf8"), "before\n");
+      const { stdout } = await execFile("/usr/bin/xattr", [
+        "-p",
+        "com.pi-apply-edits.concurrent",
+        target,
+      ]);
+      assert.equal(stdout.trim(), "kept");
+    });
+  },
+);
+
+test("replacement honors an abort from the final rename hook", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "file.txt");
+    await writeFile(path, "before\n");
+    const snapshot = await captureSnapshot(path);
+    assert.ok(snapshot);
+    const controller = new AbortController();
+
+    await assert.rejects(
+      publishReplacement(snapshot, Buffer.from("after\n"), controller.signal, {
+        beforeRename: () => controller.abort(),
+      }),
+      /Operation aborted before file content was committed/,
+    );
+    assert.equal(await readFile(path, "utf8"), "before\n");
+  });
+});
+
+test("replacement cleanup leaves a swapped-in temporary file untouched", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "file.txt");
+    const victim = join(directory, "victim.txt");
+    await writeFile(path, "before\n");
+    await writeFile(victim, "KEEP\n");
+    const snapshot = await captureSnapshot(path);
+    assert.ok(snapshot);
+    let temporary = "";
+    let saved = "";
+
+    await assert.rejects(
+      publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+        beforeRename: async (paths) => {
+          temporary = paths.temporary;
+          saved = `${temporary}.saved`;
+          await rename(temporary, saved);
+          await rename(victim, temporary);
+        },
+      }),
+      /Temporary replacement changed before commit.*Cleanup was incomplete.*changed identity/s,
+    );
+
+    assert.equal(await readFile(path, "utf8"), "before\n");
+    assert.equal(await readFile(temporary, "utf8"), "KEEP\n");
+    assert.equal(await readFile(saved, "utf8"), "after\n");
+    await rm(dirname(temporary), { recursive: true });
+  });
+});
+
 test("post-rename read failures report uncertain commit state and retain recovery", {
   skip: process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0),
 }, async () => {
@@ -895,9 +1124,57 @@ test("post-commit cleanup and sync failures return explicit warnings", {
 
     assert.equal(await readFile(path, "utf8"), "after\n");
     assert.equal(await readFile(recovery, "utf8"), "before\n");
-    assert.match(warnings.join(" "), /recovery link remains/);
+    assert.match(warnings.join(" "), /recovery cleanup was incomplete/);
     assert.match(warnings.join(" "), /parent directory could not be synced/);
     await unlink(recovery);
+  });
+});
+
+test("recovery cleanup leaves a swapped-in file untouched", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "file.txt");
+    const victim = join(directory, "victim.txt");
+    await writeFile(path, "before\n");
+    await writeFile(victim, "KEEP\n");
+    const snapshot = await captureSnapshot(path);
+    assert.ok(snapshot);
+    let recovery = "";
+    let saved = "";
+
+    const warnings = await publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+      beforeRecoveryCleanup: async (paths) => {
+        recovery = paths.recovery;
+        saved = `${recovery}.saved`;
+        await rename(recovery, saved);
+        await rename(victim, recovery);
+      },
+    });
+
+    assert.equal(await readFile(path, "utf8"), "after\n");
+    assert.equal(await readFile(recovery, "utf8"), "KEEP\n");
+    assert.equal(await readFile(saved, "utf8"), "before\n");
+    assert.match(warnings.join(" "), /changed identity and was left untouched/);
+    await unlink(recovery);
+    await unlink(saved);
+  });
+});
+
+test("recovery cleanup preserves writes made after commit verification", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "file.txt");
+    await writeFile(path, "before\n");
+    const snapshot = await captureSnapshot(path);
+    assert.ok(snapshot);
+
+    const warnings = await publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+      beforeRecoveryCleanup: async ({ recovery }) => writeFile(recovery, "EXTERNAL\n"),
+    });
+
+    const preserved = /preserved at (.+)$/.exec(warnings.join(" "))?.[1];
+    assert.ok(preserved);
+    assert.equal(await readFile(path, "utf8"), "after\n");
+    assert.equal(await readFile(preserved, "utf8"), "EXTERNAL\n");
+    await rm(dirname(preserved), { recursive: true });
   });
 });
 
@@ -925,6 +1202,26 @@ test("many-line rewrites skip quadratic diff work even when byte size is small",
 
     assert.equal(singleDetails(result.details).diffTruncated, true);
     assert.match(singleDetails(result.details).diff, /Diff omitted/);
+    assert.equal(singleDetails(result.details).addedLines, undefined);
+    assert.equal(singleDetails(result.details).deletedLines, undefined);
+  });
+});
+
+test("batch summary omits aggregate counts when one changed diff count is unavailable", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "small.txt"), "a\n");
+    await writeFile(join(directory, "large.txt"), "a\n".repeat(5_000));
+
+    const result = await applyEditsToFile({
+      files: [
+        { path: "small.txt", rewrite: "b\n" },
+        { path: "large.txt", rewrite: "b\n".repeat(5_000) },
+      ],
+    }, directory);
+
+    assert.doesNotMatch(result.summary, /\(\+\d+\/-\d+\)/);
+    assert.ok("files" in result.details);
+    assert.equal(result.details.files[1]?.addedLines, undefined);
   });
 });
 
@@ -940,6 +1237,17 @@ test("large rewrites skip expensive diff computation", async () => {
     assert.match(singleDetails(result.details).diff, /Diff omitted/);
     assert.equal(singleDetails(result.details).diffTruncated, true);
     assert.equal(await readFile(path, "utf8"), replacement);
+  });
+});
+
+test("snapshot validation detects stale no-change plans", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "file.txt");
+    await writeFile(path, "same\n");
+    const snapshot = await captureSnapshot(path);
+    assert.ok(snapshot);
+    await writeFile(path, "changed\n");
+    await assert.rejects(assertSnapshotCurrent(snapshot), /changed before commit/);
   });
 });
 
@@ -1003,12 +1311,12 @@ test("literal Unicode spaces and leading @ path segments are never rewritten", a
 
     const literalTilde = join(directory, "~");
     await mkdir(literalTilde);
-    assert.throws(() => resolveInputPath("~", directory), /Ambiguous path/);
+    assert.equal(resolveInputPath("~", directory), literalTilde);
     assert.equal(resolveInputPath("./~", directory), literalTilde);
   });
 });
 
-test("invalid file URLs use an existing literal path or return a normalized error", async () => {
+test("file URL-shaped paths are always literal", async () => {
   await inTemporaryDirectory(async (directory) => {
     const literalDirectory = join(directory, "file:", "host");
     const literalPath = join(literalDirectory, "x.txt");
@@ -1016,9 +1324,9 @@ test("invalid file URLs use an existing literal path or return a normalized erro
     await writeFile(literalPath, "literal\n");
 
     assert.equal(resolveInputPath("file://host/x.txt", directory), literalPath);
-    assert.throws(
-      () => resolveInputPath("file://missing/y.txt", directory),
-      /Invalid file URL path/,
+    assert.equal(
+      resolveInputPath("file://missing/y.txt", directory),
+      join(directory, "file:", "missing", "y.txt"),
     );
   });
 });
@@ -1085,6 +1393,10 @@ test("multi-file batch plans then writes all files", async () => {
   });
 });
 
+// Concurrent single-file creates under a shared missing root are not serialized: one wins the
+// exclusive mkdir and the other fails closed, which the caller retries. Serializing them needs
+// a second lock, and a second lock keyed by a resolvable path can canonicalize onto the first.
+
 test("multi-file batch publishes sibling creates under one missing root together", async () => {
   await inTemporaryDirectory(async (directory) => {
     const result = await applyEditsToFile(
@@ -1102,6 +1414,17 @@ test("multi-file batch publishes sibling creates under one missing root together
     assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
     assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
     assert.equal(await readFile(join(directory, "shared/nested/c.txt"), "utf8"), "C\n");
+    assert.equal(
+      (await stat(join(directory, "shared"))).mode & 0o777,
+      0o777 & ~process.umask(),
+    );
+    assert.equal((await stat(join(directory, "shared/a.txt"))).nlink, 1);
+    assert.equal((await stat(join(directory, "shared/b.txt"))).nlink, 1);
+    assert.equal((await stat(join(directory, "shared/nested/c.txt"))).nlink, 1);
+    assert.equal(
+      (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
+      false,
+    );
   });
 });
 
@@ -1234,19 +1557,19 @@ test("multi-file batch rejects duplicate resolved paths", async () => {
   });
 });
 
-test("insert rejects when the text is already adjacent to the anchor", () => {
-  assert.throws(
-    () =>
-      applyTargetedEdits(
-        'import fs from "node:fs";\nimport path from "node:path";\n',
-        [{
-          oldText: 'import fs from "node:fs";',
-          newText: '\nimport path from "node:path";',
-          insert: "after",
-        }],
-        "a.ts",
-      ),
-    /already has the inserted text/,
+test("insert does not guess that adjacent text makes the request idempotent", () => {
+  const result = applyTargetedEdits(
+    'import fs from "node:fs";\nimport path from "node:path";\n',
+    [{
+      oldText: 'import fs from "node:fs";',
+      newText: '\nimport path from "node:path";',
+      insert: "after",
+    }],
+    "a.ts",
+  );
+  assert.equal(
+    result.text,
+    'import fs from "node:fs";\nimport path from "node:path";\nimport path from "node:path";\n',
   );
 });
 
@@ -1355,8 +1678,7 @@ test("missing text with no close match shows the file head", () => {
   );
 });
 
-
-test("insert all skips anchors that already have block insert text", () => {
+test("insert all applies at anchors with adjacent short text", () => {
   const result = applyTargetedEdits(
     "x!\ny\nx\n",
     [{ oldText: "x", newText: "!", insert: "after", all: true }],
@@ -1366,13 +1688,13 @@ test("insert all skips anchors that already have block insert text", () => {
   assert.equal(result.text, "x!!\ny\nx!\n");
 });
 
-test("insert all skips anchors that already have long insert text", () => {
+test("insert all applies even when identical text is already adjacent", () => {
   const result = applyTargetedEdits(
     "x<!--done-->\ny\nx\n",
     [{ oldText: "x", newText: "<!--done-->", insert: "after", all: true }],
     "file.txt",
   );
-  assert.equal(result.text, "x<!--done-->\ny\nx<!--done-->\n");
+  assert.equal(result.text, "x<!--done--><!--done-->\ny\nx<!--done-->\n");
 });
 
 test("short insert after shared prefix is not false-already-applied", () => {
@@ -1383,7 +1705,6 @@ test("short insert after shared prefix is not false-already-applied", () => {
   );
   assert.equal(result.text, "testt\n");
 });
-
 
 test("exact overlapping matches are ambiguous without all", () => {
   assert.throws(
@@ -1454,6 +1775,21 @@ test("multi-file batch rejects Unicode case-fold aliases of the same missing pat
       /same file/,
     );
     await assert.rejects(() => readFile(plain, "utf8"), /ENOENT/);
+  });
+});
+
+test("Linux keeps distinct NFC and NFD missing paths", { skip: process.platform !== "linux" }, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const nfc = "é.txt";
+    const nfd = "é.txt";
+    await applyEditsToFile({
+      files: [
+        { path: nfc, rewrite: "NFC\n", onMissing: "create" },
+        { path: nfd, rewrite: "NFD\n", onMissing: "create" },
+      ],
+    }, directory);
+    assert.equal(await readFile(join(directory, nfc), "utf8"), "NFC\n");
+    assert.equal(await readFile(join(directory, nfd), "utf8"), "NFD\n");
   });
 });
 
@@ -1645,6 +1981,314 @@ test("planned create stays bound to its canonical parent if an alias changes", a
   });
 });
 
+test("direct create honors an abort from the final publish hook", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "target.txt");
+    const plan = await planNewFile(target);
+    const controller = new AbortController();
+
+    await assert.rejects(
+      publishNewFile(target, Buffer.from("created\n"), controller.signal, plan, {
+        beforeFilePublish: () => controller.abort(),
+      }),
+      /Operation aborted before file content was committed/,
+    );
+    await assert.rejects(readFile(target), /ENOENT/);
+  });
+});
+
+test("direct create cleanup leaves a swapped-in temporary file untouched", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "target.txt");
+    const victim = join(directory, "victim.txt");
+    const plan = await planNewFile(target);
+    await writeFile(victim, "KEEP\n");
+    let temporary = "";
+    let saved = "";
+
+    await assert.rejects(
+      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+        beforeFilePublish: async (paths) => {
+          temporary = paths.temporary;
+          assert.equal((await stat(dirname(temporary))).mode & 0o077, 0);
+          saved = `${temporary}.saved`;
+          await rename(temporary, saved);
+          await rename(victim, temporary);
+        },
+      }),
+      /Temporary create file changed before commit.*Cleanup was incomplete.*changed identity/s,
+    );
+
+    await assert.rejects(readFile(target), /ENOENT/);
+    assert.equal(await readFile(temporary, "utf8"), "KEEP\n");
+    assert.equal(await readFile(saved, "utf8"), "created\n");
+    await unlink(temporary);
+    await unlink(saved);
+  });
+});
+
+test("direct create rejects a replaced parent immediately before publication", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const parent = join(directory, "parent");
+    const moved = join(directory, "moved");
+    const target = join(parent, "target.txt");
+    await mkdir(parent);
+    const plan = await planNewFile(target);
+
+    await assert.rejects(
+      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+        beforeFilePublish: async ({ temporary }) => {
+          const temporaryDirectoryName = basename(dirname(temporary));
+          await rename(parent, moved);
+          await mkdir(parent);
+          await mkdir(dirname(temporary), { mode: 0o700 });
+          await rename(join(moved, temporaryDirectoryName, basename(temporary)), temporary);
+        },
+      }),
+      /(?:Create parent changed after planning|Temporary create file changed before commit)/,
+    );
+
+    await assert.rejects(readFile(target), /ENOENT/);
+    await assert.rejects(readFile(join(moved, "target.txt")), /ENOENT/);
+  });
+});
+
+test("planned nested create never replaces a directory appearing at final reservation", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "missing", "child.txt");
+    const plan = await planNewFile(target);
+    let appearedStats: Awaited<ReturnType<typeof lstat>> | undefined;
+
+    await assert.rejects(
+      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+        beforeRootReserve: async ({ target: publishRoot }) => {
+          await mkdir(publishRoot);
+          appearedStats = await lstat(publishRoot);
+        },
+      }),
+      /Create parent changed after planning/,
+    );
+
+    const current = await lstat(join(directory, "missing"));
+    assert.equal(current.ino, appearedStats?.ino);
+    assert.deepEqual(await readdir(join(directory, "missing")), []);
+    assert.equal(
+      (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
+      false,
+    );
+  });
+});
+
+test("planned nested create preserves an entry appearing inside its reserved root", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const firstPlan = await planNewFile(join(directory, "shared", "a.txt"));
+    const secondPlan = await planNewFile(join(directory, "shared", "b.txt"));
+    const prepared = await preparePlannedNestedFiles(
+      [
+        { plan: firstPlan, bytes: Buffer.from("A\n") },
+        { plan: secondPlan, bytes: Buffer.from("B\n") },
+      ],
+      undefined,
+      {
+        afterRootReserve: async ({ target: publishRoot }) => {
+          await writeFile(join(publishRoot, "b.txt"), "EXTERNAL\n");
+        },
+      },
+    );
+
+    await assert.rejects(
+      publishPreparedNestedFiles(prepared),
+      /File appeared before create.*Partial create publication retained 1 file.*private staging remains/s,
+    );
+
+    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
+    assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "EXTERNAL\n");
+    assert.equal(await readFile(join(prepared.staging, "a.txt"), "utf8"), "A\n");
+    await rm(join(directory, "shared"), { recursive: true });
+    await rm(prepared.container, { recursive: true });
+  });
+});
+
+test("planned nested create rejects staged content tampering", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const inputPath = join(directory, "missing", "nested", "child.txt");
+    const plan = await planNewFile(inputPath);
+    let staging = "";
+
+    await assert.rejects(
+      publishNewFile(inputPath, Buffer.from("created\n"), undefined, plan, {
+        beforeDirectoryCommit: async (paths) => {
+          staging = paths.staging;
+          await writeFile(join(staging, "nested", "child.txt"), "tampered\n");
+        },
+      }),
+      /Staged create file changed before publish/,
+    );
+    await assert.rejects(readFile(inputPath, "utf8"), /ENOENT/);
+    await rm(staging, { recursive: true });
+  });
+});
+
+test("planned nested cleanup leaves a swapped-in directory untouched", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "missing", "child.txt");
+    const victim = join(directory, "victim");
+    await mkdir(victim);
+    await writeFile(join(victim, "important.txt"), "KEEP\n");
+    const plan = await planNewFile(target);
+    let staging = "";
+    let displaced = "";
+
+    await assert.rejects(
+      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+        beforeDirectoryPublish: async (paths) => {
+          staging = paths.staging;
+          displaced = `${staging}.saved`;
+          await rename(staging, displaced);
+          await rename(victim, staging);
+        },
+      }),
+      /Staged create entry changed.*Cleanup was incomplete/s,
+    );
+
+    assert.equal(await readFile(join(staging, "important.txt"), "utf8"), "KEEP\n");
+    assert.equal(await readFile(join(displaced, "child.txt"), "utf8"), "created\n");
+    await assert.rejects(readFile(target), /ENOENT/);
+    await rm(staging, { recursive: true });
+    await rm(displaced, { recursive: true });
+  });
+});
+
+test("planned nested create revalidates its ancestor at final root reservation", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const ancestor = join(directory, "ancestor");
+    const moved = join(directory, "moved");
+    const target = join(ancestor, "missing", "child.txt");
+    await mkdir(ancestor);
+    const plan = await planNewFile(target);
+
+    await assert.rejects(
+      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+        beforeRootReserve: async () => {
+          await rename(ancestor, moved);
+          await mkdir(ancestor);
+        },
+      }),
+      /Create parent changed after planning.*Cleanup was incomplete/s,
+    );
+
+    await assert.rejects(readFile(target), /ENOENT/);
+    await assert.rejects(readFile(join(moved, "missing", "child.txt")), /ENOENT/);
+    await rm(moved, { recursive: true });
+  });
+});
+
+test("planned nested create preserves inherited setgid directory mode", {
+  skip: process.platform === "win32",
+}, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const parent = join(directory, "setgid-parent");
+    const target = join(parent, "missing", "child.txt");
+    await mkdir(parent);
+    await chmod(parent, 0o2775);
+    const plan = await planNewFile(target);
+
+    await publishNewFile(target, Buffer.from("created\n"), undefined, plan);
+
+    assert.equal((await stat(join(parent, "missing"))).mode & 0o2000, 0o2000);
+  });
+});
+
+test("planned nested create rejects a replaced ancestor immediately before commit", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const parent = join(directory, "parent");
+    const moved = join(directory, "moved");
+    const target = join(parent, "missing", "child.txt");
+    await mkdir(parent);
+    const plan = await planNewFile(target);
+
+    await assert.rejects(
+      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+        beforeDirectoryCommit: async () => {
+          await rename(parent, moved);
+          await mkdir(parent);
+        },
+      }),
+      /Create parent changed after planning/,
+    );
+
+    await assert.rejects(readFile(target), /ENOENT/);
+    await assert.rejects(readFile(join(moved, "missing", "child.txt")), /ENOENT/);
+  });
+});
+
+test("planned nested create honors an abort from the final commit hook", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const inputPath = join(directory, "missing", "child.txt");
+    const plan = await planNewFile(inputPath);
+    const controller = new AbortController();
+
+    await assert.rejects(
+      publishNewFile(inputPath, Buffer.from("created\n"), controller.signal, plan, {
+        beforeDirectoryCommit: () => controller.abort(),
+      }),
+      /Operation aborted before file content was committed/,
+    );
+    await assert.rejects(readFile(inputPath), /ENOENT/);
+  });
+});
+
+test("nested discard is idempotent and later prepared groups can still be cleaned", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const firstPlan = await planNewFile(join(directory, "first", "child.txt"));
+    const secondPlan = await planNewFile(join(directory, "second", "child.txt"));
+    const controller = new AbortController();
+    const first = await preparePlannedNestedFiles(
+      [{ plan: firstPlan, bytes: Buffer.from("first\n") }],
+      undefined,
+      { beforeDirectoryCommit: () => controller.abort() },
+    );
+    const second = await preparePlannedNestedFiles([
+      { plan: secondPlan, bytes: Buffer.from("second\n") },
+    ]);
+
+    await assert.rejects(
+      publishPreparedNestedFiles(first, controller.signal),
+      /Operation aborted before file content was committed/,
+    );
+    await discardPreparedNestedFiles(first);
+    await discardPreparedNestedFiles(second);
+
+    await assert.rejects(lstat(first.container), /ENOENT/);
+    await assert.rejects(lstat(second.container), /ENOENT/);
+  });
+});
+
+test("planned nested create rejects staged symbolic links", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const inputPath = join(directory, "missing", "nested", "child.txt");
+    const outside = join(directory, "outside.txt");
+    await writeFile(outside, "outside\n");
+    const plan = await planNewFile(inputPath);
+    let staging = "";
+
+    await assert.rejects(
+      publishNewFile(inputPath, Buffer.from("created\n"), undefined, plan, {
+        beforeDirectoryPublish: async (paths) => {
+          staging = paths.staging;
+          const staged = join(staging, "nested", "child.txt");
+          await unlink(staged);
+          await symlink(outside, staged);
+        },
+      }),
+      /(?:contains a symbolic link|Staged create entry changed)/,
+    );
+    assert.equal(await readFile(outside, "utf8"), "outside\n");
+    await assert.rejects(readFile(inputPath, "utf8"), /ENOENT/);
+    await rm(staging, { recursive: true });
+  });
+});
+
 test("planned nested create never follows a parent symlink appearing after validation", async () => {
   await inTemporaryDirectory(async (directory) => {
     const outside = join(directory, "outside");
@@ -1670,7 +2314,7 @@ test("planned nested create never follows a parent symlink appearing after valid
   });
 });
 
-test("staged create cleanup survives ancestor rename and replacement", async () => {
+test("ancestor replacement leaves displaced private staging for inspection", async () => {
   await inTemporaryDirectory(async (directory) => {
     const ancestor = join(directory, "ancestor");
     const movedAncestor = join(directory, "moved-ancestor");
@@ -1687,17 +2331,14 @@ test("staged create cleanup survives ancestor rename and replacement", async () 
           await mkdir(ancestor);
         },
       }),
-      /Create parent changed after planning/,
+      /Create parent changed after planning.*Cleanup was incomplete/s,
     );
 
-    const entries = await readdir(directory, { recursive: true });
-    assert.equal(entries.some((name) => name.includes(".pi-apply-edits-")), false);
-    assert.notEqual(staging, "");
-    await assert.rejects(() => lstat(staging), /ENOENT/);
-    await assert.rejects(
-      () => readFile(join(movedAncestor, "missing", "child.txt"), "utf8"),
-      /ENOENT/,
-    );
+    const movedContainer = join(movedAncestor, basename(dirname(staging)));
+    const movedStaging = join(movedContainer, basename(staging));
+    assert.equal(await readFile(join(movedStaging, "child.txt"), "utf8"), "created\n");
+    await assert.rejects(readFile(inputPath), /ENOENT/);
+    await rm(movedContainer, { recursive: true });
   });
 });
 
@@ -1720,6 +2361,20 @@ test("concurrent single creates through symlink-parent aliases serialize", async
     ]);
     assert.equal(results.length, 2);
     assert.equal(await readFile(join(real, "child.txt"), "utf8"), "second\n");
+  });
+});
+
+test("long valid basenames do not overflow temporary names", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const existing = "x".repeat(240);
+    const created = "y".repeat(240);
+    await writeFile(join(directory, existing), "before\n");
+
+    await applyEditsToFile({ path: existing, rewrite: "after\n" }, directory);
+    await applyEditsToFile({ path: created, rewrite: "created\n", onMissing: "create" }, directory);
+
+    assert.equal(await readFile(join(directory, existing), "utf8"), "after\n");
+    assert.equal(await readFile(join(directory, created), "utf8"), "created\n");
   });
 });
 
@@ -1755,3 +2410,422 @@ test("multi-file batch rejects unwritable target directories during plan", async
     }
   });
 });
+
+test(
+  "create rejects a target entry swapped for a symbolic link after linking",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const input = join(directory, "target.txt");
+      const saved = join(directory, "saved.txt");
+      const originalLstat = nodeFs.promises.lstat;
+      let target = "";
+      let armed = false;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (armed && String(path) === target) {
+              armed = false;
+              await rename(target, saved);
+              await symlink(saved, target);
+            }
+            return (originalLstat as Function).call(this, path, ...args);
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          target = plan.targetPath;
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                beforeFilePublish() {
+                  armed = true;
+                },
+              }),
+            /changed during publication/,
+          );
+        },
+      );
+
+      assert.equal((await lstat(input)).isSymbolicLink(), true);
+      assert.equal(await readFile(saved, "utf8"), "created\n");
+    });
+  },
+);
+
+test(
+  "create reports an uncertain commit when the parent moves after exclusive open",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const parent = join(directory, "parent");
+      await mkdir(parent);
+      const input = join(parent, "target.txt");
+      const moved = join(directory, "moved");
+      const originalStat = nodeFs.promises.stat;
+      let ancestor = "";
+      let armed = false;
+      let checks = 0;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.link = async () => {
+            throw Object.assign(new Error("forced"), { code: "EPERM" });
+          };
+          promises.stat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (armed && String(path) === ancestor && ++checks === 3) {
+              await rename(ancestor, moved);
+              await mkdir(ancestor);
+            }
+            return (originalStat as Function).call(this, path, ...args);
+          }) as typeof promises.stat;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          ancestor = plan.ancestorPath;
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                beforeFilePublish() {
+                  armed = true;
+                },
+              }),
+            /Commit status is uncertain/,
+          );
+        },
+      );
+
+      assert.equal((await readFile(join(moved, "target.txt"))).length, 0);
+    });
+  },
+);
+
+test(
+  "replacement rejects a parent alias swapped during target validation",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const original = join(directory, "original");
+      const other = join(directory, "other");
+      const alias = join(directory, "alias");
+      await mkdir(original);
+      await mkdir(other);
+      await writeFile(join(original, "file.txt"), "before\n");
+      await writeFile(join(other, "file.txt"), "outside\n");
+      await symlink(original, alias);
+
+      const originalOpen = nodeFs.promises.open;
+      let actual = "";
+      let armed = false;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.open = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (armed && String(path) === actual) {
+              armed = false;
+              await unlink(alias);
+              await symlink(other, alias);
+            }
+            return (originalOpen as Function).call(this, path, ...args);
+          }) as typeof promises.open;
+        },
+        async (module) => {
+          const snapshot = await module.captureSnapshot(join(alias, "file.txt"));
+          assert.ok(snapshot);
+          actual = snapshot.actualPath;
+          await assert.rejects(
+            () =>
+              module.publishReplacement(snapshot, Buffer.from("after\n"), undefined, {
+                beforeRename() {
+                  armed = true;
+                },
+              }),
+            /File path changed before commit/,
+          );
+        },
+      );
+
+      assert.equal(await readFile(join(original, "file.txt"), "utf8"), "before\n");
+      assert.equal(await readFile(join(other, "file.txt"), "utf8"), "outside\n");
+    });
+  },
+);
+
+test(
+  "nested create cleanup never follows a swapped directory entry to an unrelated path",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      await mkdir(join(directory, "victim"));
+      const victim = await realpath(join(directory, "victim"));
+      const input = join(directory, "missing", "sub", "child.txt");
+      const originalMkdir = nodeFs.promises.mkdir;
+      const originalLstat = nodeFs.promises.lstat;
+      let publishRoot = "";
+      let subdirectory = "";
+      let phase = "idle";
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+            const result = await (originalMkdir as Function).call(this, path, ...args);
+            if (phase === "armed" && String(path) === subdirectory) {
+              // Replace the just-claimed entry with a link to an unrelated directory.
+              await rename(subdirectory, `${subdirectory}.saved`);
+              await symlink(victim, subdirectory);
+              phase = "move-root";
+            }
+            return result;
+          }) as typeof promises.mkdir;
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            // Then invalidate the reserved root, so the revalidation guarding it fails and
+            // the cleanup branch for the new directory runs.
+            if (phase === "move-root" && String(path) === publishRoot) {
+              phase = "done";
+              await rename(publishRoot, `${publishRoot}.moved`);
+              await mkdir(publishRoot);
+            }
+            return (originalLstat as Function).call(this, path, ...args);
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                afterRootReserve({ target }) {
+                  publishRoot = target;
+                  subdirectory = join(target, "sub");
+                  phase = "armed";
+                },
+              }),
+            /changed identity/,
+          );
+        },
+      );
+
+      // Following the swapped entry would have published into the unrelated directory, or
+      // deleted it during cleanup.
+      assert.equal((await lstat(victim)).isDirectory(), true);
+      assert.deepEqual(await readdir(victim), []);
+    });
+  },
+);
+
+test(
+  "create reports an uncertain commit when the parent moves right after linking",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const parent = join(directory, "parent");
+      await mkdir(parent);
+      const input = join(parent, "target.txt");
+      const moved = join(directory, "moved");
+      const originalLink = nodeFs.promises.link;
+      let target = "";
+      let armed = false;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.link = (async function (this: unknown, from: string, to: string, ...args: unknown[]) {
+            const result = await (originalLink as Function).call(this, from, to, ...args);
+            if (armed && String(to) === target) {
+              armed = false;
+              await rename(parent, moved);
+            }
+            return result;
+          }) as typeof promises.link;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          target = plan.targetPath;
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                beforeFilePublish() {
+                  armed = true;
+                },
+              }),
+            /Commit status is uncertain; nothing was rolled back/,
+          );
+        },
+      );
+
+      // Both hard links survive under the moved parent, and they are the same inode.
+      assert.equal(await readFile(join(moved, "target.txt"), "utf8"), "created\n");
+      const survivors = (await readdir(moved, { recursive: true, withFileTypes: true })).filter(
+        (entry) => entry.isFile(),
+      );
+      assert.equal(survivors.length, 2);
+      const inodes = new Set<string>();
+      for (const entry of survivors) {
+        inodes.add(String((await stat(join(entry.parentPath, entry.name), { bigint: true })).ino));
+      }
+      assert.equal(inodes.size, 1);
+    });
+  },
+);
+
+// Only lowercase is covered. On darwin and win32 a missing path's lock key is case-folded
+// while a published path resolves through realpath with its on-disk spelling, so a mixed-case
+// target still takes two different keys across publication. That asymmetry predates this
+// package's create locking and is tracked as a follow-up; it cannot be closed by holding both
+// keys, because Pi canonicalizes each key at acquisition and the two collapse into one queue.
+for (const relative of ["missing/target.txt"]) {
+  test(
+    `a rewrite of ${relative} while it is being created waits for the create to finish`,
+    { skip: process.platform === "win32" },
+    async () => {
+      await inTemporaryDirectory(async (directory) => {
+        const originalRm = nodeFs.promises.rm;
+        let heldOnce = false;
+        let signalLinked = () => {};
+        const linked = new Promise<void>((resolve) => {
+          signalLinked = resolve;
+        });
+        let releaseTemporary = () => {};
+        const held = new Promise<void>((resolve) => {
+          releaseTemporary = resolve;
+        });
+
+        await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+          (promises) => {
+            promises.rm = (async function (this: unknown, path: string, ...args: unknown[]) {
+              // Hold the staged copy so the published target stays at two links, widening the
+              // window in which a concurrent rewrite could observe a transient hard link.
+              if (!heldOnce && String(path).includes(".tmpdir")) {
+                heldOnce = true;
+                signalLinked();
+                await held;
+              }
+              return (originalRm as Function).call(this, path, ...args);
+            }) as typeof promises.rm;
+          },
+          async (module) => {
+            const create = module.applyEditsToFile(
+              { path: relative, rewrite: "created\n", onMissing: "create" },
+              directory,
+            );
+            await linked;
+            let rewriteSettled = false;
+            const settle = <T,>(value: T) => {
+              rewriteSettled = true;
+              return value;
+            };
+            const rewrite = module
+              .applyEditsToFile({ path: relative, rewrite: "rewritten\n" }, directory)
+              .then(settle, (error: unknown) => {
+                settle(undefined);
+                throw error;
+              });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            assert.equal(rewriteSettled, false, "the rewrite must wait for the create lock");
+            releaseTemporary();
+            await create;
+            await rewrite;
+          },
+          "../src/apply-edits.ts",
+        );
+
+        assert.equal(await readFile(join(directory, relative), "utf8"), "rewritten\n");
+      });
+    },
+  );
+}
+
+test(
+  "a rewrite that resolves a path before it is created still completes",
+  { skip: process.platform === "win32" },
+  async () => {
+    // Pi canonicalizes each lock key with realpath when the lock is taken, so a create must
+    // never hold two keys that name the same file once it exists. This is the window that
+    // would expose it: the rewrite resolves its key while the target is still missing.
+    await inTemporaryDirectory(async (directory) => {
+      const originalLink = nodeFs.promises.link;
+      let signalBeforeLink = () => {};
+      const beforeLink = new Promise<void>((resolve) => {
+        signalBeforeLink = resolve;
+      });
+      let releaseLink = () => {};
+      const released = new Promise<void>((resolve) => {
+        releaseLink = resolve;
+      });
+      let holding = false;
+
+      await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+        (promises) => {
+          promises.link = (async function (this: unknown, from: string, to: string, ...args: unknown[]) {
+            if (!holding && String(to).endsWith("Target.txt")) {
+              holding = true;
+              signalBeforeLink();
+              await released;
+            }
+            return (originalLink as Function).call(this, from, to, ...args);
+          }) as typeof promises.link;
+        },
+        async (module) => {
+          const create = module.applyEditsToFile(
+            { path: "Target.txt", rewrite: "created\n", onMissing: "create" },
+            directory,
+          );
+          await beforeLink;
+          const rewrite = module.applyEditsToFile(
+            { path: "Target.txt", rewrite: "rewritten\n" },
+            directory,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          releaseLink();
+          await create;
+
+          const outcome = await Promise.race([
+            rewrite.then(
+              () => "settled",
+              (error: unknown) => `rejected: ${String(error)}`,
+            ),
+            new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+          ]);
+          assert.equal(outcome, "settled");
+          assert.equal(await readFile(join(directory, "Target.txt"), "utf8"), "rewritten\n");
+        },
+        "../src/apply-edits.ts",
+      );
+    });
+  },
+);
+
+test(
+  "an unverifiable create claims nothing about what remains on disk",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const input = join(directory, "target.txt");
+      const originalLink = nodeFs.promises.link;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.link = (async function (this: unknown, from: string, to: string, ...args: unknown[]) {
+            const result = await (originalLink as Function).call(this, from, to, ...args);
+            // Remove the freshly published name, so only the temporary link survives.
+            if (String(to).endsWith("target.txt")) await unlink(to);
+            return result;
+          }) as typeof promises.link;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          let caught: unknown;
+          try {
+            await module.publishNewFile(input, Buffer.from("created\n"), undefined, plan);
+          } catch (error) {
+            caught = error;
+          }
+          // Assert outside assert.rejects, which would accept a failing assertion as a
+          // rejection and pass regardless of the message.
+          assert.ok(caught, "expected the create to report a failure");
+          assert.match(String(caught), /Commit status is uncertain; nothing was rolled back/);
+          assert.doesNotMatch(String(caught), /two hard links|were retained/);
+        },
+      );
+    });
+  },
+);

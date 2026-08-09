@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-08-08
+
+- Canonicalize and revalidate replacement entries, preserve post-link metadata changes, verify staged create trees, and quarantine cleanup so swapped-in files or directories are preserved.
+- Verify published creates and their new directories through the claimed entry instead of following it, so a swapped-in symbolic link can never redirect publication or cleanup onto an unrelated path.
+- Report an uncertain commit, naming every retained path, when a create cannot be verified or rolled back because its parent moved, rather than claiming nothing was written.
+- Recheck replacement input paths after the target checks as well as before.
+- Keep one mutation-queue key per file. Pi resolves each key when it is acquired, so an operation holding two keys can have them collapse onto a single queue and wait on a lock it already owns.
+- Reserve create roots and file names with exclusive no-clobber operations, revalidate create parents immediately before publication and no-change snapshots before return, sync every staged directory, and make all file writes cancellation-aware.
+- Keep uncertain partial creates for inspection instead of deleting a possibly replaced path, and use basename-independent temporary names so maximum-length filenames remain editable.
+- Remove ambiguous insert-idempotence guessing, fix indentation-delta correction, and let ordered LF anchors match prior output in uniform CRLF files.
+- Treat `~` and `file://` as literal paths, preserve distinct Linux Unicode spellings, bound diagnostics, and report unavailable diff counts honestly.
+- Tighten argument schemas and batch limits, consume compact retries only when execution begins, guard every originally missing target on create retry, surface batch warnings, and fix warning/diff rendering.
+- Keep built-in mutation tools when replacement prerequisites are unavailable or another extension owns `apply_edits`; validate against Pi 0.84.1.
 
 ## 0.3.0 — 2026-08-06
 
