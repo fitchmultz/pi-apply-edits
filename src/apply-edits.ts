@@ -891,7 +891,7 @@ async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string;
     if (!isMissingPathError(error)) throw error;
   }
 
-  // Serialize creates under one missing root, while retaining the full path for batch dedupe.
+  // Key a create on its full target, so a later edit of that path lands on the same queue.
   const missing: string[] = [];
   let current = resolvedPath;
   while (true) {

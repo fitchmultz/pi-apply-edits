@@ -181,10 +181,11 @@ are rejected rather than guessed.
 - Existing-file replacement fails closed on other platforms; keep Pi's
   built-ins enabled there until a native metadata-preserving publisher is
   implemented. Explicit create remains available.
-- Missing parent directories are created only for an explicit create. Creates
-  under one missing root serialize and are fully staged before publication. The
-  missing root and every file name are then claimed with exclusive no-clobber
-  operations. If publication stops after a file name is claimed, the partial root
+- Missing parent directories are created only for an explicit create. Creates are
+  fully staged before publication, and the missing root and every file name are
+  then claimed with exclusive no-clobber operations. Concurrent separate creates
+  under one missing root are not serialized: one claims the root and the others
+  fail without writing. If publication stops after a file name is claimed, the partial root
   and private staging tree are retained at named paths for inspection.
 - Cleanup atomically moves temporary, recovery, and staged paths into private
   quarantine directories, rechecks identity, and preserves detected swaps for inspection.
