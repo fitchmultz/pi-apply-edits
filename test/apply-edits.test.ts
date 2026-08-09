@@ -2826,3 +2826,52 @@ test(
     });
   },
 );
+
+test("concurrent creates under one missing root serialize instead of racing the claim", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    // Both creates must claim the same missing root. Without a lock that survives the root
+    // coming into existence, one wins the exclusive mkdir and the other fails closed.
+    await Promise.all([
+      applyEditsToFile({ path: "shared/a.txt", rewrite: "A\n", onMissing: "create" }, directory),
+      applyEditsToFile({ path: "shared/b.txt", rewrite: "B\n", onMissing: "create" }, directory),
+    ]);
+    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
+    assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
+  });
+});
+
+test("concurrent creates three deep under one missing root all publish", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await Promise.all([
+      applyEditsToFile({ path: "r/x/a.txt", rewrite: "A\n", onMissing: "create" }, directory),
+      applyEditsToFile({ path: "r/y/b.txt", rewrite: "B\n", onMissing: "create" }, directory),
+      applyEditsToFile({ path: "r/z/c.txt", rewrite: "C\n", onMissing: "create" }, directory),
+    ]);
+    assert.equal(await readFile(join(directory, "r/x/a.txt"), "utf8"), "A\n");
+    assert.equal(await readFile(join(directory, "r/y/b.txt"), "utf8"), "B\n");
+    assert.equal(await readFile(join(directory, "r/z/c.txt"), "utf8"), "C\n");
+  });
+});
+
+test(
+  "concurrent creates of one path spelled two ways do not both claim it",
+  { skip: process.platform !== "darwin" && process.platform !== "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      // Two spellings of one file on a case-insensitive volume. Serialized, the second plans
+      // after the first published and becomes a rewrite. Unserialized, both plan against a
+      // missing path and one fails closed on the exclusive claim.
+      const outcomes = await Promise.allSettled([
+        applyEditsToFile({ path: "case/Target.txt", rewrite: "A\n", onMissing: "create" }, directory),
+        applyEditsToFile({ path: "case/target.txt", rewrite: "B\n", onMissing: "create" }, directory),
+      ]);
+      assert.deepEqual(
+        outcomes.map((outcome) => outcome.status),
+        ["fulfilled", "fulfilled"],
+      );
+      const entries = await readdir(join(directory, "case"));
+      assert.equal(entries.length, 1);
+      assert.match(await readFile(join(directory, "case", entries[0]!), "utf8"), /^[AB]\n$/);
+    });
+  },
+);
