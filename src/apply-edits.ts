@@ -1055,8 +1055,10 @@ async function mutationQueueKeys(
   while (true) {
     const parent = dirname(current);
     if (parent === current) {
+      // current is the filesystem root here, so the missing components rebuild the full path.
+      // Passing resolvedPath instead would double-append them and corrupt batch dedupe keys.
       const missing = [...missingReversed].reverse();
-      const targetKey = normalizeLockKey(resolvedPath, missing);
+      const targetKey = normalizeLockKey(current, missing);
       return { targetKey, queueKeys: [resolvedPath], needsCreateLock: true };
     }
     try {
@@ -1107,8 +1109,8 @@ function normalizeLockKey(existingPrefix: string, missingParts: string[]): strin
   return fullPath.split(sep).map(normalizeLockComponent).join(sep);
 }
 
+// Only called for darwin/win32; normalizeLockKey returns other platforms' paths untouched.
 function normalizeLockComponent(part: string): string {
-  if (process.platform !== "darwin" && process.platform !== "win32") return part;
   // NFC handles normalization-insensitive aliases. Per-code-point upper→lower covers the full
   // case-fold equivalences APFS uses for long-s, ligatures, final sigma, and sharp-S. Preserve
   // dotless U+0131: it is the one character this transform would over-collapse onto ASCII `i`,

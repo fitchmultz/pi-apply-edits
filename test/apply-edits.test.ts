@@ -1146,7 +1146,10 @@ test("post-commit cleanup and sync failures return explicit warnings", {
 
     assert.equal(await readFile(path, "utf8"), "after\n");
     assert.equal(await readFile(recovery, "utf8"), "before\n");
-    assert.match(warnings.join(" "), /recovery cleanup was incomplete/);
+    assert.match(
+      warnings.join(" "),
+      /recovery cleanup failed and its final state is unknown; the previous content may remain at .* or elsewhere, or only leftover temporary directories may remain/,
+    );
     assert.match(warnings.join(" "), /parent directory could not be synced/);
     await unlink(recovery);
   });
@@ -3841,7 +3844,7 @@ test("staged container disappearance before cleanup returns a warning", async ()
         const warnings = "warnings" in result.details ? result.details.warnings : [];
         assert.match(
           warnings.join("\n"),
-          /container disappeared before cleanup.*location is uncertain.*may remain outside/s,
+          /container disappeared before cleanup.*location is uncertain.*may remain outside.*may not be empty/s,
         );
       },
       "../src/apply-edits.ts",
@@ -3990,7 +3993,7 @@ test("staged container disappearance during rmdir returns a warning", async () =
         const warnings = "warnings" in result.details ? result.details.warnings : [];
         assert.match(
           warnings.join("\n"),
-          /container disappeared during cleanup.*location is uncertain.*may remain outside/s,
+          /container disappeared during cleanup.*location is uncertain.*may remain outside.*may not be empty/s,
         );
       },
       "../src/apply-edits.ts",
@@ -4195,6 +4198,299 @@ test(
     });
   },
 );
+
+test("replacement failure discloses an unverifiable recovery link", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const originalLstat = nodeFs.promises.lstat;
+    let failed = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (basename(String(source)) === "replacement" && basename(String(target)) === "file") {
+            failed = true;
+            throw Object.assign(new Error("forced commit failure"), { code: "EACCES" });
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+        promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (failed && basename(String(path)).endsWith(".tmp")) {
+            throw Object.assign(new Error("forced verification failure"), { code: "EACCES" });
+          }
+          return (originalLstat as Function).call(this, path, ...args);
+        }) as typeof promises.lstat;
+      },
+      async (module) => {
+        await writeFile(join(directory, "file"), "before\n");
+        await assert.rejects(
+          module.applyEditsToFile({ path: "file", rewrite: "after\n" }, directory),
+          /the pre-edit recovery link's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, possibly hard-linked to the target, or only leftover temporary directories may remain/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(failed);
+    assert.equal(await readFile(join(directory, "file"), "utf8"), "before\n");
+  });
+});
+
+test("successful create discloses an unverifiable temporary link", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLink = nodeFs.promises.link;
+    const originalMkdir = nodeFs.promises.mkdir;
+    let published = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.link = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalLink as Function).call(this, source, target);
+          if (basename(String(source)) === "create" && basename(String(target)) === "file") {
+            published = true;
+          }
+          return result;
+        }) as typeof promises.link;
+        promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (published && basename(String(path)).endsWith(".tmpdir")) {
+            throw Object.assign(new Error("forced quarantine failure"), { code: "EACCES" });
+          }
+          return (originalMkdir as Function).call(this, path, ...args);
+        }) as typeof promises.mkdir;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /temporary link's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, possibly hard-linked to the created file, or only leftover temporary directories may remain/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(published);
+    assert.equal(await readFile(join(directory, "file"), "utf8"), "secret\n");
+    assert.equal(Number((await stat(join(directory, "file"))).nlink), 2);
+  });
+});
+
+test("post-unlink quarantine failure reports unknown state, not a retained link", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLink = nodeFs.promises.link;
+    const originalRmdir = nodeFs.promises.rmdir;
+    let published = false;
+    let forced = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.link = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalLink as Function).call(this, source, target);
+          if (basename(String(source)) === "create" && basename(String(target)) === "file") {
+            published = true;
+          }
+          return result;
+        }) as typeof promises.link;
+        promises.rmdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+          // The entry is already verified, quarantined, and unlinked; only the empty
+          // quarantine directory removal fails. The warning must not claim the link remains.
+          if (published && !forced && basename(String(path)).endsWith(".tmpdir")) {
+            forced = true;
+            throw Object.assign(new Error("forced quarantine directory failure"), { code: "EACCES" });
+          }
+          return (originalRmdir as Function).call(this, path, ...args);
+        }) as typeof promises.rmdir;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /temporary link's cleanup failed and its final state is unknown.*or only leftover temporary directories may remain/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(forced);
+    assert.equal(await readFile(join(directory, "file"), "utf8"), "secret\n");
+    // The temporary link really was removed; only directories linger. nlink must be 1.
+    assert.equal(Number((await stat(join(directory, "file"))).nlink), 1);
+  });
+});
+
+test("create succeeds when realpath is unavailable for every ancestor", async () => {
+  await inTemporaryDirectory(async (unresolved) => {
+    // Resolve first: the walk crosses every ancestor, and a real symlink like /var would
+    // correctly fail the dangling-link check before the root terminator is reached.
+    const directory = await realpath(unresolved);
+    const originalRealpath = nodeFs.promises.realpath;
+    let walked = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+          // Fail every ancestor during key discovery so the walk reaches the root terminator;
+          // later callers (planning, Pi's queue) see the real filesystem again.
+          if (!walked) {
+            if (dirname(String(path)) === String(path)) walked = true;
+            throw Object.assign(new Error("forced missing"), { code: "ENOENT" });
+          }
+          return (originalRealpath as Function).call(this, path, ...args);
+        }) as typeof promises.realpath;
+      },
+      async (module) => {
+        // Forces mutationQueueKeys onto its root-terminator branch: every ancestor, including
+        // the filesystem root, reports missing, so the exact resolved path is the queue key.
+        const result = await module.applyEditsToFile(
+          { path: "sub/file.txt", rewrite: "rooted\n", onMissing: "create" },
+          directory,
+        );
+        assert("operation" in result.details && result.details.operation === "create");
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(walked); // the discovery walk really reached the filesystem root
+    assert.equal(await readFile(join(directory, "sub", "file.txt"), "utf8"), "rooted\n");
+    assert.deepEqual(
+      (await readdir(directory)).filter((name) => name.startsWith(".pi-apply-edits-")),
+      [],
+    );
+  });
+});
+
+test("batch ancestor rejection survives realpath loss on every ancestor", async () => {
+  await inTemporaryDirectory(async (unresolved) => {
+    const directory = await realpath(unresolved);
+    const originalRealpath = nodeFs.promises.realpath;
+    let rootMisses = 0;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+          // Both batch entries must walk to the root terminator, so keep failing until the
+          // second walk arrives there; the corrupted-key regression only shows on that branch.
+          if (rootMisses < 2) {
+            if (dirname(String(path)) === String(path)) rootMisses += 1;
+            throw Object.assign(new Error("forced missing"), { code: "ENOENT" });
+          }
+          return (originalRealpath as Function).call(this, path, ...args);
+        }) as typeof promises.realpath;
+      },
+      async (module) => {
+        await assert.rejects(
+          module.applyEditsToFile(
+            {
+              files: [
+                { path: "a", rewrite: "parent\n", onMissing: "create" },
+                { path: join("a", "b"), rewrite: "child\n", onMissing: "create" },
+              ],
+            },
+            directory,
+          ),
+          /is nested under files\[0\].*cannot target a path and one of its ancestors/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert.equal(rootMisses, 2); // both discovery walks really reached the root terminator
+    await assert.rejects(lstat(join(directory, "a")), /ENOENT/); // nothing was written
+  });
+});
+
+test("simulated Windows path budget rejects the overlong path during planning", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRealpath = nodeFs.promises.realpath;
+    const originalLstat = nodeFs.promises.lstat;
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    assert(platform);
+    let touchedLongPath = false;
+    const guard = (path: unknown) => {
+      if (String(path).length > 5000) {
+        touchedLongPath = true;
+        throw Object.assign(new Error("forced missing"), { code: "ENOENT" });
+      }
+    };
+    try {
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+        (promises) => {
+          promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+            guard(path);
+            return (originalRealpath as Function).call(this, path, ...args);
+          }) as typeof promises.realpath;
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            guard(path);
+            return (originalLstat as Function).call(this, path, ...args);
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          // Astral characters make UTF-16 units differ from UTF-8 bytes, pinning the unit choice.
+          const target = join(directory, "\u{1F642}".repeat(17000));
+          await assert.rejects(
+            module.applyEditsToFile({ path: target, rewrite: "x\n", onMissing: "create" }, directory),
+            (error: unknown) => {
+              const message = error instanceof Error ? error.message : String(error);
+              const planned = message.match(
+                /planned staging and cleanup require a (\d+)-character path, beyond the supported 32702 characters on Windows \(64-unit safety margin below PATH_MAX 32767\)\. No changes were written\./,
+              );
+              assert(planned, `unexpected rejection: ${message}`);
+              const units = Number(planned[1]);
+              assert(units >= 34000, `planned length ${units} must count the 34000-unit basename`);
+              assert(
+                units < Buffer.byteLength(target),
+                `planned length ${units} must count UTF-16 units, not UTF-8 bytes`,
+              );
+              return true;
+            },
+          );
+        },
+        "../src/apply-edits.ts",
+      );
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+    assert(touchedLongPath); // key discovery consulted the mocks, never the real filesystem
+    assert.deepEqual(
+      (await readdir(directory)).filter((name) => name.startsWith(".pi-apply-edits-")),
+      [],
+    );
+  });
+});
+
+test("create failure discloses an unverifiable temporary file", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLink = nodeFs.promises.link;
+    const originalLstat = nodeFs.promises.lstat;
+    let failed = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.link = (async function (this: unknown, source: string, target: string) {
+          if (basename(String(source)) === "create") {
+            failed = true;
+            throw Object.assign(new Error("forced link failure"), { code: "EACCES" });
+          }
+          return (originalLink as Function).call(this, source, target);
+        }) as typeof promises.link;
+        promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (failed && basename(String(path)) === "create") {
+            throw Object.assign(new Error("forced verification failure"), { code: "EACCES" });
+          }
+          return (originalLstat as Function).call(this, path, ...args);
+        }) as typeof promises.lstat;
+      },
+      async (module) => {
+        await assert.rejects(
+          module.applyEditsToFile(
+            { path: "file", rewrite: "secret\n", onMissing: "create" },
+            directory,
+          ),
+          /the temporary create file's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, or only leftover temporary directories may remain/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(failed);
+  });
+});
 
 test("create failure discloses an escaped temporary file", async () => {
   await inTemporaryDirectory(async (directory) => {

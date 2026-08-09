@@ -391,7 +391,11 @@ export async function publishReplacement(
         );
       }
     } catch (error) {
-      warnings.push(`The edit was committed, but recovery cleanup was incomplete: ${errorMessage(error)}`);
+      warnings.push(
+        `The edit was committed, but recovery cleanup failed and its final state is unknown; ` +
+          `the previous content may remain at ${recovery} or elsewhere, ` +
+          `or only leftover temporary directories may remain: ${errorMessage(error)}`,
+      );
     }
     const warning = await syncDirectory(directory);
     if (warning) warnings.push(warning);
@@ -413,7 +417,11 @@ export async function publishReplacement(
         }
       } catch (error) {
         temporaryCleanupFailed = true;
-        cleanupFailures.push(`${temporary}: ${errorMessage(error)}`);
+        cleanupFailures.push(
+          `the temporary replacement's cleanup failed and its final state is unknown; ` +
+            `it may remain at ${temporary} or elsewhere, ` +
+            `or only leftover temporary directories may remain: ${errorMessage(error)}`,
+        );
       }
     }
     if (recoveryLinked && !replacementPublished) {
@@ -426,7 +434,11 @@ export async function publishReplacement(
           );
         }
       } catch (error) {
-        cleanupFailures.push(`${recovery}: ${errorMessage(error)}`);
+        cleanupFailures.push(
+          `the pre-edit recovery link's cleanup failed and its final state is unknown; ` +
+            `it may remain at ${recovery} or elsewhere, possibly hard-linked to the target, ` +
+            `or only leftover temporary directories may remain: ${errorMessage(error)}`,
+        );
       }
     }
     if (temporaryDirectoryStats && !temporaryCleanupFailed) {
@@ -1126,7 +1138,11 @@ export async function publishNewFile(
       }
     } catch (error) {
       temporaryCleanupFailed = true;
-      warnings.push(`The file was created, but its temporary link remains at ${temporary}: ${errorMessage(error)}`);
+      warnings.push(
+        `The file was created, but its temporary link's cleanup failed and its final state is ` +
+          `unknown; it may remain at ${temporary} or elsewhere, possibly hard-linked to the ` +
+          `created file, or only leftover temporary directories may remain: ${errorMessage(error)}`,
+      );
     }
     if (temporaryDirectoryStats && !temporaryCleanupFailed) {
       try {
@@ -1156,7 +1172,11 @@ export async function publishNewFile(
         }
       } catch (error) {
         temporaryCleanupFailed = true;
-        cleanupFailures.push(`${temporary}: ${errorMessage(error)}`);
+        cleanupFailures.push(
+          `the temporary create file's cleanup failed and its final state is unknown; ` +
+            `it may remain at ${temporary} or elsewhere, ` +
+            `or only leftover temporary directories may remain: ${errorMessage(error)}`,
+        );
       }
       if (temporaryDirectoryStats && !temporaryCleanupFailed) {
         try {
@@ -1351,8 +1371,8 @@ async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<v
   );
   if (!containerStats) {
     throw new Error(
-      `Staged create container disappeared before cleanup; its location is uncertain and ` +
-        `an empty container may remain outside ${dirname(prepared.container)}`,
+      `Staged create container disappeared before cleanup; its location is uncertain, ` +
+        `the container may remain outside ${dirname(prepared.container)}, and it may not be empty`,
     );
   }
   try {
@@ -1360,8 +1380,8 @@ async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<v
   } catch (error) {
     if (isCode(error, "ENOENT")) {
       throw new Error(
-        `Staged create container disappeared during cleanup; its location is uncertain and ` +
-          `an empty container may remain outside ${dirname(prepared.container)}`,
+        `Staged create container disappeared during cleanup; its location is uncertain, ` +
+          `the container may remain outside ${dirname(prepared.container)}, and it may not be empty`,
       );
     }
     throw new Error(
