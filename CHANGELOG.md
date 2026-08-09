@@ -3,6 +3,7 @@
 ## 0.4.0 — 2026-08-08
 
 - Canonicalize and revalidate replacement entries, preserve post-link metadata changes, verify staged create trees, and quarantine cleanup so swapped-in files or directories are preserved.
+- Verify published creates through the claimed directory entry instead of following it, report an uncertain commit when a fallback create's parent moves rather than claiming nothing was written, and recheck replacement input paths after the target checks as well as before.
 - Serialize sibling creates under one missing root, reserve roots and file names with exclusive no-clobber operations, revalidate create parents immediately before publication and no-change snapshots before return, sync every staged directory, and make all file writes cancellation-aware.
 - Keep uncertain partial creates for inspection instead of deleting a possibly replaced path, and use basename-independent temporary names so maximum-length filenames remain editable.
 - Remove ambiguous insert-idempotence guessing, fix indentation-delta correction, and let ordered LF anchors match prior output in uniform CRLF files.
