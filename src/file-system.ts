@@ -282,6 +282,7 @@ export async function publishReplacement(
     try {
       await mkdir(temporaryDirectory, { mode: 0o700 });
       temporaryDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
+      assertCreatedDirectoryOwner(temporaryDirectoryStats, temporaryDirectory);
       await cloneWithMetadata(snapshot.actualPath, temporary, signal);
     } catch (error) {
       throwIfAborted(signal);
@@ -464,10 +465,13 @@ export async function preparePlannedNestedFiles(
     for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
     await mkdir(prepared.container, { mode: 0o700 });
     prepared.containerStats = await lstat(prepared.container, { bigint: true });
+    assertCreatedDirectoryOwner(prepared.containerStats, prepared.container);
     await mkdir(prepared.quarantine, { mode: 0o700 });
     prepared.quarantineStats = await lstat(prepared.quarantine, { bigint: true });
+    assertCreatedDirectoryOwner(prepared.quarantineStats, prepared.quarantine);
     await mkdir(prepared.staging, { mode: 0o777 });
     prepared.stagingStats = await lstat(prepared.staging, { bigint: true });
+    assertCreatedDirectoryOwner(prepared.stagingStats, prepared.staging);
     stagedDirectories.add(prepared.container);
     stagedDirectories.add(prepared.staging);
 
@@ -928,6 +932,7 @@ export async function publishNewFile(
     if (plan) await assertNewFilePlanCurrent(plan);
     await mkdir(temporaryDirectory, { mode: 0o700 });
     temporaryDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
+    assertCreatedDirectoryOwner(temporaryDirectoryStats, temporaryDirectory);
     handle = await open(temporary, "wx", 0o666);
     temporaryIdentity = await handle.stat({ bigint: true });
     await handle.writeFile(bytes, { signal });
@@ -1237,7 +1242,8 @@ async function quarantinePreparedStaging(
   } catch (error) {
     if (isCode(error, "ENOENT")) {
       throw new Error(
-        `Staged create cleanup changed during quarantine; private state was preserved at ${prepared.container}`,
+        "Staged create cleanup changed during quarantine; its location is uncertain and " +
+          "the published target may remain linked to private staging",
       );
     }
     throw error;
@@ -1267,8 +1273,10 @@ async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<v
     if (candidate === prepared.container) continue;
     try {
       await mkdir(candidate, { mode: 0o700 });
+      const stats = await lstat(candidate, { bigint: true });
+      assertCreatedDirectoryOwner(stats, candidate);
       quarantine = candidate;
-      quarantineStats = await lstat(candidate, { bigint: true });
+      quarantineStats = stats;
       break;
     } catch (error) {
       if (!isCode(error, "EEXIST")) throw error;
@@ -1289,7 +1297,11 @@ async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<v
     if (quarantineExists) {
       await removeEmptyOwnedDirectory(quarantine, quarantineStats, "Cleanup quarantine slot");
     }
-    if (isCode(error, "ENOENT")) return;
+    if (isCode(error, "ENOENT")) {
+      throw new Error(
+        `Staged create container cleanup changed during quarantine; an empty container may remain outside ${dirname(prepared.container)}`,
+      );
+    }
     throw error;
   }
   const movedStats = await lstat(quarantine, { bigint: true });
@@ -1340,6 +1352,7 @@ async function quarantineOwnedPath(
   const directory = temporaryDirectoryPath(path);
   await mkdir(directory, { mode: 0o700 });
   const directoryStats = await lstat(directory, { bigint: true });
+  assertCreatedDirectoryOwner(directoryStats, directory);
   const quarantined = join(directory, "entry");
   try {
     await rename(path, quarantined);
@@ -1405,7 +1418,9 @@ async function captureCreatedDirectoryIdentities(
   if (!firstCreated) return identities;
   let current = directory;
   while (true) {
-    identities.set(current, await lstat(current, { bigint: true }));
+    const stats = await lstat(current, { bigint: true });
+    assertCreatedDirectoryOwner(stats, current);
+    identities.set(current, stats);
     if (current === firstCreated) return identities;
     const parent = dirname(current);
     if (parent === current) return identities;

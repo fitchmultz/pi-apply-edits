@@ -3498,3 +3498,133 @@ test("nested create reports staging disappearance during cleanup quarantine", as
     await rm(retainedContainer, { recursive: true });
   });
 });
+
+test(
+  "cleanup never adopts a cross-user staging-container quarantine sibling",
+  { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
+  async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalMkdir = nodeFs.promises.mkdir;
+    const originalLstat = nodeFs.promises.lstat;
+    let privateDirectories = 0;
+    let cleanupSlot = "";
+    let spoofed = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+          const result = await (originalMkdir as Function).call(this, path, ...args);
+          const name = basename(String(path));
+          if (name.startsWith(".pi-apply-edits-") && name.endsWith(".tmpdir")) {
+            privateDirectories++;
+            if (privateDirectories === 2) cleanupSlot = String(path);
+          }
+          return result;
+        }) as typeof promises.mkdir;
+        promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+          const stats = await (originalLstat as Function).call(this, path, ...args);
+          if (!spoofed && cleanupSlot && String(path) === cleanupSlot) {
+            spoofed = true;
+            return new Proxy(stats, {
+              get(target, property, receiver) {
+                if (property === "uid") return target.uid + 1n;
+                return Reflect.get(target, property, receiver);
+              },
+            });
+          }
+          return stats;
+        }) as typeof promises.lstat;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(warnings.join("\n"), /owner changed.*left untouched/);
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert(spoofed);
+    await lstat(cleanupSlot);
+  });
+  },
+);
+
+test("container quarantine ENOENT returns a cleanup warning", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const ancestor = join(directory, "ancestor");
+    await mkdir(ancestor);
+    const originalRename = nodeFs.promises.rename;
+    let moves = 0;
+    const isContainer = (path: unknown) => {
+      const name = basename(String(path));
+      return name.startsWith(".pi-apply-edits-") && name.endsWith(".tmpdir");
+    };
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (isContainer(source) && isContainer(target)) {
+            const displaced = `${ancestor}.displaced`;
+            await (originalRename as Function).call(this, ancestor, displaced);
+            let failure: unknown;
+            try {
+              await (originalRename as Function).call(this, source, target);
+            } catch (error) {
+              failure = error;
+            }
+            await (originalRename as Function).call(this, displaced, ancestor);
+            moves++;
+            throw failure;
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        for (const rootName of ["a", "b"]) {
+          const result = await module.applyEditsToFile(
+            { path: join(ancestor, rootName, "f"), rewrite: "ok\n", onMissing: "create" },
+            directory,
+          );
+          const warnings = "warnings" in result.details ? result.details.warnings : [];
+          assert.match(warnings.join("\n"), /container cleanup changed during quarantine/);
+        }
+      },
+      "../src/apply-edits.ts",
+    );
+    assert.equal(moves, 2);
+  });
+});
+
+test("staging quarantine ENOENT reports an uncertain location", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-staging");
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (basename(String(source)) === "publish" && basename(String(target)) === "q") {
+            await (originalRename as Function).call(this, source, escaped);
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /location is uncertain.*published target may remain linked to private staging/,
+        );
+        assert.doesNotMatch(warnings.join("\n"), /private state was preserved at/);
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert.equal((await stat(join(escaped, "file"))).isFile(), true);
+    assert.equal((await stat(join(directory, "missing/file"))).nlink, 2);
+  });
+});

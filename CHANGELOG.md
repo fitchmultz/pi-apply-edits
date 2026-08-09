@@ -8,6 +8,7 @@
 - Reject dangling symbolic-link batch entries during key discovery so a static alias and its target cannot collapse onto one Pi queue; document the remaining external race that needs an atomic upstream multi-key API.
 - State zero-separator insert semantics in the tool description, parameter docs, prompt guidance, and successful result text, including a complete newline-bearing example. Insert behavior itself is unchanged.
 - Quarantine staged create trees in a reserved short slot inside their private container, then quarantine the empty container over a verified same-length sibling. Cleanup no longer extends legal deep macOS paths beyond `PATH_MAX`, leaves the published target hard-linked, or accumulates empty staging containers.
+- Owner-check every newly claimed private staging/quarantine directory before adoption. Rename-window `ENOENT` failures now warn that staging or an empty container may have moved instead of claiming cleanup succeeded or naming a stale location.
 
 ## 0.4.0 — 2026-08-08
 
