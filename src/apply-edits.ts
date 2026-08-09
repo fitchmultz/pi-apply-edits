@@ -902,13 +902,14 @@ async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string;
       const realParent = await realpath(parent);
       missing.unshift(basename(current));
       const targetKey = normalizeLockKey(realParent, missing);
-      // Hold the missing root so sibling creates serialize, and the target itself so an edit
-      // of the same path serializes with the create that publishes it. The exact-case target
-      // is held too: once published, the same file resolves through realpath, which keeps the
-      // on-disk spelling and would otherwise miss the case-folded key on darwin and win32.
+      // Hold the missing root so sibling creates serialize, and the target so a later edit of
+      // that path lands on the same queue. These two can never merge: Pi canonicalizes each
+      // key with realpath at acquisition, and the target is always strictly deeper than the
+      // root. Never add a second spelling of the target here for the same reason in reverse,
+      // since once the file exists both spellings canonicalize to one queue and the operation
+      // would wait on a lock it already holds.
       const rootKey = normalizeLockKey(realParent, missing.slice(0, 1));
-      const exactKey = join(realParent, ...missing);
-      return { targetKey, queueKeys: [rootKey, targetKey, exactKey] };
+      return { targetKey, queueKeys: rootKey === targetKey ? [targetKey] : [rootKey, targetKey] };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
       missing.unshift(basename(current));

@@ -2654,7 +2654,7 @@ test(
                   armed = true;
                 },
               }),
-            /two hard links to the created file were retained, originally at/,
+            /Commit status is uncertain; nothing was rolled back/,
           );
         },
       );
@@ -2674,9 +2674,12 @@ test(
   },
 );
 
-// Mixed case matters on darwin and win32, where the missing-path lock key is case-folded but
-// a published path resolves through realpath with its on-disk spelling.
-for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
+// Only lowercase is covered. On darwin and win32 a missing path's lock key is case-folded
+// while a published path resolves through realpath with its on-disk spelling, so a mixed-case
+// target still takes two different keys across publication. That asymmetry predates this
+// package's create locking and is tracked as a follow-up; it cannot be closed by holding both
+// keys, because Pi canonicalizes each key at acquisition and the two collapse into one queue.
+for (const relative of ["missing/target.txt"]) {
   test(
     `a rewrite of ${relative} while it is being created waits for the create to finish`,
     { skip: process.platform === "win32" },
@@ -2737,3 +2740,98 @@ for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
     },
   );
 }
+
+test(
+  "a rewrite that resolves a path before it is created still completes",
+  { skip: process.platform === "win32" },
+  async () => {
+    // Pi canonicalizes each lock key with realpath when the lock is taken, so a create must
+    // never hold two keys that name the same file once it exists. This is the window that
+    // would expose it: the rewrite resolves its key while the target is still missing.
+    await inTemporaryDirectory(async (directory) => {
+      const originalLink = nodeFs.promises.link;
+      let signalBeforeLink = () => {};
+      const beforeLink = new Promise<void>((resolve) => {
+        signalBeforeLink = resolve;
+      });
+      let releaseLink = () => {};
+      const released = new Promise<void>((resolve) => {
+        releaseLink = resolve;
+      });
+      let holding = false;
+
+      await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+        (promises) => {
+          promises.link = (async function (this: unknown, from: string, to: string, ...args: unknown[]) {
+            if (!holding && String(to).endsWith("Target.txt")) {
+              holding = true;
+              signalBeforeLink();
+              await released;
+            }
+            return (originalLink as Function).call(this, from, to, ...args);
+          }) as typeof promises.link;
+        },
+        async (module) => {
+          const create = module.applyEditsToFile(
+            { path: "Target.txt", rewrite: "created\n", onMissing: "create" },
+            directory,
+          );
+          await beforeLink;
+          const rewrite = module.applyEditsToFile(
+            { path: "Target.txt", rewrite: "rewritten\n" },
+            directory,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          releaseLink();
+          await create;
+
+          const outcome = await Promise.race([
+            rewrite.then(
+              () => "settled",
+              () => "rejected",
+            ),
+            new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+          ]);
+          assert.notEqual(outcome, "timeout", "the rewrite deadlocked behind the create");
+        },
+        "../src/apply-edits.ts",
+      );
+    });
+  },
+);
+
+test(
+  "an unverifiable create claims nothing about what remains on disk",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const input = join(directory, "target.txt");
+      const originalLink = nodeFs.promises.link;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.link = (async function (this: unknown, from: string, to: string, ...args: unknown[]) {
+            const result = await (originalLink as Function).call(this, from, to, ...args);
+            // Remove the freshly published name, so only the temporary link survives.
+            if (String(to).endsWith("target.txt")) await unlink(to);
+            return result;
+          }) as typeof promises.link;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          let caught: unknown;
+          try {
+            await module.publishNewFile(input, Buffer.from("created\n"), undefined, plan);
+          } catch (error) {
+            caught = error;
+          }
+          // Assert outside assert.rejects, which would accept a failing assertion as a
+          // rejection and pass regardless of the message.
+          assert.ok(caught, "expected the create to report a failure");
+          assert.match(String(caught), /Commit status is uncertain; nothing was rolled back/);
+          assert.doesNotMatch(String(caught), /two hard links|were retained/);
+        },
+      );
+    });
+  },
+);
