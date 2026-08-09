@@ -183,14 +183,35 @@ are rejected rather than guessed.
   implemented. Explicit create remains available.
 - Missing parent directories are created only for an explicit create. Creates are
   fully staged before publication, and the missing root and every file name are
-  then claimed with exclusive no-clobber operations. Concurrent separate creates
-  under one missing root are not serialized: one claims the root and the others
-  fail without writing. If publication stops after a file name is claimed, the partial root
-  and private staging tree are retained at named paths for inspection.
-- Cleanup atomically moves temporary, recovery, and staged paths into private
-  quarantine directories, rechecks identity, and preserves detected swaps for inspection.
+  then claimed with exclusive no-clobber operations. Concurrent creates under one
+  missing root, and two spellings of one missing target on a case-insensitive
+  volume, serialize through one package-local create mutex. It has no path key, so
+  ancestor publication and `realpath` capitalization cannot change its identity. This
+  deliberately serializes all operations that discover a missing target; existing-file
+  operations remain parallel. If publication stops after a file name is claimed, the
+  partial root and private staging tree are retained at named paths for inspection.
+- Cleanup atomically quarantines temporary and recovery files in private directories.
+  Staged publish roots move into a reserved one-character slot inside their private container.
+  Empty temporary and staging containers are removed in place, so a concurrent entry is never
+  relocated with its parent. Identity is rechecked after each file move, and detected swaps are
+  preserved for inspection.
+- Planning rejects a mutation before staging or any batch write when its longest computed
+  temporary, staging, or cleanup path exceeds 991 UTF-8 bytes on macOS, 4063 on Linux, or
+  32702 UTF-16 code units on Windows. These explicit support boundaries retain a 32-unit
+  POSIX or 64-unit Windows safety margin below the platform path limit. The error reports the
+  planned length and limit; no filesystem mutation occurs.
+- A newly claimed directory is owner-checked before publication or cleanup, so a
+  cross-user substitution in a shared-writable ancestor is rejected and left untouched.
+  A same-user process can still rename the new directory away and substitute its own in
+  the `mkdir`-to-`lstat` gap. Portable Node exposes neither the identity created by
+  `mkdir` nor dirfd-relative operations, so closing that gap cleanly needs a native
+  primitive. Later identity checks still fail closed on detected swaps.
 - Non-UTF-8, NUL-containing, non-regular, dangling-symlink, and hard-linked
-  targets are rejected without mutation.
+  targets are rejected without mutation. A dangling symbolic-link batch entry is
+  rejected during key discovery, before Pi acquires any lock; otherwise its target
+  could appear and make two batch keys resolve to one queue. Pi 0.84.1 has no atomic
+  multi-key queue API, so an external process can still create both an alias and its
+  target after this check. Closing that final window requires an upstream primitive.
 - Corrective matching and diff generation have explicit work budgets.
   Oversized fuzzy matches fail for a more exact retry; expensive diffs are
   omitted from details before publication.

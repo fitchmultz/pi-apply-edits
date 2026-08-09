@@ -82,6 +82,28 @@ async function withRacingFileSystem<T = FileSystemModule>(
   }
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = () => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, milliseconds = 3000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timeout: ${label}`)), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function firstExistingFile(paths: string[]): Promise<string | undefined> {
   for (const path of paths) {
     try {
@@ -1385,6 +1407,7 @@ test("multi-file batch plans then writes all files", async () => {
     );
 
     assert.match(result.summary, /Updated 2 files/);
+    assert.match(result.summary, /zero separator/);
     assert.equal("files" in result.details, true);
     if (!("files" in result.details)) throw new Error("expected batch details");
     assert.equal(result.details.files.length, 2);
@@ -1392,10 +1415,6 @@ test("multi-file batch plans then writes all files", async () => {
     assert.equal(await readFile(join(directory, "b.ts"), "utf8"), "const b = 1;\nexport {};\n");
   });
 });
-
-// Concurrent single-file creates under a shared missing root are not serialized: one wins the
-// exclusive mkdir and the other fails closed, which the caller retries. Serializing them needs
-// a second lock, and a second lock keyed by a resolvable path can canonicalize onto the first.
 
 test("multi-file batch publishes sibling creates under one missing root together", async () => {
   await inTemporaryDirectory(async (directory) => {
@@ -2667,12 +2686,9 @@ test(
   },
 );
 
-// Only lowercase is covered. On darwin and win32 a missing path's lock key is case-folded
-// while a published path resolves through realpath with its on-disk spelling, so a mixed-case
-// target still takes two different keys across publication. That asymmetry predates this
-// package's create locking and is tracked as a follow-up; it cannot be closed by holding both
-// keys, because Pi canonicalizes each key at acquisition and the two collapse into one queue.
-for (const relative of ["missing/target.txt"]) {
+// Mixed case is covered because the Pi key for a create is the exact-case path. A folded key
+// would name a different queue than the realpath-derived key an edit takes after publication.
+for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
   test(
     `a rewrite of ${relative} while it is being created waits for the create to finish`,
     { skip: process.platform === "win32" },
@@ -2829,3 +2845,1477 @@ test(
     });
   },
 );
+
+test("concurrent creates under one missing root serialize instead of racing the claim", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    // Both creates must claim the same missing root. Without a lock that survives the root
+    // coming into existence, one wins the exclusive mkdir and the other fails closed.
+    await Promise.all([
+      applyEditsToFile({ path: "shared/a.txt", rewrite: "A\n", onMissing: "create" }, directory),
+      applyEditsToFile({ path: "shared/b.txt", rewrite: "B\n", onMissing: "create" }, directory),
+    ]);
+    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
+    assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
+  });
+});
+
+test("concurrent creates three deep under one missing root all publish", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await Promise.all([
+      applyEditsToFile({ path: "r/x/a.txt", rewrite: "A\n", onMissing: "create" }, directory),
+      applyEditsToFile({ path: "r/y/b.txt", rewrite: "B\n", onMissing: "create" }, directory),
+      applyEditsToFile({ path: "r/z/c.txt", rewrite: "C\n", onMissing: "create" }, directory),
+    ]);
+    assert.equal(await readFile(join(directory, "r/x/a.txt"), "utf8"), "A\n");
+    assert.equal(await readFile(join(directory, "r/y/b.txt"), "utf8"), "B\n");
+    assert.equal(await readFile(join(directory, "r/z/c.txt"), "utf8"), "C\n");
+  });
+});
+
+test(
+  "concurrent creates of one path spelled two ways do not both claim it",
+  { skip: process.platform !== "darwin" && process.platform !== "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      // Two spellings of one file on a case-insensitive volume. Serialized, the second plans
+      // after the first published and becomes a rewrite. Unserialized, both plan against a
+      // missing path and one fails closed on the exclusive claim.
+      const outcomes = await Promise.allSettled([
+        applyEditsToFile({ path: "case/Target.txt", rewrite: "A\n", onMissing: "create" }, directory),
+        applyEditsToFile({ path: "case/target.txt", rewrite: "B\n", onMissing: "create" }, directory),
+      ]);
+      assert.deepEqual(
+        outcomes.map((outcome) => outcome.status),
+        ["fulfilled", "fulfilled"],
+      );
+      const entries = await readdir(join(directory, "case"));
+      assert.equal(entries.length, 1);
+      assert.match(await readFile(join(directory, "case", entries[0]!), "utf8"), /^[AB]\n$/);
+    });
+  },
+);
+
+test(
+  "a newly claimed directory owned by another user is never adopted for publication or cleanup",
+  { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const input = join(directory, "missing", "sub", "child.txt");
+      const originalLstat = nodeFs.promises.lstat;
+      let publishRoot = "";
+      let armed = false;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            const stats = await (originalLstat as Function).call(this, path, ...args);
+            if (!armed || String(path) !== publishRoot) return stats;
+            armed = false;
+            // Stand in for a cross-user rename swap in the mkdir-to-lstat gap. Only uid is
+            // changed: the name and inode still look internally consistent, so main adopts
+            // the entry, publishes into it, and records it for cleanup.
+            return new Proxy(stats, {
+              get(target, property, receiver) {
+                if (property === "uid") return target.uid + 1n;
+                return Reflect.get(target, property, receiver);
+              },
+            });
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                beforeRootReserve({ target }) {
+                  publishRoot = target;
+                  armed = true;
+                },
+              }),
+            /owner changed.*left untouched/,
+          );
+        },
+      );
+
+      assert.equal((await lstat(publishRoot)).isDirectory(), true);
+      assert.deepEqual(await readdir(publishRoot), []);
+    });
+  },
+);
+
+test("a batch rejects a dangling alias before its lock can collapse onto the target", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const alias = join(directory, "a");
+    const target = join(directory, "b");
+    await symlink("b", alias);
+    const canonicalDirectory = await realpath(directory);
+    const queueAlias = join(canonicalDirectory, "a");
+    const originalRealpath = nodeFs.promises.realpath;
+    let aliasFailed = false;
+    let targetFailed = false;
+    let injected = false;
+
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+          const value = String(path);
+          // Both entries must first be classified as distinct missing targets. When Pi later
+          // resolves the first queue key, make the dangling alias resolve onto the second.
+          // Main then acquires that queue twice and waits on itself.
+          if (!injected && aliasFailed && targetFailed && value === queueAlias) {
+            await writeFile(target, "external\n");
+            injected = true;
+          }
+          try {
+            return await (originalRealpath as Function).call(this, path, ...args);
+          } catch (error) {
+            if (value === alias || value === queueAlias) aliasFailed = true;
+            if (value === target || value === join(canonicalDirectory, "b")) targetFailed = true;
+            throw error;
+          }
+        }) as typeof promises.realpath;
+      },
+      async (module) => {
+        const operation = module.applyEditsToFile(
+          {
+            files: [
+              { path: "a", rewrite: "one\n" },
+              { path: "b", rewrite: "two\n" },
+            ],
+          },
+          directory,
+        );
+        const outcome = await Promise.race([
+          operation.then(
+            () => "settled",
+            (error: unknown) => `rejected: ${String(error)}`,
+          ),
+          new Promise((resolve) => setTimeout(() => resolve("timeout"), 1000)),
+        ]);
+        assert.match(String(outcome), /^rejected: .*Cannot mutate dangling symbolic link/);
+        assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
+      },
+      "../src/apply-edits.ts",
+    );
+
+    await assert.rejects(lstat(target), /ENOENT/);
+  });
+});
+
+test("insert results state that no separator was inferred", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "imports.ts");
+    await writeFile(target, 'import fs from "node:fs";\n');
+    const result = await applyEditsToFile(
+      {
+        path: target,
+        edits: [
+          {
+            oldText: 'import fs from "node:fs";',
+            newText: '\nimport path from "node:path";',
+            insert: "after",
+          },
+        ],
+      },
+      directory,
+    );
+    assert.match(result.summary, /Warning: 1 insert spliced exactly with zero separator/);
+    assert.match(result.summary, /all newlines and spaces came from newText/);
+    assert.equal(
+      await readFile(target, "utf8"),
+      'import fs from "node:fs";\nimport path from "node:path";\n',
+    );
+  });
+});
+
+test("a batch rejects a dangling ancestor before its lock can collapse onto the target", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const aliasParent = join(directory, "a");
+    const targetParent = join(directory, "b");
+    const alias = join(aliasParent, "child.txt");
+    const target = join(targetParent, "child.txt");
+    await symlink("b", aliasParent);
+    const canonicalDirectory = await realpath(directory);
+    const queueAlias = join(canonicalDirectory, "a", "child.txt");
+    const originalRealpath = nodeFs.promises.realpath;
+    let aliasFailed = false;
+    let targetFailed = false;
+    let injected = false;
+
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+          const value = String(path);
+          if (!injected && aliasFailed && targetFailed && value === queueAlias) {
+            await mkdir(targetParent);
+            await writeFile(target, "external\n");
+            injected = true;
+          }
+          try {
+            return await (originalRealpath as Function).call(this, path, ...args);
+          } catch (error) {
+            if (value === alias || value === queueAlias) aliasFailed = true;
+            if (value === target || value === join(canonicalDirectory, "b", "child.txt")) {
+              targetFailed = true;
+            }
+            throw error;
+          }
+        }) as typeof promises.realpath;
+      },
+      async (module) => {
+        const operation = module.applyEditsToFile(
+          {
+            files: [
+              { path: "a/child.txt", rewrite: "one\n" },
+              { path: "b/child.txt", rewrite: "two\n" },
+            ],
+          },
+          directory,
+        );
+        const outcome = await Promise.race([
+          operation.then(
+            () => "settled",
+            (error: unknown) => `rejected: ${String(error)}`,
+          ),
+          new Promise((resolve) => setTimeout(() => resolve("timeout"), 1000)),
+        ]);
+        assert.match(String(outcome), /^rejected: .*Cannot mutate dangling symbolic link/);
+        assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
+      },
+      "../src/apply-edits.ts",
+    );
+
+    await assert.rejects(lstat(targetParent), /ENOENT/);
+  });
+});
+
+test("local create locks stay stable as missing ancestors are published", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const canonicalDirectory = await realpath(directory);
+    const root = join(canonicalDirectory, "r");
+    const shiftedRoot = join(root, "y");
+    await writeFile(join(directory, "sentinel.txt"), "old\n");
+    const originalMkdir = nodeFs.promises.mkdir;
+    const rootReached = deferred();
+    const releaseRoot = deferred();
+    const shiftedReached = deferred();
+    const releaseShifted = deferred();
+    let heldRoot = false;
+    let heldShifted = false;
+
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+          const value = String(path);
+          if (value === root && !heldRoot) {
+            heldRoot = true;
+            rootReached.resolve();
+            await releaseRoot.promise;
+          } else if (value === shiftedRoot && !heldShifted) {
+            heldShifted = true;
+            shiftedReached.resolve();
+            await releaseShifted.promise;
+          }
+          return (originalMkdir as Function).call(this, path, ...args);
+        }) as typeof promises.mkdir;
+      },
+      async (module) => {
+        let first: Promise<unknown> | undefined;
+        let batch: Promise<unknown> | undefined;
+        let later: Promise<unknown> | undefined;
+        try {
+          first = module.applyEditsToFile(
+            { path: "r/x/a.txt", rewrite: "A\n", onMissing: "create" },
+            directory,
+          );
+          await withTimeout(rootReached.promise, "first create reaching r");
+
+          batch = module.applyEditsToFile(
+            {
+              files: [
+                { path: "sentinel.txt", rewrite: "new\n" },
+                { path: "r/y/b.txt", rewrite: "B\n", onMissing: "create" },
+              ],
+            },
+            directory,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          releaseRoot.resolve();
+          await withTimeout(first, "first create finishing");
+          await withTimeout(shiftedReached.promise, "batch reaching r/y");
+
+          let laterSettled = false;
+          later = module
+            .applyEditsToFile(
+              { path: "r/y/c.txt", rewrite: "C\n", onMissing: "create" },
+              directory,
+            )
+            .finally(() => {
+              laterSettled = true;
+            });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          assert.equal(laterSettled, false, "the later create bypassed the batch's stale root lock");
+          releaseShifted.resolve();
+          await withTimeout(batch, "batch finishing");
+          await withTimeout(later, "later create finishing");
+        } finally {
+          releaseRoot.resolve();
+          releaseShifted.resolve();
+          await Promise.allSettled([first, batch, later].filter((item) => item !== undefined));
+        }
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert.equal(await readFile(join(directory, "sentinel.txt"), "utf8"), "new\n");
+    assert.equal(await readFile(join(root, "y/b.txt"), "utf8"), "B\n");
+    assert.equal(await readFile(join(root, "y/c.txt"), "utf8"), "C\n");
+  });
+});
+
+test(
+  "whole-path folding dedupes a batch when an ancestor appears with different case",
+  { skip: process.platform !== "darwin" && process.platform !== "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const canonicalDirectory = await realpath(directory);
+      const root = join(canonicalDirectory, "R");
+      const upperTarget = join(root, "b.txt");
+      const originalMkdir = nodeFs.promises.mkdir;
+      const originalRealpath = nodeFs.promises.realpath;
+      const originalLink = nodeFs.promises.link;
+      const rootReached = deferred();
+      const releaseRoot = deferred();
+      const releaseUpperDiscovery = deferred();
+      const targetLinkReached = deferred();
+      const releaseTargetLink = deferred();
+      let heldRoot = false;
+      let heldUpperDiscovery = false;
+      let heldTargetLink = false;
+
+      await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+        (promises) => {
+          promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (String(path) === root && !heldRoot) {
+              heldRoot = true;
+              rootReached.resolve();
+              await releaseRoot.promise;
+            }
+            return (originalMkdir as Function).call(this, path, ...args);
+          }) as typeof promises.mkdir;
+          promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (String(path) === upperTarget && !heldUpperDiscovery) {
+              heldUpperDiscovery = true;
+              await releaseUpperDiscovery.promise;
+            }
+            return (originalRealpath as Function).call(this, path, ...args);
+          }) as typeof promises.realpath;
+          promises.link = (async function (this: unknown, from: string, to: string, ...args: unknown[]) {
+            if (String(to) === upperTarget && !heldTargetLink) {
+              heldTargetLink = true;
+              targetLinkReached.resolve();
+              await releaseTargetLink.promise;
+            }
+            return (originalLink as Function).call(this, from, to, ...args);
+          }) as typeof promises.link;
+        },
+        async (module) => {
+          let rootCreate: Promise<unknown> | undefined;
+          let batchOutcome: Promise<string> | undefined;
+          let targetCreate: Promise<unknown> | undefined;
+          try {
+            rootCreate = module.applyEditsToFile(
+              { path: "R/x/a.txt", rewrite: "A\n", onMissing: "create" },
+              canonicalDirectory,
+            );
+            await withTimeout(rootReached.promise, "root reservation");
+
+            // Lowercase discovery completes while R is absent. Uppercase discovery waits
+            // until R exists and realpath returns that spelling. Suffix-only folding assigned
+            // different target keys; whole-path folding rejects them as the same file.
+            batchOutcome = module
+              .applyEditsToFile(
+                {
+                  files: [
+                    { path: "r/b.txt", rewrite: "one\n", onMissing: "create" },
+                    { path: "R/b.txt", rewrite: "two\n", onMissing: "create" },
+                  ],
+                },
+                canonicalDirectory,
+              )
+              .then(
+                () => "fulfilled",
+                (error: unknown) => `rejected: ${String(error)}`,
+              );
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            releaseRoot.resolve();
+            await withTimeout(rootCreate, "root create finishing");
+
+            targetCreate = module.applyEditsToFile(
+              { path: "R/b.txt", rewrite: "outside\n", onMissing: "create" },
+              canonicalDirectory,
+            );
+            await withTimeout(targetLinkReached.promise, "target create reaching link");
+            releaseUpperDiscovery.resolve();
+            const outcome = await withTimeout(batchOutcome, "batch duplicate rejection", 1000);
+            assert.match(outcome, /^rejected: .*refers to the same file/);
+            releaseTargetLink.resolve();
+            await withTimeout(targetCreate, "target create finishing");
+          } finally {
+            releaseRoot.resolve();
+            releaseUpperDiscovery.resolve();
+            releaseTargetLink.resolve();
+            // Do not await batchOutcome here: on the control tree it is the intentionally
+            // deadlocked promise this regression must detect. Its queue keys are temp-scoped.
+            await Promise.allSettled(
+              [rootCreate, targetCreate].filter((item) => item !== undefined),
+            );
+          }
+        },
+        "../src/apply-edits.ts",
+      );
+    });
+  },
+);
+
+test("batch dedupe stays stable when a missing target appears between discoveries", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const canonicalDirectory = await realpath(directory);
+    const root = join(canonicalDirectory, "R");
+    const target = join(root, "B.txt");
+    await mkdir(root);
+    const originalRealpath = nodeFs.promises.realpath;
+    const secondDiscoveryReached = deferred();
+    const releaseSecondDiscovery = deferred();
+    let targetCalls = 0;
+
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (String(path) === target && ++targetCalls === 2) {
+            secondDiscoveryReached.resolve();
+            await releaseSecondDiscovery.promise;
+          }
+          return (originalRealpath as Function).call(this, path, ...args);
+        }) as typeof promises.realpath;
+      },
+      async (module) => {
+        let batch: Promise<string> | undefined;
+        try {
+          batch = module
+            .applyEditsToFile(
+              {
+                files: [
+                  { path: "R/B.txt", rewrite: "one\n", onMissing: "create" },
+                  { path: "R/B.txt", rewrite: "two\n", onMissing: "create" },
+                ],
+              },
+              canonicalDirectory,
+            )
+            .then(
+              () => "fulfilled",
+              (error: unknown) => `rejected: ${String(error)}`,
+            );
+          await withTimeout(secondDiscoveryReached.promise, "second target discovery");
+          await module.applyEditsToFile(
+            { path: "R/B.txt", rewrite: "outside\n", onMissing: "create" },
+            canonicalDirectory,
+          );
+          releaseSecondDiscovery.resolve();
+          const outcome = await withTimeout(batch, "batch duplicate rejection");
+          assert.match(outcome, /^rejected: .*refers to the same file/);
+        } finally {
+          releaseSecondDiscovery.resolve();
+        }
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert.equal(await readFile(target, "utf8"), "outside\n");
+  });
+});
+
+test(
+  "whole-path folding keeps APFS-distinct i and dotless-i paths separate",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      await mkdir(join(directory, "i"));
+      await mkdir(join(directory, "ı"));
+      assert.deepEqual(new Set(await readdir(directory)), new Set(["i", "ı"]));
+      await applyEditsToFile(
+        {
+          files: [
+            { path: "i/new", rewrite: "one\n", onMissing: "create" },
+            { path: "ı/new/child", rewrite: "two\n", onMissing: "create" },
+          ],
+        },
+        directory,
+      );
+      assert.equal(await readFile(join(directory, "i/new"), "utf8"), "one\n");
+      assert.equal(await readFile(join(directory, "ı/new/child"), "utf8"), "two\n");
+    });
+  },
+);
+
+test("an already-aborted batch does no filesystem key discovery", async () => {
+  let filesystemCalls = 0;
+  const missing = () => Object.assign(new Error("missing"), { code: "ENOENT" });
+  await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+    (promises) => {
+      promises.realpath = (async () => {
+        filesystemCalls++;
+        throw missing();
+      }) as typeof promises.realpath;
+      promises.lstat = (async () => {
+        filesystemCalls++;
+        throw missing();
+      }) as typeof promises.lstat;
+    },
+    async (module) => {
+      const files = Array.from({ length: 64 }, (_, file) => ({
+        path: [`u${file}`, ...Array(256).fill("x"), "f"].join("/"),
+        rewrite: "x",
+        onMissing: "create" as const,
+      }));
+      const controller = new AbortController();
+      controller.abort();
+      await assert.rejects(
+        module.applyEditsToFile({ files }, "/e", controller.signal),
+        /Operation aborted/,
+      );
+    },
+    "../src/apply-edits.ts",
+  );
+  assert.equal(filesystemCalls, 0);
+});
+
+test(
+  "near-limit replacement is rejected during planning before staging",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const canonicalDirectory = await realpath(directory);
+      let relative = "";
+      while (Buffer.byteLength(join(canonicalDirectory, relative, "f")) < 900) {
+        relative = relative ? `${relative}/x` : "x";
+      }
+      relative += "/f";
+
+      const result = await applyEditsToFile(
+        { path: relative, rewrite: "ok\n", onMissing: "create" },
+        canonicalDirectory,
+      );
+      const warnings = "warnings" in result.details ? result.details.warnings : [];
+      assert.doesNotMatch(warnings.join("\n"), /cleanup was incomplete/);
+      assert.equal((await stat(join(canonicalDirectory, relative))).nlink, 1);
+
+      await assert.rejects(
+        applyEditsToFile(
+          { path: relative, rewrite: "next\n" },
+          canonicalDirectory,
+        ),
+        /planned staging and cleanup.*supported 991 bytes.*PATH_MAX 1024.*No changes were written/s,
+      );
+      assert.equal(await readFile(join(canonicalDirectory, relative), "utf8"), "ok\n");
+      assert.deepEqual(
+        (await readdir(canonicalDirectory)).filter((name) => name.startsWith(".pi-apply-edits-")),
+        [],
+      );
+    });
+  },
+);
+
+test(
+  "batch rejects a near-limit create before an earlier planned write",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const canonicalDirectory = await realpath(directory);
+      let ancestor = canonicalDirectory;
+      let remaining = 953 - Buffer.byteLength(ancestor);
+      if (remaining % 2 === 1) {
+        ancestor = join(ancestor, "xx");
+        remaining -= 3;
+      }
+      while (remaining > 256) {
+        ancestor = join(ancestor, "x");
+        remaining -= 2;
+      }
+      ancestor = join(ancestor, "x".repeat(remaining - 1));
+      assert.equal(Buffer.byteLength(ancestor), 953);
+      await mkdir(ancestor, { recursive: true });
+
+      const ordinary = join(canonicalDirectory, "ordinary");
+      const deepTarget = join(ancestor, "a", "f");
+      await writeFile(ordinary, "old\n");
+      await assert.rejects(
+        applyEditsToFile(
+          {
+            files: [
+              { path: ordinary, rewrite: "new\n" },
+              { path: deepTarget, rewrite: "deep\n", onMissing: "create" },
+            ],
+          },
+          canonicalDirectory,
+        ),
+        /planned staging and cleanup.*No changes were written/s,
+      );
+      assert.equal(await readFile(ordinary, "utf8"), "old\n");
+      await assert.rejects(lstat(deepTarget), /ENOENT/);
+      assert.deepEqual(
+        (await readdir(ancestor)).filter((name) => name.startsWith(".pi-apply-edits-")),
+        [],
+      );
+    });
+  },
+);
+
+test("nested create reports staging disappearance during cleanup quarantine", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const originalRm = nodeFs.promises.rm;
+    let retainedContainer = "";
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (
+          this: unknown,
+          source: Parameters<typeof promises.rename>[0],
+          target: Parameters<typeof promises.rename>[1],
+        ) {
+          if (basename(String(source)) === "publish" && basename(String(target)) === "q") {
+            retainedContainer = dirname(String(source));
+            await originalRm(source, { recursive: true });
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/child.txt", rewrite: "created\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /private staging cleanup was incomplete: Staged create cleanup changed during quarantine/,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert.equal(await readFile(join(directory, "missing/child.txt"), "utf8"), "created\n");
+    assert(retainedContainer);
+    assert.deepEqual(await readdir(retainedContainer), ["q"]);
+    await rm(retainedContainer, { recursive: true });
+  });
+});
+
+test("non-empty staged container fails cleanup at its original path", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const originalRmdir = nodeFs.promises.rmdir;
+    let container = "";
+    const inject = async (path: string) => {
+      if (container) return;
+      container = path;
+      await writeFile(join(path, "concurrent"), "keep\n");
+    };
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (
+            basename(String(source)).endsWith(".tmpdir") &&
+            basename(String(target)).endsWith(".tmpdir")
+          ) {
+            await inject(String(source));
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+        promises.rmdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (
+            !basename(dirname(String(path))).endsWith(".tmpdir") &&
+            basename(String(path)).endsWith(".tmpdir")
+          ) {
+            await inject(String(path));
+          }
+          return (originalRmdir as Function).call(this, path, ...args);
+        }) as typeof promises.rmdir;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "ok\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(warnings.join("\n"), /container remains at.*(?:ENOTEMPTY|not empty)/is);
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(container);
+    assert.equal(await readFile(join(container, "concurrent"), "utf8"), "keep\n");
+    assert.equal(await readFile(join(directory, "missing", "file"), "utf8"), "ok\n");
+  });
+});
+
+test("staging quarantine ENOENT reports an uncertain location", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-staging");
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (basename(String(source)) === "publish" && basename(String(target)) === "q") {
+            await (originalRename as Function).call(this, source, escaped);
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /location is uncertain.*published target may remain linked to private staging/,
+        );
+        assert.doesNotMatch(warnings.join("\n"), /private state was preserved at/);
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert.equal((await stat(join(escaped, "file"))).isFile(), true);
+    assert.equal((await stat(join(directory, "missing/file"))).nlink, 2);
+  });
+});
+
+test(
+  "owner-rejected initial private directories never enter cleanup state",
+  { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
+  async () => {
+    for (const flow of ["nested", "replacement", "direct-create"] as const) {
+      await inTemporaryDirectory(async (directory) => {
+        const originalMkdir = nodeFs.promises.mkdir;
+        const originalLstat = nodeFs.promises.lstat;
+        let privateDirectory = "";
+        let spoofed = false;
+        await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+          (promises) => {
+            promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+              const result = await (originalMkdir as Function).call(this, path, ...args);
+              const name = basename(String(path));
+              if (!privateDirectory && name.startsWith(".pi-apply-edits-") && name.endsWith(".tmpdir")) {
+                privateDirectory = String(path);
+              }
+              return result;
+            }) as typeof promises.mkdir;
+            promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+              const stats = await (originalLstat as Function).call(this, path, ...args);
+              if (!spoofed && privateDirectory && String(path) === privateDirectory) {
+                spoofed = true;
+                return new Proxy(stats, {
+                  get(target, property, receiver) {
+                    if (property === "uid") return target.uid + 1n;
+                    return Reflect.get(target, property, receiver);
+                  },
+                });
+              }
+              return stats;
+            }) as typeof promises.lstat;
+          },
+          async (module) => {
+            if (flow === "replacement") await writeFile(join(directory, "f.txt"), "old\n");
+            const path = flow === "nested" ? "missing/file" : flow === "replacement" ? "f.txt" : "new.txt";
+            await assert.rejects(
+              module.applyEditsToFile(
+                { path, rewrite: "new\n", ...(flow === "replacement" ? {} : { onMissing: "create" as const }) },
+                directory,
+              ),
+              /owner changed.*left untouched/,
+              flow,
+            );
+          },
+          "../src/apply-edits.ts",
+        );
+
+        assert(spoofed, flow);
+        await lstat(privateDirectory);
+      });
+    }
+  },
+);
+
+test("nested create warns when staging disappears before quarantine precheck", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLstat = nodeFs.promises.lstat;
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-staging");
+    let stagingChecks = 0;
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (basename(String(path)) === "publish" && ++stagingChecks === 6) {
+            await (originalRename as Function).call(this, path, escaped);
+            moved = true;
+          }
+          return (originalLstat as Function).call(this, path, ...args);
+        }) as typeof promises.lstat;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /private staging cleanup was incomplete.*location is uncertain.*may remain linked/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert(moved);
+    assert.equal((await stat(join(directory, "missing/file"))).nlink, 2);
+    assert.equal((await stat(join(escaped, "file"))).nlink, 2);
+  });
+});
+
+test(
+  "owner-rejected entries inside the container block container cleanup entirely",
+  { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
+  async () => {
+    for (const rejectedName of ["q", "publish"] as const) {
+      await inTemporaryDirectory(async (directory) => {
+        const originalLstat = nodeFs.promises.lstat;
+        let rejectedPath = "";
+        let rejectedIdentity: { dev: bigint; ino: bigint } | undefined;
+        await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+          (promises) => {
+            promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+              const stats = await (originalLstat as Function).call(this, path, ...args);
+              if (!rejectedPath && basename(String(path)) === rejectedName) {
+                rejectedPath = String(path);
+                rejectedIdentity = { dev: stats.dev, ino: stats.ino };
+                return new Proxy(stats, {
+                  get(target, property, receiver) {
+                    if (property === "uid") return target.uid + 1n;
+                    return Reflect.get(target, property, receiver);
+                  },
+                });
+              }
+              return stats;
+            }) as typeof promises.lstat;
+          },
+          async (module) => {
+            await assert.rejects(
+              module.applyEditsToFile(
+                { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+                directory,
+              ),
+              /owner changed.*left untouched.*container was left untouched/s,
+              rejectedName,
+            );
+          },
+          "../src/apply-edits.ts",
+        );
+
+        const current = await lstat(rejectedPath, { bigint: true });
+        assert.equal(current.dev, rejectedIdentity!.dev, rejectedName);
+        assert.equal(current.ino, rejectedIdentity!.ino, rejectedName);
+      });
+    }
+  },
+);
+
+test(
+  "unplanned create leaves a rejected temporary directory in place without moving parents",
+  { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const originalLstat = nodeFs.promises.lstat;
+      let rejectedPath = "";
+      let rejectedIdentity: { dev: bigint; ino: bigint } | undefined;
+      await withRacingFileSystem<typeof import("../src/file-system.ts")>(
+        (promises) => {
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            const stats = await (originalLstat as Function).call(this, path, ...args);
+            const name = basename(String(path));
+            if (!rejectedPath && name.startsWith(".pi-apply-edits-") && name.endsWith(".tmpdir")) {
+              rejectedPath = String(path);
+              rejectedIdentity = { dev: stats.dev, ino: stats.ino };
+              return new Proxy(stats, {
+                get(target, property, receiver) {
+                  if (property === "uid") return target.uid + 1n;
+                  return Reflect.get(target, property, receiver);
+                },
+              });
+            }
+            return stats;
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          await assert.rejects(
+            module.publishNewFile(join(directory, "new-parent", "file"), Buffer.from("x\n")),
+            /owner changed.*left untouched/,
+          );
+        },
+        "../src/file-system.ts",
+      );
+
+      const current = await lstat(rejectedPath, { bigint: true });
+      assert.equal(current.dev, rejectedIdentity!.dev);
+      assert.equal(current.ino, rejectedIdentity!.ino);
+    });
+  },
+);
+
+test("partial publication reports a moved staging tree as uncertain", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLink = nodeFs.promises.link;
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-staging");
+    let movedStaging = "";
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.link = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalLink as Function).call(this, source, target);
+          if (!movedStaging && String(source).includes(".tmpdir/publish/")) {
+            movedStaging = dirname(String(source));
+            await (originalRename as Function).call(this, movedStaging, escaped);
+          }
+          return result;
+        }) as typeof promises.link;
+      },
+      async (module) => {
+        await assert.rejects(
+          module.applyEditsToFile(
+            { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+            directory,
+          ),
+          (error: Error) => {
+            assert.match(error.message, /location is uncertain.*may remain linked/s);
+            assert.doesNotMatch(error.message, /private staging remains at/);
+            return true;
+          },
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert(movedStaging);
+    assert.equal((await stat(join(escaped, "file"))).nlink, 2);
+  });
+});
+
+test("staged container disappearance before cleanup returns a warning", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLstat = nodeFs.promises.lstat;
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-container");
+    const checks = new Map<string, number>();
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+          const name = basename(String(path));
+          if (name.startsWith(".pi-apply-edits-") && name.endsWith(".tmpdir")) {
+            const count = (checks.get(String(path)) ?? 0) + 1;
+            checks.set(String(path), count);
+            if (!moved && count === 3) {
+              await (originalRename as Function).call(this, path, escaped);
+              moved = true;
+            }
+          }
+          return (originalLstat as Function).call(this, path, ...args);
+        }) as typeof promises.lstat;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "ok\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /container disappeared before cleanup.*location is uncertain.*may remain outside/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+    assert.equal((await stat(escaped)).isDirectory(), true);
+  });
+});
+
+test("direct create warns when its temporary link escapes before unlink", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-temporary-link");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (
+            !moved &&
+            basename(String(source)) === "create" &&
+            basename(String(target)) === "entry"
+          ) {
+            await (originalRename as Function).call(this, source, escaped);
+            moved = true;
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /temporary link is no longer at.*may remain hard-linked/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert(moved);
+    const target = await stat(join(directory, "file"));
+    assert.equal(Number(target.nlink), 2);
+    assert.equal(target.ino, (await stat(escaped)).ino);
+  });
+});
+
+test("replacement warns when the recovery link escapes before unlink", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "file");
+    const escaped = join(directory, "escaped-recovery");
+    await writeFile(target, "old\n");
+    const { captureSnapshot, publishReplacement } = await import("../src/file-system.ts");
+    const snapshot = await captureSnapshot(target);
+    assert(snapshot);
+    const warnings = await publishReplacement(snapshot, Buffer.from("new\n"), undefined, {
+      beforeRecoveryCleanup: async ({ recovery }) => {
+        await rename(recovery, escaped);
+      },
+    });
+    assert.match(
+      warnings.join("\n"),
+      /recovery link is no longer at.*previous content may remain elsewhere/s,
+    );
+    assert.equal(await readFile(target, "utf8"), "new\n");
+    assert.equal(await readFile(escaped, "utf8"), "old\n");
+  });
+});
+
+test("partial publication does not claim absence when staging cannot be inspected", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalLink = nodeFs.promises.link;
+    const originalLstat = nodeFs.promises.lstat;
+    let linkCalls = 0;
+    let publicationFailed = false;
+    let staging = "";
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.link = (async function (this: unknown, source: string, target: string) {
+          linkCalls += 1;
+          staging ||= dirname(String(source));
+          if (linkCalls === 2) {
+            publicationFailed = true;
+            throw Object.assign(new Error("injected publication failure"), { code: "EIO" });
+          }
+          return (originalLink as Function).call(this, source, target);
+        }) as typeof promises.link;
+        promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (publicationFailed && basename(String(path)) === "publish") {
+            throw Object.assign(new Error("injected staging inspection failure"), { code: "EACCES" });
+          }
+          return (originalLstat as Function).call(this, path, ...args);
+        }) as typeof promises.lstat;
+      },
+      async (module) => {
+        await assert.rejects(
+          module.applyEditsToFile(
+            {
+              files: [
+                { path: "missing/a", rewrite: "a\n", onMissing: "create" },
+                { path: "missing/b", rewrite: "b\n", onMissing: "create" },
+              ],
+            },
+            directory,
+          ),
+          (error: Error) => {
+            assert.match(error.message, /could not be verified at.*may remain linked/s);
+            assert.doesNotMatch(error.message, /no longer at its recorded path/);
+            return true;
+          },
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert((await lstat(staging)).isDirectory());
+  });
+});
+
+test("staged container disappearance during rmdir returns a warning", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const originalRmdir = nodeFs.promises.rmdir;
+    const escaped = join(directory, "escaped-container");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rmdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (
+            !moved &&
+            !basename(dirname(String(path))).endsWith(".tmpdir") &&
+            basename(String(path)).endsWith(".tmpdir")
+          ) {
+            await (originalRename as Function).call(this, path, escaped);
+            moved = true;
+          }
+          return (originalRmdir as Function).call(this, path, ...args);
+        }) as typeof promises.rmdir;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "ok\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /container disappeared during cleanup.*location is uncertain.*may remain outside/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+    assert.equal((await stat(escaped)).isDirectory(), true);
+  });
+});
+
+test("direct create warns when its temporary link escapes after quarantine", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-temporary-link");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalRename as Function).call(this, source, target);
+          if (
+            !moved &&
+            basename(String(source)) === "create" &&
+            basename(String(target)) === "entry"
+          ) {
+            moved = true;
+            await (originalRename as Function).call(this, target, escaped);
+          }
+          return result;
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(warnings.join("\n"), /temporary link is no longer at.*may remain hard-linked/s);
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+    assert.equal((await stat(join(directory, "file"))).ino, (await stat(escaped)).ino);
+  });
+});
+
+test("staged create cleanup reports an escape after its quarantine rename", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-staging");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalRename as Function).call(this, source, target);
+          if (!moved && basename(String(source)) === "publish" && basename(String(target)) === "q") {
+            moved = true;
+            await (originalRename as Function).call(this, target, escaped);
+          }
+          return result;
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /changed during quarantine.*location is uncertain.*may remain linked/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+    assert.equal(
+      (await stat(join(directory, "missing", "file"))).ino,
+      (await stat(join(escaped, "file"))).ino,
+    );
+  });
+});
+
+test("non-empty temporary directory fails cleanup in place instead of being moved", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const originalRmdir = nodeFs.promises.rmdir;
+    let injectedDirectory = "";
+    const inject = async (path: string) => {
+      if (injectedDirectory) return;
+      injectedDirectory = path;
+      await writeFile(join(path, "concurrent"), "keep\n");
+    };
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (
+            !basename(dirname(String(source))).endsWith(".tmpdir") &&
+            basename(String(source)).endsWith(".tmpdir") &&
+            basename(String(target)) === "entry"
+          ) {
+            await inject(String(source));
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+        promises.rmdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (
+            !basename(dirname(String(path))).endsWith(".tmpdir") &&
+            basename(String(path)).endsWith(".tmpdir")
+          ) {
+            await inject(String(path));
+          }
+          return (originalRmdir as Function).call(this, path, ...args);
+        }) as typeof promises.rmdir;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "file", rewrite: "ok\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(warnings.join("\n"), /temporary directory remains.*(?:ENOTEMPTY|not empty)/is);
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(injectedDirectory);
+    assert.equal(await readFile(join(injectedDirectory, "concurrent"), "utf8"), "keep\n");
+    assert.equal(await readFile(join(directory, "file"), "utf8"), "ok\n");
+  });
+});
+
+test(
+  "nested create whose rollback cleanup would exceed the budget is rejected during planning",
+  { skip: process.platform !== "darwin" && process.platform !== "linux" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const limit = process.platform === "darwin" ? 1024 : 4096;
+      const base = await realpath(directory);
+      // Long missing root keeps the staged copy of the tree well under the budget while the
+      // target itself stays legal; only the rollback quarantine beside the target overflows.
+      const root = "r".repeat(255);
+      const desiredParent = limit - 33 - 10;
+      let remaining = desiredParent - Buffer.byteLength(join(base, root));
+      const segments: string[] = [root];
+      while (remaining > 0) {
+        const length = Math.min(200, remaining - 1 > 0 ? remaining - 1 : 1);
+        segments.push("d".repeat(length));
+        remaining -= length + 1;
+      }
+      const target = join(base, ...segments, "f");
+      assert(Buffer.byteLength(target) <= limit - 33);
+      assert(Buffer.byteLength(dirname(target)) + 67 > limit - 33);
+
+      await assert.rejects(
+        applyEditsToFile({ path: target, rewrite: "x\n", onMissing: "create" }, base),
+        /planned staging and cleanup.*No changes were written/s,
+      );
+      await assert.rejects(lstat(join(base, root)), /ENOENT/);
+      assert.deepEqual(
+        (await readdir(base)).filter((name) => name.startsWith(".pi-apply-edits-")),
+        [],
+      );
+    });
+  },
+);
+
+test(
+  "near-limit direct create is rejected during planning on supported POSIX platforms",
+  { skip: process.platform !== "darwin" && process.platform !== "linux" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const limit = process.platform === "darwin" ? 1024 : 4096;
+      const desiredLength = limit - 75;
+      let ancestor = await realpath(directory);
+      let remaining = desiredLength - Buffer.byteLength(ancestor);
+      if (remaining % 2 === 1) {
+        ancestor = join(ancestor, "xx");
+        remaining -= 3;
+      }
+      while (remaining > 256) {
+        ancestor = join(ancestor, "x");
+        remaining -= 2;
+      }
+      ancestor = join(ancestor, "x".repeat(remaining - 1));
+      assert.equal(Buffer.byteLength(ancestor), desiredLength);
+      await mkdir(ancestor, { recursive: true });
+      const target = join(ancestor, "f");
+
+      await assert.rejects(
+        applyEditsToFile(
+          { path: target, rewrite: "secret\n", onMissing: "create" },
+          directory,
+        ),
+        new RegExp(
+          `planned staging and cleanup.*safety margin below PATH_MAX ${limit}.*No changes were written`,
+          "s",
+        ),
+      );
+      await assert.rejects(lstat(target), /ENOENT/);
+      assert.deepEqual(
+        (await readdir(ancestor)).filter((name) => name.startsWith(".pi-apply-edits-")),
+        [],
+      );
+    });
+  },
+);
+
+test("create failure discloses an escaped temporary file", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const escaped = join(directory, "escaped-temporary");
+    const { publishNewFile } = await import("../src/file-system.ts");
+    await assert.rejects(
+      publishNewFile(join(directory, "file"), Buffer.from("secret\n"), undefined, undefined, {
+        beforeFilePublish: async ({ temporary }) => {
+          await rename(temporary, escaped);
+        },
+      }),
+      /temporary create file is no longer at.*content may remain elsewhere/s,
+    );
+    assert.equal(await readFile(escaped, "utf8"), "secret\n");
+    await assert.rejects(lstat(join(directory, "file")), /ENOENT/);
+  });
+});
+
+test("replacement failure discloses an escaped recovery link", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "file");
+    const escaped = join(directory, "escaped-recovery");
+    await writeFile(target, "old\n");
+    const { captureSnapshot, publishReplacement } = await import("../src/file-system.ts");
+    const snapshot = await captureSnapshot(target);
+    assert(snapshot);
+    const controller = new AbortController();
+    await assert.rejects(
+      publishReplacement(snapshot, Buffer.from("new\n"), controller.signal, {
+        beforeRename: async () => {
+          const recoveryName = (await readdir(directory)).find((name) => name.endsWith(".tmp"));
+          assert(recoveryName);
+          await rename(join(directory, recoveryName), escaped);
+          controller.abort();
+        },
+      }),
+      /recovery link is no longer at.*target may remain hard-linked/s,
+    );
+    assert.equal(await readFile(target, "utf8"), "old\n");
+    assert.equal(Number((await stat(target)).nlink), 2);
+    assert.equal((await stat(target)).ino, (await stat(escaped)).ino);
+  });
+});
+
+test("batch failure preserves warnings from completed files", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-temporary-link");
+    const controller = new AbortController();
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (
+            !moved &&
+            basename(String(source)) === "create" &&
+            basename(String(target)) === "entry"
+          ) {
+            await (originalRename as Function).call(this, source, escaped);
+            moved = true;
+            controller.abort();
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        await assert.rejects(
+          module.applyEditsToFile(
+            {
+              files: [
+                { path: "first", rewrite: "secret\n", onMissing: "create" },
+                { path: "second", rewrite: "second\n", onMissing: "create" },
+              ],
+            },
+            directory,
+            controller.signal,
+          ),
+          /Earlier warnings from completed files:.*may remain hard-linked/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+    assert.equal((await stat(join(directory, "first"))).ino, (await stat(escaped)).ino);
+  });
+});
+
+test("summary deduplicates repeated warnings so unique ones stay visible", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    for (let index = 0; index < 4; index++) {
+      await writeFile(join(directory, `existing-${index}`), "a");
+    }
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-temporary-link");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (
+            !moved &&
+            basename(String(source)) === "create" &&
+            basename(String(target)) === "entry"
+          ) {
+            await (originalRename as Function).call(this, source, escaped);
+            moved = true;
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const files: object[] = Array.from({ length: 4 }, (_, index) => ({
+          path: `existing-${index}`,
+          edits: [{ oldText: "a", newText: "b", insert: "after" }],
+        }));
+        files.push({ path: "created", rewrite: "secret\n", onMissing: "create" });
+        const result = await module.applyEditsToFile({ files } as never, directory);
+        assert.match(result.summary, /may remain hard-linked/);
+        assert.doesNotMatch(result.summary, / more\b/);
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+  });
+});

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.1 — 2026-08-08
+
+- Serialize mixed-case creates with later edits of the same path by keeping the exact-case target as Pi's single mutation-queue key.
+- Serialize every operation that discovers a missing target through one package-local create mutex, outside Pi's exact-target queue. A keyless mutex stays stable as ancestors appear and uses bounded memory for maximum-depth paths; existing-file operations remain parallel.
+- Reject cross-user directory substitutions before adopting a newly claimed directory for publication or cleanup; document the remaining same-user `mkdir`-to-`lstat` window that needs a native primitive to close.
+- Reject dangling symbolic-link batch entries during key discovery so a static alias and its target cannot collapse onto one Pi queue; document the remaining external race that needs an atomic upstream multi-key API.
+- State zero-separator insert semantics in the tool description, parameter docs, prompt guidance, and successful result text, including a complete newline-bearing example. Insert behavior itself is unchanged.
+- Refuse a mutation during planning, before staging or any batch write, when its longest computed temporary, staging, or cleanup path exceeds the documented platform budget: 991 UTF-8 bytes on macOS, 4063 on Linux, or 32702 UTF-16 code units on Windows. These boundaries keep a 32-unit POSIX or 64-unit Windows safety margin below the platform path limit.
+- Quarantine files inside owner-checked private directories. Staged create trees use a reserved short slot inside their private container; empty temporary and staging containers are removed in place so a concurrent entry cannot be relocated with its parent.
+- Owner-check every newly claimed private staging/quarantine directory before adoption. Rename-window `ENOENT` failures now warn that staging or an empty container may have moved instead of claiming cleanup succeeded or naming a stale location.
+- Disclose escaped cleanup targets everywhere. Success- and failure-path temporary and recovery unlinks, post-quarantine escapes, and staging that cannot be inspected now name the uncertain location and possible remaining hard links instead of staying silent or claiming a stale path.
+- Carry warnings from completed files into multi-file batch failure text, and deduplicate repeated warnings so unique disclosures stay visible in result summaries.
+
 ## 0.4.0 — 2026-08-08
 
 - Canonicalize and revalidate replacement entries, preserve post-link metadata changes, verify staged create trees, and quarantine cleanup so swapped-in files or directories are preserved.

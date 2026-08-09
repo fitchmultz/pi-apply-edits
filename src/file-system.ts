@@ -71,12 +71,15 @@ export interface PreparedNestedFiles {
   publishRoot: string;
   container: string;
   staging: string;
+  quarantine: string;
   warnings: string[];
   hooks?: NewFilePublishHooks;
   published: boolean;
   discardAttempted: boolean;
   containerStats?: BigIntStats;
   stagingStats?: BigIntStats;
+  quarantineStats?: BigIntStats;
+  cleanupBlocked?: string;
   stagedIdentities?: Map<string, BigIntStats>;
 }
 
@@ -279,7 +282,9 @@ export async function publishReplacement(
   try {
     try {
       await mkdir(temporaryDirectory, { mode: 0o700 });
-      temporaryDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
+      const createdDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
+      assertCreatedDirectoryOwner(createdDirectoryStats, temporaryDirectory);
+      temporaryDirectoryStats = createdDirectoryStats;
       await cloneWithMetadata(snapshot.actualPath, temporary, signal);
     } catch (error) {
       throwIfAborted(signal);
@@ -377,8 +382,14 @@ export async function publishReplacement(
       );
     }
     try {
-      await unlinkOwnedPath(recovery, recoveryState.stats, "Recovery link", recoveryState);
+      const removed = await unlinkOwnedPath(recovery, recoveryState.stats, "Recovery link", recoveryState);
       recoveryLinked = false;
+      if (!removed) {
+        warnings.push(
+          `The edit was committed, but the pre-edit recovery link is no longer at ${recovery}; ` +
+            "its location is uncertain and the previous content may remain elsewhere.",
+        );
+      }
     } catch (error) {
       warnings.push(`The edit was committed, but recovery cleanup was incomplete: ${errorMessage(error)}`);
     }
@@ -393,7 +404,13 @@ export async function publishReplacement(
     const cleanupFailures: string[] = [];
     if (!published && !replacementPublished) {
       try {
-        await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary replacement");
+        const removed = await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary replacement");
+        if (!removed && temporaryIdentity) {
+          cleanupFailures.push(
+            `the temporary replacement is no longer at ${temporary}; ` +
+              "its location is uncertain and its content may remain elsewhere",
+          );
+        }
       } catch (error) {
         temporaryCleanupFailed = true;
         cleanupFailures.push(`${temporary}: ${errorMessage(error)}`);
@@ -401,7 +418,13 @@ export async function publishReplacement(
     }
     if (recoveryLinked && !replacementPublished) {
       try {
-        await unlinkOwnedPath(recovery, snapshot.stats, "Recovery link");
+        const removed = await unlinkOwnedPath(recovery, snapshot.stats, "Recovery link");
+        if (!removed) {
+          cleanupFailures.push(
+            `the pre-edit recovery link is no longer at ${recovery}; ` +
+              "its location is uncertain and the target may remain hard-linked to it",
+          );
+        }
       } catch (error) {
         cleanupFailures.push(`${recovery}: ${errorMessage(error)}`);
       }
@@ -442,13 +465,14 @@ export async function preparePlannedNestedFiles(
     }
   }
 
-  const container = join(firstPlan.ancestorPath, `.pi-apply-edits-${randomUUID()}.tmpdir`);
+  const container = stagingContainerPath(firstPlan.ancestorPath);
   const prepared: PreparedNestedFiles = {
     entries,
     firstPlan,
     publishRoot: join(firstPlan.ancestorPath, firstMissing),
     container,
     staging: join(container, "publish"),
+    quarantine: join(container, "q"),
     warnings: [],
     hooks,
     published: false,
@@ -460,9 +484,19 @@ export async function preparePlannedNestedFiles(
     throwIfAborted(signal);
     for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
     await mkdir(prepared.container, { mode: 0o700 });
-    prepared.containerStats = await lstat(prepared.container, { bigint: true });
+    const containerStats = await lstat(prepared.container, { bigint: true });
+    assertCreatedDirectoryOwner(containerStats, prepared.container);
+    prepared.containerStats = containerStats;
+    // An unowned entry inside our container also blocks moving the container itself: renaming
+    // the recorded parent would relocate the rejected entry, which must stay untouched.
+    await mkdir(prepared.quarantine, { mode: 0o700 });
+    const quarantineStats = await lstat(prepared.quarantine, { bigint: true });
+    assertOwnedOrBlockCleanup(prepared, quarantineStats, prepared.quarantine);
+    prepared.quarantineStats = quarantineStats;
     await mkdir(prepared.staging, { mode: 0o777 });
-    prepared.stagingStats = await lstat(prepared.staging, { bigint: true });
+    const stagingStats = await lstat(prepared.staging, { bigint: true });
+    assertOwnedOrBlockCleanup(prepared, stagingStats, prepared.staging);
+    prepared.stagingStats = stagingStats;
     stagedDirectories.add(prepared.container);
     stagedDirectories.add(prepared.staging);
 
@@ -537,10 +571,11 @@ export async function publishPreparedNestedFiles(
       throw error;
     }
     const rootStats = await lstat(publishRoot, { bigint: true });
-    publishedDirectories.set(publishRoot, rootStats);
     if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
       throw new Error(`Reserved create directory changed identity at ${publishRoot}.`);
     }
+    assertCreatedDirectoryOwner(rootStats, publishRoot);
+    publishedDirectories.set(publishRoot, rootStats);
     await assertNewFilePlanCurrent(firstPlan);
     await prepared.hooks?.afterRootReserve?.({ staging, target: publishRoot });
     throwIfAborted(signal);
@@ -570,6 +605,7 @@ export async function publishPreparedNestedFiles(
       if (!targetStats.isDirectory() || targetStats.isSymbolicLink()) {
         throw new Error(`Created directory changed identity at ${targetDirectory}.`);
       }
+      assertCreatedDirectoryOwner(targetStats, targetDirectory);
       try {
         await assertPublishedDirectoriesCurrent(publishedDirectories);
       } catch (error) {
@@ -708,10 +744,10 @@ export async function publishPreparedNestedFiles(
     }
     if (prepared.containerStats && !prepared.stagingStats) {
       try {
-        await rmdirOwnedPath(prepared.container, prepared.containerStats, "Staged create container");
+        await removePreparedContainer(prepared);
       } catch (error) {
         prepared.warnings.push(
-          `The files were created, but their staging container remains at ${prepared.container}: ${errorMessage(error)}`,
+          `The files were created, but staging container cleanup was incomplete: ${errorMessage(error)}`,
         );
       }
     }
@@ -722,10 +758,21 @@ export async function publishPreparedNestedFiles(
     await copyHandle?.close().catch(() => undefined);
     if (publishedFiles.length > 0) {
       prepared.discardAttempted = true;
+      let stagingLocation: string;
+      try {
+        stagingLocation = (await currentOwnedPath(staging, prepared.stagingStats, "Staged create directory"))
+          ? `private staging remains at ${staging}.`
+          : "private staging is no longer at its recorded path; its location is uncertain and " +
+            "the published files may remain linked to it.";
+      } catch {
+        stagingLocation =
+          `private staging could not be verified at ${staging}; ` +
+          "the published files may remain linked to it.";
+      }
       throw new PartialCreatePublishError(
         `${errorMessage(error)} Partial create publication retained ${publishedFiles.length} file` +
           `${publishedFiles.length === 1 ? "" : "s"} at ${publishedFiles.join(", ")}; ` +
-          `private staging remains at ${staging}.`,
+          stagingLocation,
         publishedFiles.length,
       );
     }
@@ -753,28 +800,35 @@ export async function publishPreparedNestedFiles(
 export async function discardPreparedNestedFiles(prepared: PreparedNestedFiles): Promise<void> {
   if (prepared.published || prepared.discardAttempted) return;
   prepared.discardAttempted = true;
+  if (prepared.cleanupBlocked) {
+    // Moving or renaming the recorded container would relocate the rejected entry inside it.
+    throw new Error(
+      `Staging cleanup was skipped because ${prepared.cleanupBlocked} is not owned by this user; ` +
+        `the staging container was left untouched at ${prepared.container}`,
+    );
+  }
   if (prepared.stagingStats) {
     if (prepared.stagedIdentities) {
       await removePreparedStaging(prepared, prepared.stagedIdentities);
     } else {
-      const quarantined = await quarantineOwnedPath(
-        prepared.staging,
-        prepared.stagingStats,
-        "Staged create directory",
-      );
+      const quarantined = await quarantinePreparedStaging(prepared);
       if (quarantined) {
         await rm(quarantined.path, { recursive: true });
-        await removeEmptyOwnedDirectory(
-          quarantined.directory,
-          quarantined.directoryStats,
-          "Cleanup quarantine",
-        );
         prepared.stagingStats = undefined;
+        prepared.quarantineStats = undefined;
       }
     }
   }
+  if (!prepared.stagingStats && prepared.quarantineStats) {
+    await removeEmptyOwnedDirectory(
+      prepared.quarantine,
+      prepared.quarantineStats,
+      "Cleanup quarantine slot",
+    );
+    prepared.quarantineStats = undefined;
+  }
   if (prepared.containerStats) {
-    await rmdirOwnedPath(prepared.container, prepared.containerStats, "Staged create container");
+    await removePreparedContainer(prepared);
   }
 }
 
@@ -907,6 +961,7 @@ export async function publishNewFile(
   let temporaryDirectoryStats: BigIntStats | undefined;
   let published = false;
   let temporaryCleanupFailed = false;
+  let directoryCleanupBlocked = false;
   let failure: unknown;
   const warnings: string[] = [];
   try {
@@ -920,7 +975,15 @@ export async function publishNewFile(
 
     if (plan) await assertNewFilePlanCurrent(plan);
     await mkdir(temporaryDirectory, { mode: 0o700 });
-    temporaryDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
+    const createdDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
+    try {
+      assertCreatedDirectoryOwner(createdDirectoryStats, temporaryDirectory);
+    } catch (error) {
+      // Removing the created parent directories would relocate the rejected entry inside them.
+      directoryCleanupBlocked = true;
+      throw error;
+    }
+    temporaryDirectoryStats = createdDirectoryStats;
     handle = await open(temporary, "wx", 0o666);
     temporaryIdentity = await handle.stat({ bigint: true });
     await handle.writeFile(bytes, { signal });
@@ -1054,7 +1117,13 @@ export async function publishNewFile(
       warnings.push("Atomic hard-link publication was unavailable; used exclusive write publication.");
     }
     try {
-      await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary create file");
+      const removed = await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary create file");
+      if (!removed) {
+        warnings.push(
+          `The file was created, but its temporary link is no longer at ${temporary}; ` +
+            "its location is uncertain and the created file may remain hard-linked to it.",
+        );
+      }
     } catch (error) {
       temporaryCleanupFailed = true;
       warnings.push(`The file was created, but its temporary link remains at ${temporary}: ${errorMessage(error)}`);
@@ -1078,7 +1147,13 @@ export async function publishNewFile(
     if (!published) {
       const cleanupFailures: string[] = [];
       try {
-        await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary create file");
+        const removed = await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary create file");
+        if (!removed && temporaryIdentity) {
+          cleanupFailures.push(
+            `the temporary create file is no longer at ${temporary}; ` +
+              "its location is uncertain and its content may remain elsewhere",
+          );
+        }
       } catch (error) {
         temporaryCleanupFailed = true;
         cleanupFailures.push(`${temporary}: ${errorMessage(error)}`);
@@ -1090,10 +1165,12 @@ export async function publishNewFile(
           cleanupFailures.push(`${temporaryDirectory}: ${errorMessage(error)}`);
         }
       }
-      try {
-        await removeCreatedDirectories(directory, firstCreatedDirectory, createdDirectoryIdentities);
-      } catch (error) {
-        cleanupFailures.push(errorMessage(error));
+      if (!directoryCleanupBlocked) {
+        try {
+          await removeCreatedDirectories(directory, firstCreatedDirectory, createdDirectoryIdentities);
+        } catch (error) {
+          cleanupFailures.push(errorMessage(error));
+        }
       }
       if (cleanupFailures.length > 0) {
         throw new Error(
@@ -1124,6 +1201,32 @@ async function assertPreparedFileCurrent(
 
 function stagedRelativePath(plan: NewFilePlan): string {
   return join(...plan.missingDirectories.slice(1), basename(plan.targetPath));
+}
+
+function assertCreatedDirectoryOwner(stats: BigIntStats, path: string): void {
+  // mkdir does not return a handle or identity, and Node exposes no mkdirat/openat API, so a
+  // same-user process can still rename our directory away and substitute its own in the gap
+  // before lstat. The owner check closes the cross-user variant in a shared-writable parent
+  // and, critically, runs before the entry is recorded for cleanup: an entry owned by another
+  // user is left untouched rather than adopted as ours. Windows ACL ownership is not exposed
+  // through Stats, so the existing identity checks remain the boundary there.
+  if (process.platform === "win32" || typeof process.geteuid !== "function") return;
+  if (stats.uid !== BigInt(process.geteuid())) {
+    throw new Error(`Created directory owner changed at ${path}; it was left untouched.`);
+  }
+}
+
+function assertOwnedOrBlockCleanup(
+  prepared: PreparedNestedFiles,
+  stats: BigIntStats,
+  path: string,
+): void {
+  try {
+    assertCreatedDirectoryOwner(stats, path);
+  } catch (error) {
+    prepared.cleanupBlocked = path;
+    throw error;
+  }
 }
 
 async function assertPublishedDirectoriesCurrent(
@@ -1161,23 +1264,111 @@ async function removePreparedStaging(
 ): Promise<void> {
   if (!prepared.stagingStats) return;
   await inspectPreparedTree(prepared, expectedIdentities);
-  const quarantined = await quarantineOwnedPath(
-    prepared.staging,
-    prepared.stagingStats,
-    "Staged create directory",
-  );
+  const quarantined = await quarantinePreparedStaging(prepared);
   if (!quarantined) return;
   const identities = new Map(expectedIdentities);
   identities.set("", quarantined.stats);
   await inspectPreparedTree({ ...prepared, staging: quarantined.path }, identities);
   await rm(quarantined.path, { recursive: true });
-  await removeEmptyOwnedDirectory(
-    quarantined.directory,
-    quarantined.directoryStats,
-    "Cleanup quarantine",
-  );
   prepared.stagingStats = undefined;
+  prepared.quarantineStats = undefined;
   prepared.stagedIdentities = undefined;
+}
+
+async function quarantinePreparedStaging(
+  prepared: PreparedNestedFiles,
+): Promise<{ path: string; stats: BigIntStats } | undefined> {
+  await currentOwnedPath(prepared.container, prepared.containerStats, "Staged create container");
+  const stagingStats = await currentOwnedPath(
+    prepared.staging,
+    prepared.stagingStats,
+    "Staged create directory",
+  );
+  const quarantineStats = await currentOwnedPath(
+    prepared.quarantine,
+    prepared.quarantineStats,
+    "Cleanup quarantine slot",
+  );
+  if (!stagingStats) {
+    throw new Error(
+      "Staged create directory disappeared before cleanup quarantine; its location is uncertain " +
+        "and the published target may remain linked to private staging",
+    );
+  }
+  if (!quarantineStats?.isDirectory()) {
+    throw new Error(`Cleanup quarantine slot changed identity at ${prepared.quarantine}`);
+  }
+
+  // The short slot avoids making deep staged paths longer during identity quarantine.
+  // POSIX rename atomically replaces our verified empty directory. Windows does not replace
+  // directories, so remove the owned slot first; the private 0700 container limits that gap.
+  if (process.platform === "win32") {
+    await removeEmptyOwnedDirectory(
+      prepared.quarantine,
+      quarantineStats,
+      "Cleanup quarantine slot",
+    );
+    prepared.quarantineStats = undefined;
+  }
+  try {
+    await rename(prepared.staging, prepared.quarantine);
+  } catch (error) {
+    if (isCode(error, "ENOENT")) {
+      throw new Error(
+        "Staged create cleanup changed during quarantine; its location is uncertain and " +
+          "the published target may remain linked to private staging",
+      );
+    }
+    throw error;
+  }
+  let movedStats: BigIntStats;
+  try {
+    movedStats = await lstat(prepared.quarantine, { bigint: true });
+  } catch (error) {
+    prepared.quarantineStats = undefined;
+    if (isCode(error, "ENOENT")) {
+      throw new Error(
+        "Staged create cleanup changed during quarantine; its location is uncertain and " +
+          "the published target may remain linked to private staging",
+      );
+    }
+    throw error;
+  }
+  prepared.quarantineStats = undefined;
+  if (!sameIdentity(stagingStats, movedStats)) {
+    throw new Error(
+      `Staged create directory changed after validation and was preserved at ${prepared.quarantine}`,
+    );
+  }
+  return { path: prepared.quarantine, stats: movedStats };
+}
+
+async function removePreparedContainer(prepared: PreparedNestedFiles): Promise<void> {
+  const containerStats = await currentOwnedPath(
+    prepared.container,
+    prepared.containerStats,
+    "Staged create container",
+  );
+  if (!containerStats) {
+    throw new Error(
+      `Staged create container disappeared before cleanup; its location is uncertain and ` +
+        `an empty container may remain outside ${dirname(prepared.container)}`,
+    );
+  }
+  try {
+    await rmdir(prepared.container);
+  } catch (error) {
+    if (isCode(error, "ENOENT")) {
+      throw new Error(
+        `Staged create container disappeared during cleanup; its location is uncertain and ` +
+          `an empty container may remain outside ${dirname(prepared.container)}`,
+      );
+    }
+    throw new Error(
+      `Staged create container remains at ${prepared.container}: ${errorMessage(error)}`,
+    );
+  }
+  prepared.containerStats = undefined;
 }
 
 async function currentOwnedPath(
@@ -1214,6 +1405,7 @@ async function quarantineOwnedPath(
   const directory = temporaryDirectoryPath(path);
   await mkdir(directory, { mode: 0o700 });
   const directoryStats = await lstat(directory, { bigint: true });
+  assertCreatedDirectoryOwner(directoryStats, directory);
   const quarantined = join(directory, "entry");
   try {
     await rename(path, quarantined);
@@ -1222,7 +1414,13 @@ async function quarantineOwnedPath(
     if (isCode(error, "ENOENT")) return undefined;
     throw error;
   }
-  const stats = await lstat(quarantined, { bigint: true });
+  let stats: BigIntStats;
+  try {
+    stats = await lstat(quarantined, { bigint: true });
+  } catch (error) {
+    if (isCode(error, "ENOENT")) return undefined;
+    throw error;
+  }
   if (!expected || !sameIdentity(expected, stats)) {
     throw new Error(`${label} changed after validation and was preserved at ${quarantined}`);
   }
@@ -1261,14 +1459,18 @@ async function unlinkOwnedPath(
 }
 
 async function rmdirOwnedPath(path: string, expected: BigIntStats, label: string): Promise<void> {
-  const quarantined = await quarantineOwnedPath(path, expected, label);
-  if (!quarantined) return;
-  await rmdir(quarantined.path);
-  await removeEmptyOwnedDirectory(
-    quarantined.directory,
-    quarantined.directoryStats,
-    "Cleanup quarantine",
-  );
+  const current = await currentOwnedPath(path, expected, label);
+  if (!current) {
+    throw new Error(
+      `${label} is no longer at ${path}; its location is uncertain and an empty directory may remain elsewhere`,
+    );
+  }
+  if (!current.isDirectory() || current.isSymbolicLink()) {
+    throw new Error(`${label} changed identity and was left untouched at ${path}`);
+  }
+  // Do not quarantine a directory before learning that it is empty. A concurrent entry makes
+  // rmdir fail in place instead of relocating the directory and that entry as a unit.
+  await rmdir(path);
 }
 
 async function captureCreatedDirectoryIdentities(
@@ -1279,7 +1481,9 @@ async function captureCreatedDirectoryIdentities(
   if (!firstCreated) return identities;
   let current = directory;
   while (true) {
-    identities.set(current, await lstat(current, { bigint: true }));
+    const stats = await lstat(current, { bigint: true });
+    assertCreatedDirectoryOwner(stats, current);
+    identities.set(current, stats);
     if (current === firstCreated) return identities;
     const parent = dirname(current);
     if (parent === current) return identities;
@@ -1452,6 +1656,10 @@ async function syncDirectory(directory: string): Promise<string | undefined> {
   } catch (error) {
     return `The edit was committed, but the parent directory could not be synced: ${errorMessage(error)}`;
   }
+}
+
+function stagingContainerPath(parent: string): string {
+  return join(parent, `.pi-apply-edits-${randomUUID()}.tmpdir`);
 }
 
 function temporaryPath(targetPath: string): string {

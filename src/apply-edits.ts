@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
@@ -269,6 +269,7 @@ export async function applyEditsToFile(
   signal?: AbortSignal,
 ): Promise<ApplyEditsExecution> {
   validateRequest(input);
+  throwIfAborted(signal);
   if (input.files) return applyEditsBatch(input.files, cwd, signal);
 
   const single = input as ApplyEditsInput;
@@ -289,9 +290,12 @@ let canonicalLockRegistration = Promise.resolve();
 function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Promise<T> {
   // Resolve aliases in invocation order, then let Pi's queue serialize only matching keys.
   // Wrapping the operation prevents Promise assimilation from serializing unrelated files.
-  const registration = canonicalLockRegistration.then(async () => ({
-    operation: withOrderedFileLocks((await mutationQueueKeys(inputPath)).queueKeys, fn),
-  }));
+  const registration = canonicalLockRegistration.then(async () => {
+    const keys = await mutationQueueKeys(inputPath);
+    return {
+      operation: withMutationLocks(keys.needsCreateLock, keys.queueKeys, fn),
+    };
+  });
   canonicalLockRegistration = registration.then(() => undefined, () => undefined);
   return registration.then(({ operation }) => operation);
 }
@@ -332,6 +336,7 @@ interface PlannedMutation {
   matches: AppliedEditDetail[];
   operation: ApplyEditsDetails["operation"];
   editsRequested: number;
+  insertsRequested: number;
   needsWrite: boolean;
   createPlan?: NewFilePlan;
   lockKey?: string;
@@ -374,7 +379,8 @@ async function applyEditsBatch(
   rejectAncestorPathConflicts(resolved);
 
   const lockPaths = [...new Set(resolved.flatMap((item) => item.queueKeys))].sort();
-  return withOrderedFileLocks(lockPaths, async () => {
+  const needsCreateLock = resolved.some((item) => item.needsCreateLock);
+  return withMutationLocks(needsCreateLock, lockPaths, async () => {
     const planned: PlannedMutation[] = [];
     const allRewrites = files.every(
       (input) => typeof input.rewrite === "string" && input.edits === undefined,
@@ -481,9 +487,19 @@ async function applyEditsBatch(
           const completed = written + (error instanceof PartialCreatePublishError
             ? error.publishedFiles
             : 0);
+          const earlierWarnings = [
+            ...new Set(
+              detailsList
+                .filter((item): item is ApplyEditsDetails => item !== undefined)
+                .flatMap((item) => item.warnings),
+            ),
+          ];
           throw new Error(
             `Multi-file batch failed while writing files[${index}] (${plan.displayPath}) ` +
-              `after ${completed} successful write${completed === 1 ? "" : "s"}. ${reason}`,
+              `after ${completed} successful write${completed === 1 ? "" : "s"}. ${reason}` +
+              (earlierWarnings.length > 0
+                ? ` Earlier warnings from completed files: ${earlierWarnings.join(" ")}`
+                : ""),
           );
         }
       }
@@ -505,7 +521,7 @@ async function applyEditsBatch(
       const names = changed.length > 8
         ? `${visibleNames}, … ${changed.length - 8} more`
         : visibleNames;
-      const warnings = detailsList.flatMap((item) => item.warnings);
+      const warnings = [...new Set(detailsList.flatMap((item) => item.warnings))];
       const visibleWarnings = warnings.slice(0, 4).join(" ");
       const warningText = warnings.length > 0
         ? ` Warning: ${visibleWarnings}${warnings.length > 4 ? ` … ${warnings.length - 4} more` : ""}`
@@ -574,6 +590,36 @@ function rejectAncestorPathConflicts(
   }
 }
 
+// Missing-path discoveries cannot use a second Pi lock: Pi realpaths each key at acquisition,
+// so keys can collapse and make an operation wait on itself. One package-local create queue is
+// stable because it has no path identity at all. It deliberately serializes all operations that
+// discovered a missing target; existing-file operations remain parallel. Always acquire it
+// outside Pi's queue, never inside, so the two orderings cannot form a cycle.
+let createMutationQueue = Promise.resolve();
+
+function withMutationLocks<T>(needsCreateLock: boolean, pi: string[], fn: () => Promise<T>): Promise<T> {
+  return withCreateLock(needsCreateLock, () => withOrderedFileLocks(pi, fn));
+}
+
+async function withCreateLock<T>(needed: boolean, fn: () => Promise<T>): Promise<T> {
+  if (!needed) return fn();
+  // Registration is synchronous, so every missing-path operation gets one stable queue slot.
+  const previous = createMutationQueue;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = previous.then(() => held);
+  createMutationQueue = chained;
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (createMutationQueue === chained) createMutationQueue = Promise.resolve();
+  }
+}
+
 async function withOrderedFileLocks<T>(unordered: string[], fn: () => Promise<T>): Promise<T> {
   // One global order, so separate operations cannot deadlock against each other. Callers must
   // still pass keys that cannot canonicalize together, since Pi resolves each on acquisition
@@ -586,6 +632,85 @@ async function withOrderedFileLocks<T>(unordered: string[], fn: () => Promise<T>
   return run(0);
 }
 
+const PATH_UUID_SHAPE = "00000000-0000-4000-8000-000000000000";
+
+function pathBudget(): { platform: string; limit: number; margin: number } {
+  if (process.platform === "darwin") return { platform: "macOS", limit: 1024, margin: 32 };
+  if (process.platform === "linux") return { platform: "Linux", limit: 4096, margin: 32 };
+  if (process.platform === "win32") return { platform: "Windows", limit: 32767, margin: 64 };
+  return { platform: process.platform, limit: 1024, margin: 32 };
+}
+
+function pathUnits(path: string): number {
+  return process.platform === "win32" ? path.length : Buffer.byteLength(path);
+}
+
+function shapedTemporaryPath(targetPath: string): string {
+  return join(
+    dirname(targetPath),
+    `.pi-apply-edits-${process.pid}-${PATH_UUID_SHAPE}.tmp`,
+  );
+}
+
+function shapedTemporaryDirectory(targetPath: string): string {
+  return `${shapedTemporaryPath(targetPath)}dir`;
+}
+
+function shapedCleanupEntry(path: string): string {
+  return join(shapedTemporaryDirectory(path), "entry");
+}
+
+function assertPlannedPathBudget(displayPath: string, candidates: string[]): void {
+  const budget = pathBudget();
+  const longest = Math.max(...candidates.map(pathUnits));
+  const supportedMaximum = budget.limit - budget.margin - 1;
+  if (longest <= supportedMaximum) return;
+  throw new Error(
+    `Cannot modify ${displayPath}: planned staging and cleanup require a ${longest}-` +
+      `${process.platform === "win32" ? "character" : "byte"} path, beyond the supported ` +
+      `${supportedMaximum} ${process.platform === "win32" ? "characters" : "bytes"} on ` +
+      `${budget.platform} (${budget.margin}-unit safety margin below PATH_MAX ${budget.limit}). ` +
+      "No changes were written.",
+  );
+}
+
+function assertReplacementPathBudget(targetPath: string, displayPath: string): void {
+  const temporaryDirectory = shapedTemporaryDirectory(targetPath);
+  const temporary = join(temporaryDirectory, "replacement");
+  const recovery = shapedTemporaryPath(targetPath);
+  assertPlannedPathBudget(displayPath, [
+    targetPath,
+    temporaryDirectory,
+    temporary,
+    recovery,
+    shapedCleanupEntry(temporary),
+    shapedCleanupEntry(recovery),
+  ]);
+}
+
+function assertCreatePathBudget(plan: NewFilePlan, displayPath: string): void {
+  if (plan.missingDirectories.length > 0) {
+    const container = join(plan.ancestorPath, `.pi-apply-edits-${PATH_UUID_SHAPE}.tmpdir`);
+    const staging = join(container, "publish");
+    assertPlannedPathBudget(displayPath, [
+      plan.targetPath,
+      container,
+      join(container, "q"),
+      join(staging, ...plan.missingDirectories.slice(1), basename(plan.targetPath)),
+      shapedCleanupEntry(plan.targetPath),
+    ]);
+    return;
+  }
+  const temporaryDirectory = shapedTemporaryDirectory(plan.targetPath);
+  const temporary = join(temporaryDirectory, "create");
+  assertPlannedPathBudget(displayPath, [
+    plan.targetPath,
+    temporaryDirectory,
+    temporary,
+    shapedCleanupEntry(temporary),
+  ]);
+}
+
 async function planFileMutation(
   input: ApplyEditsInput,
   inputPath: string,
@@ -594,8 +719,9 @@ async function planFileMutation(
   lockKey?: string,
 ): Promise<PlannedMutation> {
   throwIfAborted(signal);
-  const snapshot = await captureSnapshot(inputPath);
   const displayPath = displayPathFor(inputPath, cwd);
+  assertPlannedPathBudget(displayPath, [inputPath]);
+  const snapshot = await captureSnapshot(inputPath);
 
   if (snapshot && input.requireMissing) {
     throw new Error(
@@ -653,8 +779,13 @@ async function planFileMutation(
   let createPlan: NewFilePlan | undefined;
   // Fail closed during plan (before any multi-file write) for known-unsafe targets.
   if (needsWrite) {
-    if (snapshot) await assertSafeToReplace(snapshot, signal);
-    else createPlan = await planNewFile(inputPath);
+    if (snapshot) {
+      assertReplacementPathBudget(snapshot.actualPath, displayPath);
+      await assertSafeToReplace(snapshot, signal);
+    } else {
+      createPlan = await planNewFile(inputPath);
+      assertCreatePathBudget(createPlan, displayPath);
+    }
   }
   return {
     inputPath,
@@ -666,6 +797,7 @@ async function planFileMutation(
     matches,
     operation: needsWrite ? operation : "no_change",
     editsRequested: input.edits?.length ?? 1,
+    insertsRequested: input.edits?.filter((edit) => edit.insert !== undefined).length ?? 0,
     needsWrite,
     createPlan,
     lockKey,
@@ -713,6 +845,12 @@ async function commitPlannedMutation(
     ? await publishReplacement(plan.snapshot, plan.nextBytes, signal)
     : await publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan));
   details.warnings.push(...warnings);
+  if (plan.insertsRequested > 0) {
+    details.warnings.push(
+      `${plan.insertsRequested} insert${plan.insertsRequested === 1 ? "" : "s"} spliced exactly with zero separator; ` +
+        "all newlines and spaces came from newText.",
+    );
+  }
   const corrected = plan.matches.filter((item) => item.strategy !== "exact").length;
   const counts = (details.addedLines ?? 0) + (details.deletedLines ?? 0) > 0
     ? ` (+${details.addedLines ?? 0}/-${details.deletedLines ?? 0})`
@@ -720,7 +858,8 @@ async function commitPlannedMutation(
   const correction = corrected > 0
     ? `; ${corrected} edit${corrected === 1 ? "" : "s"} matched safely after normalization`
     : "";
-  const warningText = warnings.length > 0 ? ` Warning: ${warnings.join(" ")}` : "";
+  const warningText =
+    details.warnings.length > 0 ? ` Warning: ${details.warnings.join(" ")}` : "";
   const verb = plan.operation === "create"
     ? "Created"
     : plan.operation === "rewrite"
@@ -882,39 +1021,70 @@ function toReplacement(
   return { start, end, matchStart: start, matchEnd: end, text, line };
 }
 
-async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string; queueKeys: string[] }> {
+async function mutationQueueKeys(
+  filePath: string,
+): Promise<{ targetKey: string; queueKeys: string[]; needsCreateLock: boolean }> {
   const resolvedPath = resolve(filePath);
   try {
     const key = await realpath(resolvedPath);
-    return { targetKey: key, queueKeys: [key] };
+    return { targetKey: normalizeLockKey(key, []), queueKeys: [key], needsCreateLock: false };
   } catch (error) {
     if (!isMissingPathError(error)) throw error;
   }
 
-  // Key a create on its full target, so a later edit of that path lands on the same queue.
-  const missing: string[] = [];
+  // A dangling symbolic link is not a missing path for mutation purposes. More importantly,
+  // a batch cannot safely queue both it and its missing target: if the target appears while
+  // Pi acquires its one-key locks, realpath makes the two keys collapse and the nested second
+  // acquisition waits on the batch's own first lock. Reject before acquiring any lock. There
+  // remains an inherent race if an external process creates both the link and its target after
+  // this lstat; closing that requires an atomic multi-key queue API from Pi.
+  await assertNotDanglingSymbolicLink(resolvedPath);
+
+  // Exactly one Pi key per file. Pi canonicalizes each key with realpath at the moment it is
+  // acquired, so any two keys an operation holds can collapse onto one queue and deadlock it
+  // against itself: a deeper path is not safely distinct from its parent, because a symbolic
+  // link can resolve it back up.
+  //
+  // That key must be the exact-case path. Once the create publishes, an edit of the same file
+  // resolves through realpath, which returns the spelling on disk, which is the spelling this
+  // create is about to use. A case-folded key would name a different queue after publication
+  // and let the edit run against a half-published file. targetKey is normalized separately and
+  // feeds only batch duplicate/ancestor detection.
+  const missingReversed: string[] = [];
   let current = resolvedPath;
   while (true) {
     const parent = dirname(current);
     if (parent === current) {
+      const missing = [...missingReversed].reverse();
       const targetKey = normalizeLockKey(resolvedPath, missing);
-      return { targetKey, queueKeys: [targetKey] };
+      return { targetKey, queueKeys: [resolvedPath], needsCreateLock: true };
     }
     try {
       const realParent = await realpath(parent);
-      missing.unshift(basename(current));
-      // Exactly one key per file. Pi canonicalizes each lock key with realpath at the moment
-      // it is acquired, so any two keys an operation holds can collapse onto one queue and
-      // deadlock it against itself: a deeper path is not safely distinct from its parent,
-      // because a symbolic link can resolve it back up. Coordinating sibling creates under a
-      // shared missing root therefore needs a mutex that is not keyed by a resolvable path.
+      missingReversed.push(basename(current));
+      const missing = [...missingReversed].reverse();
       const targetKey = normalizeLockKey(realParent, missing);
-      return { targetKey, queueKeys: [targetKey] };
+      return {
+        targetKey,
+        queueKeys: [join(realParent, ...missing)],
+        needsCreateLock: true,
+      };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
-      missing.unshift(basename(current));
+      await assertNotDanglingSymbolicLink(parent);
+      missingReversed.push(basename(current));
       current = parent;
     }
+  }
+}
+
+async function assertNotDanglingSymbolicLink(path: string): Promise<void> {
+  const entry = await lstat(path, { bigint: true }).catch((error: unknown) => {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  });
+  if (entry?.isSymbolicLink()) {
+    throw new Error(`Cannot mutate dangling symbolic link ${path}. No changes were written.`);
   }
 }
 
@@ -928,17 +1098,30 @@ function isMissingPathError(error: unknown): boolean {
 }
 
 function normalizeLockKey(existingPrefix: string, missingParts: string[]): string {
-  if (missingParts.length === 0) return existingPrefix;
+  const fullPath = join(existingPrefix, ...missingParts);
   // Prefer over-dedupe on default macOS/Windows volumes over deterministic partial batch writes.
-  const foldCase = process.platform === "darwin" || process.platform === "win32";
-  const parts = missingParts.map((part) => {
-    if (!foldCase) return part;
-    const normalized = part.normalize("NFC");
-    // upper→lower is a closer caseless key than lower alone for APFS aliases:
-    // ſ/s, ς/σ, ß/ss, and ﬀ/ff all collapse consistently.
-    return normalized.toLowerCase().toUpperCase().toLowerCase().normalize("NFC");
-  });
-  return join(existingPrefix, ...parts);
+  // Fold the entire logical target, not only its missing suffix: an ancestor can move from
+  // missing to existing between two batch discoveries, and realpath then supplies its on-disk
+  // capitalization. Existing and missing observations must still dedupe as one target.
+  if (process.platform !== "darwin" && process.platform !== "win32") return fullPath;
+  return fullPath.split(sep).map(normalizeLockComponent).join(sep);
+}
+
+function normalizeLockComponent(part: string): string {
+  if (process.platform !== "darwin" && process.platform !== "win32") return part;
+  // NFC handles normalization-insensitive aliases. Per-code-point upper→lower covers the full
+  // case-fold equivalences APFS uses for long-s, ligatures, final sigma, and sharp-S. Preserve
+  // dotless U+0131: it is the one character this transform would over-collapse onto ASCII `i`,
+  // and APFS keeps those names distinct. Capital U+1E9E is the inverse edge: JavaScript lowers
+  // it to ß while Unicode case folding maps both sharp-S forms to `ss`.
+  return [...part.normalize("NFC")]
+    .map((character) => {
+      if (character === "ı") return character;
+      if (character === "ẞ") return "ss";
+      return character.toUpperCase().toLowerCase();
+    })
+    .join("")
+    .normalize("NFC");
 }
 
 function findOccurrences(content: string, search: string, limit = Number.POSITIVE_INFINITY): number[] {
