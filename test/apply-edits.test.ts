@@ -1393,16 +1393,9 @@ test("multi-file batch plans then writes all files", async () => {
   });
 });
 
-test("concurrent sibling creates under one missing parent serialize", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    await Promise.all([
-      applyEditsToFile({ path: "shared/a.txt", rewrite: "A\n", onMissing: "create" }, directory),
-      applyEditsToFile({ path: "shared/b.txt", rewrite: "B\n", onMissing: "create" }, directory),
-    ]);
-    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
-    assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
-  });
-});
+// Concurrent single-file creates under a shared missing root are not serialized: one wins the
+// exclusive mkdir and the other fails closed, which the caller retries. Serializing them needs
+// a second lock, and a second lock keyed by a resolvable path can canonicalize onto the first.
 
 test("multi-file batch publishes sibling creates under one missing root together", async () => {
   await inTemporaryDirectory(async (directory) => {
@@ -2788,11 +2781,12 @@ test(
           const outcome = await Promise.race([
             rewrite.then(
               () => "settled",
-              () => "rejected",
+              (error: unknown) => `rejected: ${String(error)}`,
             ),
             new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
           ]);
-          assert.notEqual(outcome, "timeout", "the rewrite deadlocked behind the create");
+          assert.equal(outcome, "settled");
+          assert.equal(await readFile(join(directory, "Target.txt"), "utf8"), "rewritten\n");
         },
         "../src/apply-edits.ts",
       );

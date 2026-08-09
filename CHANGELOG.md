@@ -6,7 +6,7 @@
 - Verify published creates and their new directories through the claimed entry instead of following it, so a swapped-in symbolic link can never redirect publication or cleanup onto an unrelated path.
 - Report an uncertain commit, naming every retained path, when a create cannot be verified or rolled back because its parent moved, rather than claiming nothing was written.
 - Recheck replacement input paths after the target checks as well as before.
-- Hold both the missing root and the target path while creating, so a concurrent edit of the same path serializes with the create that publishes it instead of observing a transient hard link.
+- Keep one mutation-queue key per file. Pi resolves each key when it is acquired, so an operation holding two keys can have them collapse onto a single queue and wait on a lock it already owns.
 - Serialize sibling creates under one missing root, reserve roots and file names with exclusive no-clobber operations, revalidate create parents immediately before publication and no-change snapshots before return, sync every staged directory, and make all file writes cancellation-aware.
 - Keep uncertain partial creates for inspection instead of deleting a possibly replaced path, and use basename-independent temporary names so maximum-length filenames remain editable.
 - Remove ambiguous insert-idempotence guessing, fix indentation-delta correction, and let ordered LF anchors match prior output in uniform CRLF files.

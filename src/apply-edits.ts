@@ -575,7 +575,9 @@ function rejectAncestorPathConflicts(
 }
 
 async function withOrderedFileLocks<T>(unordered: string[], fn: () => Promise<T>): Promise<T> {
-  // Always acquire in one global order so nested keys cannot deadlock against each other.
+  // One global order, so separate operations cannot deadlock against each other. Callers must
+  // still pass keys that cannot canonicalize together, since Pi resolves each on acquisition
+  // and this dedupe only compares the strings it is given.
   const paths = [...new Set(unordered)].sort();
   const run = async (index: number): Promise<T> => {
     if (index >= paths.length) return fn();
@@ -901,15 +903,13 @@ async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string;
     try {
       const realParent = await realpath(parent);
       missing.unshift(basename(current));
+      // Exactly one key per file. Pi canonicalizes each lock key with realpath at the moment
+      // it is acquired, so any two keys an operation holds can collapse onto one queue and
+      // deadlock it against itself: a deeper path is not safely distinct from its parent,
+      // because a symbolic link can resolve it back up. Coordinating sibling creates under a
+      // shared missing root therefore needs a mutex that is not keyed by a resolvable path.
       const targetKey = normalizeLockKey(realParent, missing);
-      // Hold the missing root so sibling creates serialize, and the target so a later edit of
-      // that path lands on the same queue. These two can never merge: Pi canonicalizes each
-      // key with realpath at acquisition, and the target is always strictly deeper than the
-      // root. Never add a second spelling of the target here for the same reason in reverse,
-      // since once the file exists both spellings canonicalize to one queue and the operation
-      // would wait on a lock it already holds.
-      const rootKey = normalizeLockKey(realParent, missing.slice(0, 1));
-      return { targetKey, queueKeys: rootKey === targetKey ? [targetKey] : [rootKey, targetKey] };
+      return { targetKey, queueKeys: [targetKey] };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
       missing.unshift(basename(current));
