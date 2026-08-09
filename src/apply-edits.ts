@@ -269,6 +269,7 @@ export async function applyEditsToFile(
   signal?: AbortSignal,
 ): Promise<ApplyEditsExecution> {
   validateRequest(input);
+  throwIfAborted(signal);
   if (input.files) return applyEditsBatch(input.files, cwd, signal);
 
   const single = input as ApplyEditsInput;
@@ -292,7 +293,7 @@ function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Prom
   const registration = canonicalLockRegistration.then(async () => {
     const keys = await mutationQueueKeys(inputPath);
     return {
-      operation: withMutationLocks(keys.localKeys, keys.queueKeys, fn),
+      operation: withMutationLocks(keys.needsCreateLock, keys.queueKeys, fn),
     };
   });
   canonicalLockRegistration = registration.then(() => undefined, () => undefined);
@@ -378,8 +379,8 @@ async function applyEditsBatch(
   rejectAncestorPathConflicts(resolved);
 
   const lockPaths = [...new Set(resolved.flatMap((item) => item.queueKeys))].sort();
-  const localPaths = resolved.flatMap((item) => item.localKeys);
-  return withMutationLocks(localPaths, lockPaths, async () => {
+  const needsCreateLock = resolved.some((item) => item.needsCreateLock);
+  return withMutationLocks(needsCreateLock, lockPaths, async () => {
     const planned: PlannedMutation[] = [];
     const allRewrites = files.every(
       (input) => typeof input.rewrite === "string" && input.edits === undefined,
@@ -579,40 +580,34 @@ function rejectAncestorPathConflicts(
   }
 }
 
-// Package-local mutex. Unlike Pi's queue, these keys are literal strings this module chooses
-// and never resolves, so two distinct keys can never become one lock. That is what makes it
-// safe to hold several at once, and what makes it usable for coordination that must survive a
-// path coming into existence: case-folded spellings of one create, and the shared missing root
-// of sibling creates. Always acquired outside Pi's queue, never inside, so the two orderings
-// cannot form a cycle.
-const localMutationLocks = new Map<string, Promise<void>>();
+// Missing-path discoveries cannot use a second Pi lock: Pi realpaths each key at acquisition,
+// so keys can collapse and make an operation wait on itself. One package-local create queue is
+// stable because it has no path identity at all. It deliberately serializes all operations that
+// discovered a missing target; existing-file operations remain parallel. Always acquire it
+// outside Pi's queue, never inside, so the two orderings cannot form a cycle.
+let createMutationQueue = Promise.resolve();
 
-function withMutationLocks<T>(local: string[], pi: string[], fn: () => Promise<T>): Promise<T> {
-  return withLocalLocks(local, () => withOrderedFileLocks(pi, fn));
+function withMutationLocks<T>(needsCreateLock: boolean, pi: string[], fn: () => Promise<T>): Promise<T> {
+  return withCreateLock(needsCreateLock, () => withOrderedFileLocks(pi, fn));
 }
 
-async function withLocalLocks<T>(unordered: string[], fn: () => Promise<T>): Promise<T> {
-  const keys = [...new Set(unordered)].sort();
-  const run = async (index: number): Promise<T> => {
-    if (index >= keys.length) return fn();
-    const key = keys[index]!;
-    // Registration is synchronous, so two callers cannot interleave between read and write.
-    const previous = localMutationLocks.get(key) ?? Promise.resolve();
-    let release = () => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const chained = previous.then(() => held);
-    localMutationLocks.set(key, chained);
-    await previous;
-    try {
-      return await run(index + 1);
-    } finally {
-      release();
-      if (localMutationLocks.get(key) === chained) localMutationLocks.delete(key);
-    }
-  };
-  return run(0);
+async function withCreateLock<T>(needed: boolean, fn: () => Promise<T>): Promise<T> {
+  if (!needed) return fn();
+  // Registration is synchronous, so every missing-path operation gets one stable queue slot.
+  const previous = createMutationQueue;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = previous.then(() => held);
+  createMutationQueue = chained;
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (createMutationQueue === chained) createMutationQueue = Promise.resolve();
+  }
 }
 
 async function withOrderedFileLocks<T>(unordered: string[], fn: () => Promise<T>): Promise<T> {
@@ -933,11 +928,11 @@ function toReplacement(
 
 async function mutationQueueKeys(
   filePath: string,
-): Promise<{ targetKey: string; queueKeys: string[]; localKeys: string[] }> {
+): Promise<{ targetKey: string; queueKeys: string[]; needsCreateLock: boolean }> {
   const resolvedPath = resolve(filePath);
   try {
     const key = await realpath(resolvedPath);
-    return { targetKey: key, queueKeys: [key], localKeys: [] };
+    return { targetKey: normalizeLockKey(key, []), queueKeys: [key], needsCreateLock: false };
   } catch (error) {
     if (!isMissingPathError(error)) throw error;
   }
@@ -958,32 +953,31 @@ async function mutationQueueKeys(
   // That key must be the exact-case path. Once the create publishes, an edit of the same file
   // resolves through realpath, which returns the spelling on disk, which is the spelling this
   // create is about to use. A case-folded key would name a different queue after publication
-  // and let the edit run against a half-published file. Case folding is kept for targetKey,
-  // which only feeds batch duplicate detection, and for the local keys below, which are never
-  // canonicalized and so can fold safely.
-  const missing: string[] = [];
+  // and let the edit run against a half-published file. targetKey is normalized separately and
+  // feeds only batch duplicate/ancestor detection.
+  const missingReversed: string[] = [];
   let current = resolvedPath;
   while (true) {
     const parent = dirname(current);
     if (parent === current) {
+      const missing = [...missingReversed].reverse();
       const targetKey = normalizeLockKey(resolvedPath, missing);
-      return { targetKey, queueKeys: [resolvedPath], localKeys: [targetKey] };
+      return { targetKey, queueKeys: [resolvedPath], needsCreateLock: true };
     }
     try {
       const realParent = await realpath(parent);
-      missing.unshift(basename(current));
+      missingReversed.push(basename(current));
+      const missing = [...missingReversed].reverse();
       const targetKey = normalizeLockKey(realParent, missing);
-      // Hold every missing prefix, not just the first and last. As another operation creates
-      // ancestors, the same logical target discovers a shorter missing suffix; the complete
-      // prefix lattice guarantees the old and new discoveries still share a literal local key.
-      const localKeys = missing.map((_, index) =>
-        normalizeLockKey(realParent, missing.slice(0, index + 1)),
-      );
-      return { targetKey, queueKeys: [join(realParent, ...missing)], localKeys };
+      return {
+        targetKey,
+        queueKeys: [join(realParent, ...missing)],
+        needsCreateLock: true,
+      };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
       await assertNotDanglingSymbolicLink(parent);
-      missing.unshift(basename(current));
+      missingReversed.push(basename(current));
       current = parent;
     }
   }
@@ -1011,16 +1005,28 @@ function isMissingPathError(error: unknown): boolean {
 function normalizeLockKey(existingPrefix: string, missingParts: string[]): string {
   const fullPath = join(existingPrefix, ...missingParts);
   // Prefer over-dedupe on default macOS/Windows volumes over deterministic partial batch writes.
-  // Fold the entire path, not only its missing suffix: an ancestor can move from missing to
-  // existing between two discoveries, and realpath then supplies its on-disk capitalization.
-  // A suffix-only fold would assign two local keys to the same logical path.
+  // Fold the entire logical target, not only its missing suffix: an ancestor can move from
+  // missing to existing between two batch discoveries, and realpath then supplies its on-disk
+  // capitalization. Existing and missing observations must still dedupe as one target.
   if (process.platform !== "darwin" && process.platform !== "win32") return fullPath;
-  return fullPath.split(sep).map((part) => {
-    const normalized = part.normalize("NFC");
-    // upper→lower is a closer caseless key than lower alone for APFS aliases:
-    // ſ/s, ς/σ, ß/ss, and ﬀ/ff all collapse consistently.
-    return normalized.toLowerCase().toUpperCase().toLowerCase().normalize("NFC");
-  }).join(sep);
+  return fullPath.split(sep).map(normalizeLockComponent).join(sep);
+}
+
+function normalizeLockComponent(part: string): string {
+  if (process.platform !== "darwin" && process.platform !== "win32") return part;
+  // NFC handles normalization-insensitive aliases. Per-code-point upper→lower covers the full
+  // case-fold equivalences APFS uses for long-s, ligatures, final sigma, and sharp-S. Preserve
+  // dotless U+0131: it is the one character this transform would over-collapse onto ASCII `i`,
+  // and APFS keeps those names distinct. Capital U+1E9E is the inverse edge: JavaScript lowers
+  // it to ß while Unicode case folding maps both sharp-S forms to `ss`.
+  return [...part.normalize("NFC")]
+    .map((character) => {
+      if (character === "ı") return character;
+      if (character === "ẞ") return "ss";
+      return character.toUpperCase().toLowerCase();
+    })
+    .join("")
+    .normalize("NFC");
 }
 
 function findOccurrences(content: string, search: string, limit = Number.POSITIVE_INFINITY): number[] {

@@ -91,12 +91,17 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 async function withTimeout<T>(promise: Promise<T>, label: string, milliseconds = 3000): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`timeout: ${label}`)), milliseconds),
-    ),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timeout: ${label}`)), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function firstExistingFile(paths: string[]): Promise<string | undefined> {
@@ -3272,3 +3277,115 @@ test(
     });
   },
 );
+
+test("batch dedupe stays stable when a missing target appears between discoveries", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const canonicalDirectory = await realpath(directory);
+    const root = join(canonicalDirectory, "R");
+    const target = join(root, "B.txt");
+    await mkdir(root);
+    const originalRealpath = nodeFs.promises.realpath;
+    const secondDiscoveryReached = deferred();
+    const releaseSecondDiscovery = deferred();
+    let targetCalls = 0;
+
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+          if (String(path) === target && ++targetCalls === 2) {
+            secondDiscoveryReached.resolve();
+            await releaseSecondDiscovery.promise;
+          }
+          return (originalRealpath as Function).call(this, path, ...args);
+        }) as typeof promises.realpath;
+      },
+      async (module) => {
+        let batch: Promise<string> | undefined;
+        try {
+          batch = module
+            .applyEditsToFile(
+              {
+                files: [
+                  { path: "R/B.txt", rewrite: "one\n", onMissing: "create" },
+                  { path: "R/B.txt", rewrite: "two\n", onMissing: "create" },
+                ],
+              },
+              canonicalDirectory,
+            )
+            .then(
+              () => "fulfilled",
+              (error: unknown) => `rejected: ${String(error)}`,
+            );
+          await withTimeout(secondDiscoveryReached.promise, "second target discovery");
+          await module.applyEditsToFile(
+            { path: "R/B.txt", rewrite: "outside\n", onMissing: "create" },
+            canonicalDirectory,
+          );
+          releaseSecondDiscovery.resolve();
+          const outcome = await withTimeout(batch, "batch duplicate rejection");
+          assert.match(outcome, /^rejected: .*refers to the same file/);
+        } finally {
+          releaseSecondDiscovery.resolve();
+        }
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert.equal(await readFile(target, "utf8"), "outside\n");
+  });
+});
+
+test(
+  "whole-path folding keeps APFS-distinct i and dotless-i paths separate",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      await mkdir(join(directory, "i"));
+      await mkdir(join(directory, "ı"));
+      assert.deepEqual(new Set(await readdir(directory)), new Set(["i", "ı"]));
+      await applyEditsToFile(
+        {
+          files: [
+            { path: "i/new", rewrite: "one\n", onMissing: "create" },
+            { path: "ı/new/child", rewrite: "two\n", onMissing: "create" },
+          ],
+        },
+        directory,
+      );
+      assert.equal(await readFile(join(directory, "i/new"), "utf8"), "one\n");
+      assert.equal(await readFile(join(directory, "ı/new/child"), "utf8"), "two\n");
+    });
+  },
+);
+
+test("an already-aborted batch does no filesystem key discovery", async () => {
+  let filesystemCalls = 0;
+  const missing = () => Object.assign(new Error("missing"), { code: "ENOENT" });
+  await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+    (promises) => {
+      promises.realpath = (async () => {
+        filesystemCalls++;
+        throw missing();
+      }) as typeof promises.realpath;
+      promises.lstat = (async () => {
+        filesystemCalls++;
+        throw missing();
+      }) as typeof promises.lstat;
+    },
+    async (module) => {
+      const files = Array.from({ length: 64 }, (_, file) => ({
+        path: [`u${file}`, ...Array(256).fill("x"), "f"].join("/"),
+        rewrite: "x",
+        onMissing: "create" as const,
+      }));
+      const controller = new AbortController();
+      controller.abort();
+      await assert.rejects(
+        module.applyEditsToFile({ files }, "/e", controller.signal),
+        /Operation aborted/,
+      );
+    },
+    "../src/apply-edits.ts",
+  );
+  assert.equal(filesystemCalls, 0);
+});
