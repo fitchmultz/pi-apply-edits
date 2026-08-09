@@ -178,10 +178,7 @@ export function applyTargetedEdits(
   }
 
   let current = original;
-  const maxResultLength = Math.min(
-    Number.MAX_SAFE_INTEGER,
-    original.length + MAX_EDIT_EXPANSION_CHARS,
-  );
+  const maxResultLength = Math.min(Number.MAX_SAFE_INTEGER, original.length + MAX_EDIT_EXPANSION_CHARS);
   const matches: AppliedEditDetail[] = [];
 
   for (const [index, edit] of edits.entries()) {
@@ -212,19 +209,10 @@ export function applyTargetedEdits(
         throw new Error(`edits[${index}].newText must not be empty when insert is set`);
       }
     } else if (oldText === newText) {
-      throw new Error(
-        `edits[${index}] would make no change because oldText and newText are identical`,
-      );
+      throw new Error(`edits[${index}] would make no change because oldText and newText are identical`);
     }
 
-    const match = findMatch(
-      current,
-      oldText,
-      newText,
-      edit.insert,
-      edit.all === true,
-      maxResultLength,
-    );
+    const match = findMatch(current, oldText, newText, edit.insert, edit.all === true, maxResultLength);
     if (!match) {
       throw new OldTextMatchError(
         missingEditMessage(current, oldText, newText, displayPath, index),
@@ -270,9 +258,7 @@ export function applyTargetedEdits(
   }
 
   if (current === original) {
-    throw new Error(
-      `The ordered edits cancel each other out in ${displayPath}; no changes were written.`,
-    );
+    throw new Error(`The ordered edits cancel each other out in ${displayPath}; no changes were written.`);
   }
   return { text: current, matches };
 }
@@ -306,17 +292,18 @@ function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Prom
   const registration = canonicalLockRegistration.then(async () => {
     const keys = await mutationQueueKeys(inputPath);
     return {
-      operation: withLocalLocks(keys.localKeys, () => withOrderedFileLocks(keys.queueKeys, fn)),
+      operation: withMutationLocks(keys.localKeys, keys.queueKeys, fn),
     };
   });
-  canonicalLockRegistration = registration.then(
-    () => undefined,
-    () => undefined,
-  );
+  canonicalLockRegistration = registration.then(() => undefined, () => undefined);
   return registration.then(({ operation }) => operation);
 }
 
-function retryablePlanningError(error: unknown, files: ApplyEditsInput[], file?: number): Error {
+function retryablePlanningError(
+  error: unknown,
+  files: ApplyEditsInput[],
+  file?: number,
+): Error {
   const reason = error instanceof Error ? error.message : String(error);
   const prefix = file === undefined ? "" : `files[${file}]: `;
   if (
@@ -392,178 +379,168 @@ async function applyEditsBatch(
 
   const lockPaths = [...new Set(resolved.flatMap((item) => item.queueKeys))].sort();
   const localPaths = resolved.flatMap((item) => item.localKeys);
-  return withLocalLocks(localPaths, () =>
-    withOrderedFileLocks(lockPaths, async () => {
-      const planned: PlannedMutation[] = [];
-      const allRewrites = files.every(
-        (input) => typeof input.rewrite === "string" && input.edits === undefined,
-      );
-      const missingCreates: Array<{ file: number; message: string }> = [];
-      const missingTargets = new Set<number>();
-      for (const item of resolved) {
-        try {
-          const plan = await planFileMutation(
-            item.file,
-            item.inputPath,
-            cwd,
-            signal,
-            item.targetKey,
-          );
-          planned.push(plan);
-          if (plan.operation === "create") missingTargets.add(item.index);
-        } catch (error) {
-          if (allRewrites && error instanceof MissingCreateOptInError) {
-            missingTargets.add(item.index);
-            missingCreates.push({ file: item.index, message: error.message });
-            continue;
-          }
-          throw retryablePlanningError(error, files, item.index);
-        }
-      }
-      if (missingCreates.length > 0) {
-        throw new RetryableApplyEditsError(
-          missingCreates.map(({ file, message }) => `files[${file}]: ${message}`).join("\n"),
-          { kind: "create", files: [...missingTargets].sort((left, right) => left - right) },
-        );
-      }
-
-      const nestedGroups = new Map<string, number[]>();
-      for (const [index, plan] of planned.entries()) {
-        const key = nestedCreateRootKey(plan);
-        if (!key) continue;
-        const group = nestedGroups.get(key) ?? [];
-        group.push(index);
-        nestedGroups.set(key, group);
-      }
-      for (const group of nestedGroups.values()) {
-        const spellings = new Set(
-          group.map((index) => planned[index]!.createPlan!.missingDirectories[0]),
-        );
-        if (spellings.size > 1) {
-          throw new Error(
-            `files[${group.join(", ")}] use alias spellings for one missing directory. ` +
-              "Use one consistent path spelling so the batch can publish it safely.",
-          );
-        }
-      }
-
-      // Build every nested-create staging tree before any target publication.
-      const preparedExecutions = new Map<number, ApplyEditsExecution>();
-      const preparedGroups = new Map<string, PreparedNestedFiles>();
-      let failure: unknown;
+  return withMutationLocks(localPaths, lockPaths, async () => {
+    const planned: PlannedMutation[] = [];
+    const allRewrites = files.every(
+      (input) => typeof input.rewrite === "string" && input.edits === undefined,
+    );
+    const missingCreates: Array<{ file: number; message: string }> = [];
+    const missingTargets = new Set<number>();
+    for (const item of resolved) {
       try {
-        for (const [key, group] of nestedGroups) {
-          for (const groupIndex of group) {
-            preparedExecutions.set(
-              groupIndex,
-              await commitPlannedMutation(planned[groupIndex]!, signal, []),
-            );
-          }
-          try {
-            preparedGroups.set(
-              key,
-              await preparePlannedNestedFiles(
-                group.map((groupIndex) => ({
-                  plan: planned[groupIndex]!.createPlan!,
-                  bytes: planned[groupIndex]!.nextBytes,
-                })),
-                signal,
-              ),
-            );
-          } catch (error) {
-            const reason = error instanceof Error ? error.message : String(error);
-            throw new Error(`files[${group.join(", ")}] could not be prepared. ${reason}`);
-          }
+        const plan = await planFileMutation(item.file, item.inputPath, cwd, signal, item.targetKey);
+        planned.push(plan);
+        if (plan.operation === "create") missingTargets.add(item.index);
+      } catch (error) {
+        if (allRewrites && error instanceof MissingCreateOptInError) {
+          missingTargets.add(item.index);
+          missingCreates.push({ file: item.index, message: error.message });
+          continue;
         }
+        throw retryablePlanningError(error, files, item.index);
+      }
+    }
+    if (missingCreates.length > 0) {
+      throw new RetryableApplyEditsError(
+        missingCreates.map(({ file, message }) => `files[${file}]: ${message}`).join("\n"),
+        { kind: "create", files: [...missingTargets].sort((left, right) => left - right) },
+      );
+    }
 
-        // Plan and stage fully before any write. Mid-publish FS failure can still leave earlier files written.
-        const detailsList = new Array<ApplyEditsDetails>(planned.length);
-        const publishedGroups = new Set<string>();
-        let written = 0;
-        for (const [index, plan] of planned.entries()) {
-          try {
-            const key = nestedCreateRootKey(plan);
-            let execution = key ? preparedExecutions.get(index) : undefined;
-            if (key) {
-              const group = nestedGroups.get(key)!;
-              if (!publishedGroups.has(key)) {
-                const warnings = await publishPreparedNestedFiles(preparedGroups.get(key)!, signal);
-                const firstExecution = preparedExecutions.get(group[0]!);
-                if (firstExecution && "warnings" in firstExecution.details) {
-                  firstExecution.details.warnings.push(...warnings);
-                }
-                publishedGroups.add(key);
-                written += group.length;
-              }
-            } else {
-              execution = await commitPlannedMutation(plan, signal);
-              if (plan.needsWrite) written += 1;
-            }
-            if (!execution) throw new Error(`Missing prepared result for files[${index}]`);
-            detailsList[index] = execution.details as ApplyEditsDetails;
-          } catch (error) {
-            const reason = error instanceof Error ? error.message : String(error);
-            const completed =
-              written + (error instanceof PartialCreatePublishError ? error.publishedFiles : 0);
-            throw new Error(
-              `Multi-file batch failed while writing files[${index}] (${plan.displayPath}) ` +
-                `after ${completed} successful write${completed === 1 ? "" : "s"}. ${reason}`,
-            );
-          }
-        }
-
-        const changed = detailsList.filter((item) => item.operation !== "no_change");
-        if (changed.length === 0) {
-          return {
-            summary: `No change: ${detailsList.length} file${detailsList.length === 1 ? "" : "s"} already match.`,
-            details: { files: detailsList },
-          };
-        }
-        const countsKnown = changed.every(
-          (item) => item.addedLines !== undefined && item.deletedLines !== undefined,
+    const nestedGroups = new Map<string, number[]>();
+    for (const [index, plan] of planned.entries()) {
+      const key = nestedCreateRootKey(plan);
+      if (!key) continue;
+      const group = nestedGroups.get(key) ?? [];
+      group.push(index);
+      nestedGroups.set(key, group);
+    }
+    for (const group of nestedGroups.values()) {
+      const spellings = new Set(
+        group.map((index) => planned[index]!.createPlan!.missingDirectories[0]),
+      );
+      if (spellings.size > 1) {
+        throw new Error(
+          `files[${group.join(", ")}] use alias spellings for one missing directory. ` +
+            "Use one consistent path spelling so the batch can publish it safely.",
         );
-        const added = changed.reduce((sum, item) => sum + (item.addedLines ?? 0), 0);
-        const deleted = changed.reduce((sum, item) => sum + (item.deletedLines ?? 0), 0);
-        const counts = countsKnown && added + deleted > 0 ? ` (+${added}/-${deleted})` : "";
-        const visibleNames = changed
-          .slice(0, 8)
-          .map((item) => item.path)
-          .join(", ");
-        const names =
-          changed.length > 8 ? `${visibleNames}, … ${changed.length - 8} more` : visibleNames;
-        const warnings = detailsList.flatMap((item) => item.warnings);
-        const visibleWarnings = warnings.slice(0, 4).join(" ");
-        const warningText =
-          warnings.length > 0
-            ? ` Warning: ${visibleWarnings}${warnings.length > 4 ? ` … ${warnings.length - 4} more` : ""}`
-            : "";
+      }
+    }
+
+    // Build every nested-create staging tree before any target publication.
+    const preparedExecutions = new Map<number, ApplyEditsExecution>();
+    const preparedGroups = new Map<string, PreparedNestedFiles>();
+    let failure: unknown;
+    try {
+      for (const [key, group] of nestedGroups) {
+        for (const groupIndex of group) {
+          preparedExecutions.set(
+            groupIndex,
+            await commitPlannedMutation(planned[groupIndex]!, signal, []),
+          );
+        }
+        try {
+          preparedGroups.set(
+            key,
+            await preparePlannedNestedFiles(
+              group.map((groupIndex) => ({
+                plan: planned[groupIndex]!.createPlan!,
+                bytes: planned[groupIndex]!.nextBytes,
+              })),
+              signal,
+            ),
+          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(`files[${group.join(", ")}] could not be prepared. ${reason}`);
+        }
+      }
+
+      // Plan and stage fully before any write. Mid-publish FS failure can still leave earlier files written.
+      const detailsList = new Array<ApplyEditsDetails>(planned.length);
+      const publishedGroups = new Set<string>();
+      let written = 0;
+      for (const [index, plan] of planned.entries()) {
+        try {
+          const key = nestedCreateRootKey(plan);
+          let execution = key ? preparedExecutions.get(index) : undefined;
+          if (key) {
+            const group = nestedGroups.get(key)!;
+            if (!publishedGroups.has(key)) {
+              const warnings = await publishPreparedNestedFiles(preparedGroups.get(key)!, signal);
+              const firstExecution = preparedExecutions.get(group[0]!);
+              if (firstExecution && "warnings" in firstExecution.details) {
+                firstExecution.details.warnings.push(...warnings);
+              }
+              publishedGroups.add(key);
+              written += group.length;
+            }
+          } else {
+            execution = await commitPlannedMutation(plan, signal);
+            if (plan.needsWrite) written += 1;
+          }
+          if (!execution) throw new Error(`Missing prepared result for files[${index}]`);
+          detailsList[index] = execution.details as ApplyEditsDetails;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          const completed = written + (error instanceof PartialCreatePublishError
+            ? error.publishedFiles
+            : 0);
+          throw new Error(
+            `Multi-file batch failed while writing files[${index}] (${plan.displayPath}) ` +
+              `after ${completed} successful write${completed === 1 ? "" : "s"}. ${reason}`,
+          );
+        }
+      }
+
+      const changed = detailsList.filter((item) => item.operation !== "no_change");
+      if (changed.length === 0) {
         return {
-          summary: `Updated ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}.${warningText}`,
+          summary: `No change: ${detailsList.length} file${detailsList.length === 1 ? "" : "s"} already match.`,
           details: { files: detailsList },
         };
-      } catch (error) {
-        failure = error;
-        throw error;
-      } finally {
-        const cleanupFailures: string[] = [];
-        for (const prepared of preparedGroups.values()) {
-          try {
-            await discardPreparedNestedFiles(prepared);
-          } catch (error) {
-            cleanupFailures.push(error instanceof Error ? error.message : String(error));
-          }
-        }
-        if (cleanupFailures.length > 0) {
-          const cleanup = `Staged create cleanup was incomplete: ${cleanupFailures.join("; ")}`;
-          if (failure instanceof Error) {
-            failure.message = `${failure.message} ${cleanup}`;
-            throw failure;
-          }
-          throw new Error(`${failure === undefined ? "" : `${String(failure)} `}${cleanup}`);
+      }
+      const countsKnown = changed.every(
+        (item) => item.addedLines !== undefined && item.deletedLines !== undefined,
+      );
+      const added = changed.reduce((sum, item) => sum + (item.addedLines ?? 0), 0);
+      const deleted = changed.reduce((sum, item) => sum + (item.deletedLines ?? 0), 0);
+      const counts = countsKnown && added + deleted > 0 ? ` (+${added}/-${deleted})` : "";
+      const visibleNames = changed.slice(0, 8).map((item) => item.path).join(", ");
+      const names = changed.length > 8
+        ? `${visibleNames}, … ${changed.length - 8} more`
+        : visibleNames;
+      const warnings = detailsList.flatMap((item) => item.warnings);
+      const visibleWarnings = warnings.slice(0, 4).join(" ");
+      const warningText = warnings.length > 0
+        ? ` Warning: ${visibleWarnings}${warnings.length > 4 ? ` … ${warnings.length - 4} more` : ""}`
+        : "";
+      return {
+        summary: `Updated ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}.${warningText}`,
+        details: { files: detailsList },
+      };
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      const cleanupFailures: string[] = [];
+      for (const prepared of preparedGroups.values()) {
+        try {
+          await discardPreparedNestedFiles(prepared);
+        } catch (error) {
+          cleanupFailures.push(error instanceof Error ? error.message : String(error));
         }
       }
-    }),
-  );
+      if (cleanupFailures.length > 0) {
+        const cleanup = `Staged create cleanup was incomplete: ${cleanupFailures.join("; ")}`;
+        if (failure instanceof Error) {
+          failure.message = `${failure.message} ${cleanup}`;
+          throw failure;
+        }
+        throw new Error(`${failure === undefined ? "" : `${String(failure)} `}${cleanup}`);
+      }
+    }
+  });
 }
 
 function nestedCreateRootKey(plan: PlannedMutation): string | undefined {
@@ -586,9 +563,7 @@ function rejectAncestorPathConflicts(
       const left = resolved[i]!;
       const right = resolved[j]!;
       const leftPrefix = left.targetKey.endsWith(sep) ? left.targetKey : `${left.targetKey}${sep}`;
-      const rightPrefix = right.targetKey.endsWith(sep)
-        ? right.targetKey
-        : `${right.targetKey}${sep}`;
+      const rightPrefix = right.targetKey.endsWith(sep) ? right.targetKey : `${right.targetKey}${sep}`;
       const ancestor = right.targetKey.startsWith(leftPrefix)
         ? left
         : left.targetKey.startsWith(rightPrefix)
@@ -611,6 +586,10 @@ function rejectAncestorPathConflicts(
 // of sibling creates. Always acquired outside Pi's queue, never inside, so the two orderings
 // cannot form a cycle.
 const localMutationLocks = new Map<string, Promise<void>>();
+
+function withMutationLocks<T>(local: string[], pi: string[], fn: () => Promise<T>): Promise<T> {
+  return withLocalLocks(local, () => withOrderedFileLocks(pi, fn));
+}
 
 async function withLocalLocks<T>(unordered: string[], fn: () => Promise<T>): Promise<T> {
   const keys = [...new Set(unordered)].sort();
@@ -772,11 +751,9 @@ async function commitPlannedMutation(
     [],
   );
   throwIfAborted(signal);
-  const warnings =
-    publicationWarnings ??
-    (plan.snapshot
-      ? await publishReplacement(plan.snapshot, plan.nextBytes, signal)
-      : await publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan));
+  const warnings = publicationWarnings ?? (plan.snapshot
+    ? await publishReplacement(plan.snapshot, plan.nextBytes, signal)
+    : await publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan));
   details.warnings.push(...warnings);
   if (plan.insertsRequested > 0) {
     details.warnings.push(
@@ -785,22 +762,22 @@ async function commitPlannedMutation(
     );
   }
   const corrected = plan.matches.filter((item) => item.strategy !== "exact").length;
-  const counts =
-    (details.addedLines ?? 0) + (details.deletedLines ?? 0) > 0
-      ? ` (+${details.addedLines ?? 0}/-${details.deletedLines ?? 0})`
-      : "";
-  const correction =
-    corrected > 0
-      ? `; ${corrected} edit${corrected === 1 ? "" : "s"} matched safely after normalization`
-      : "";
+  const counts = (details.addedLines ?? 0) + (details.deletedLines ?? 0) > 0
+    ? ` (+${details.addedLines ?? 0}/-${details.deletedLines ?? 0})`
+    : "";
+  const correction = corrected > 0
+    ? `; ${corrected} edit${corrected === 1 ? "" : "s"} matched safely after normalization`
+    : "";
   const warningText =
     details.warnings.length > 0 ? ` Warning: ${details.warnings.join(" ")}` : "";
-  const verb =
-    plan.operation === "create" ? "Created" : plan.operation === "rewrite" ? "Rewrote" : "Edited";
-  const unit =
-    plan.matches.length > 0 || plan.operation === "edit"
-      ? `${editsApplied} ordered edit${editsApplied === 1 ? "" : "s"}`
-      : "full content";
+  const verb = plan.operation === "create"
+    ? "Created"
+    : plan.operation === "rewrite"
+      ? "Rewrote"
+      : "Edited";
+  const unit = plan.matches.length > 0 || plan.operation === "edit"
+    ? `${editsApplied} ordered edit${editsApplied === 1 ? "" : "s"}`
+    : "full content";
 
   return {
     summary: `${verb} ${plan.displayPath}: ${unit}${counts}${correction}.${warningText}`,
@@ -818,11 +795,10 @@ function validateRequest(input: ApplyEditsRequest): void {
     input.onMissing !== undefined ||
     input.requireMissing !== undefined;
   if (hasFiles === hasTopLevel) {
-    throw new Error("Provide either files: [...] or a single-file path with edits/rewrite");
+    throw new Error('Provide either files: [...] or a single-file path with edits/rewrite');
   }
   if (hasFiles) {
-    if (!input.files || input.files.length === 0)
-      throw new Error("files must contain at least one entry");
+    if (!input.files || input.files.length === 0) throw new Error("files must contain at least one entry");
     if (input.files.length > MAX_BATCH_FILES) {
       throw new Error(`files cannot contain more than ${MAX_BATCH_FILES} entries`);
     }
@@ -843,13 +819,11 @@ function validateInput(input: ApplyEditsInput): void {
   if (hasEdits === hasRewrite) {
     throw new Error("Provide exactly one of edits or rewrite");
   }
-  if (hasEdits && input.edits?.length === 0)
-    throw new Error("edits must contain at least one replacement");
+  if (hasEdits && input.edits?.length === 0) throw new Error("edits must contain at least one replacement");
   if (hasEdits && input.edits && input.edits.length > MAX_EDITS_PER_FILE) {
     throw new Error(`edits cannot contain more than ${MAX_EDITS_PER_FILE} entries`);
   }
-  if (hasRewrite && input.rewrite?.includes("\0"))
-    throw new Error("rewrite cannot contain NUL bytes");
+  if (hasRewrite && input.rewrite?.includes("\0")) throw new Error("rewrite cannot contain NUL bytes");
   if (hasRewrite && input.rewrite && hasUnpairedSurrogate(input.rewrite)) {
     throw new Error("rewrite must contain valid Unicode text");
   }
@@ -859,11 +833,7 @@ function validateInput(input: ApplyEditsInput): void {
   if (hasEdits && input.requireMissing !== undefined) {
     throw new Error("requireMissing is valid only with rewrite");
   }
-  if (
-    input.onMissing !== undefined &&
-    input.onMissing !== "error" &&
-    input.onMissing !== "create"
-  ) {
+  if (input.onMissing !== undefined && input.onMissing !== "error" && input.onMissing !== "create") {
     throw new Error('onMissing must be either "error" or "create"');
   }
   if (input.requireMissing === true && input.onMissing !== "create") {
@@ -883,10 +853,9 @@ function findMatch(
   const findExact = (search: string) => {
     const removedPerMatch = insert ? 0 : search.length;
     const expansionPerMatch = maximumReplacementLength - removedPerMatch;
-    const maximumExpansionMatches =
-      applyAll && expansionPerMatch > 0
-        ? Math.floor((maxResultLength - content.length) / expansionPerMatch)
-        : Number.POSITIVE_INFINITY;
+    const maximumExpansionMatches = applyAll && expansionPerMatch > 0
+      ? Math.floor((maxResultLength - content.length) / expansionPerMatch)
+      : Number.POSITIVE_INFINITY;
     // Stop scanning before even the offsets array can consume the heap for a doomed expansion.
     const exactLimit = Math.min(MAX_REPLACEMENTS + 1, maximumExpansionMatches + 1);
     return {
@@ -938,24 +907,12 @@ function findMatch(
   if (exact.length > 0) return { strategy: "exact", replacements: exact };
 
   const normalized = findLineBlockMatches(
-    content,
-    oldText,
-    newText,
-    false,
-    insert,
-    applyAll,
-    maxResultLength,
+    content, oldText, newText, false, insert, applyAll, maxResultLength,
   );
   if (normalized.length > 0) return { strategy: "normalized", replacements: normalized };
 
   const indentation = findLineBlockMatches(
-    content,
-    oldText,
-    newText,
-    true,
-    insert,
-    applyAll,
-    maxResultLength,
+    content, oldText, newText, true, insert, applyAll, maxResultLength,
   );
   if (indentation.length > 0) return { strategy: "indent-normalized", replacements: indentation };
 
@@ -969,8 +926,7 @@ function toReplacement(
   line: number,
   insert?: InsertPosition,
 ): Replacement {
-  if (insert === "before")
-    return { start, end: start, matchStart: start, matchEnd: end, text, line };
+  if (insert === "before") return { start, end: start, matchStart: start, matchEnd: end, text, line };
   if (insert === "after") return { start: end, end, matchStart: start, matchEnd: end, text, line };
   return { start, end, matchStart: start, matchEnd: end, text, line };
 }
@@ -1059,11 +1015,7 @@ function normalizeLockKey(existingPrefix: string, missingParts: string[]): strin
   return join(existingPrefix, ...parts);
 }
 
-function findOccurrences(
-  content: string,
-  search: string,
-  limit = Number.POSITIVE_INFINITY,
-): number[] {
+function findOccurrences(content: string, search: string, limit = Number.POSITIVE_INFINITY): number[] {
   const offsets: number[] = [];
   if (search.length === 0) return offsets;
   let from = 0;
@@ -1126,14 +1078,12 @@ function findLineBlockMatches(
     if (!first || !last) continue;
     const matchStart = first.start;
     const matchEnd = includeFinalEnding ? last.end : last.bodyEnd;
-    const ending = (window.find((line) => line.ending !== "")?.ending ||
-      detectLineEnding(content)) as LineEnding;
+    const ending = (window.find((line) => line.ending !== "")?.ending || detectLineEnding(content)) as LineEnding;
     const localReplacement = convertedReplacement(replacement, ending, replacementsByEnding);
     // Insert keeps caller indentation; only full indent-normalized replacements reindent.
-    const text =
-      insert || !ignoreBaseIndent
-        ? localReplacement
-        : reindentReplacement(localReplacement, searchBodies, bodies);
+    const text = insert || !ignoreBaseIndent
+      ? localReplacement
+      : reindentReplacement(localReplacement, searchBodies, bodies);
     if (applyAll || matches.length === 0) {
       projectedLength += text.length - (insert ? 0 : matchEnd - matchStart);
       if (projectedLength > maxResultLength) throwExpansionError();
@@ -1303,11 +1253,10 @@ function missingEditMessage(
     .slice(0, 6)
     .map((offset) => lineNumberAt(content, offset));
   const replacementSuffix = replacementOffsets.length > replacementLines.length ? ", …" : "";
-  const alreadyPresent =
-    replacementOffsets.length > 0
-      ? ` The replacement text already appears at line${replacementOffsets.length === 1 ? "" : "s"} ` +
-        `${replacementLines.join(", ")}${replacementSuffix}; the edit may already be applied.`
-      : "";
+  const alreadyPresent = replacementOffsets.length > 0
+    ? ` The replacement text already appears at line${replacementOffsets.length === 1 ? "" : "s"} ` +
+      `${replacementLines.join(", ")}${replacementSuffix}; the edit may already be applied.`
+    : "";
   const closest = findClosestBlock(content, oldText);
   const similarity = closest ? Math.round(closest.score * 100) : 0;
   const candidateLabel = closest?.sampled ? "Similar sampled block" : "Closest block";
@@ -1319,8 +1268,7 @@ function missingEditMessage(
 }
 
 function fileHeadHint(content: string): string {
-  if (content.length === 0)
-    return "\nFile is empty. Re-read the target area and retry with the current text.";
+  if (content.length === 0) return "\nFile is empty. Re-read the target area and retry with the current text.";
   let end = 0;
   let lines = 1;
   const scanLimit = Math.min(content.length, DIAGNOSTIC_LIMIT_BYTES);
@@ -1328,10 +1276,7 @@ function fileHeadHint(content: string): string {
     const char = content[end++];
     if (char === "\n" || (char === "\r" && content[end] !== "\n")) lines++;
   }
-  const excerpt = truncateUtf8(
-    content.slice(0, end).replace(/\r\n|\r/g, "\n"),
-    DIAGNOSTIC_LIMIT_BYTES,
-  ).text;
+  const excerpt = truncateUtf8(content.slice(0, end).replace(/\r\n|\r/g, "\n"), DIAGNOSTIC_LIMIT_BYTES).text;
   const more = end < content.length ? "\n..." : "";
   return (
     `\nFile starts with:\n${excerpt}${more}\n` +
@@ -1342,13 +1287,10 @@ function fileHeadHint(content: string): string {
 function findClosestBlock(
   content: string,
   search: string,
-):
-  | { startLine: number; endLine: number; score: number; excerpt: string; sampled: boolean }
-  | undefined {
+): { startLine: number; endLine: number; score: number; excerpt: string; sampled: boolean } | undefined {
   if (Buffer.byteLength(search) > DIAGNOSTIC_SEARCH_LIMIT_BYTES) return undefined;
   const searchLines = splitLines(search);
-  if (searchLines.length === 0 || searchLines.length > DIAGNOSTIC_SEARCH_LIMIT_LINES)
-    return undefined;
+  if (searchLines.length === 0 || searchLines.length > DIAGNOSTIC_SEARCH_LIMIT_LINES) return undefined;
   if (
     content.length > DIAGNOSTIC_CONTENT_LIMIT_CHARS ||
     countTextLines(content) > DIAGNOSTIC_CONTENT_LIMIT_LINES
@@ -1368,16 +1310,12 @@ function findClosestBlock(
   );
   let previousStart = -1;
   for (let sample = 0; sample < windows; sample++) {
-    const start =
-      windows === totalWindows
-        ? sample
-        : Math.floor((sample * (totalWindows - 1)) / Math.max(1, windows - 1));
+    const start = windows === totalWindows
+      ? sample
+      : Math.floor((sample * (totalWindows - 1)) / Math.max(1, windows - 1));
     if (start === previousStart) continue;
     previousStart = start;
-    const text = contentLines
-      .slice(start, start + searchLines.length)
-      .map((line) => line.body)
-      .join("\n");
+    const text = contentLines.slice(start, start + searchLines.length).map((line) => line.body).join("\n");
     const score = diceSimilarity(wanted, normalizeForSimilarity(text));
     if (!best || score > best.score) best = { start, score, text };
   }
@@ -1441,8 +1379,7 @@ function lineEndingsAt(content: string, offsets: number[]): LineEnding[] {
   let cursor = 0;
   for (const offset of offsets) {
     if (cursor < offset) cursor = offset;
-    while (cursor < content.length && content[cursor] !== "\r" && content[cursor] !== "\n")
-      cursor++;
+    while (cursor < content.length && content[cursor] !== "\r" && content[cursor] !== "\n") cursor++;
     if (cursor >= content.length) {
       endings.push(fallback);
     } else if (content[cursor] === "\r" && content[cursor + 1] === "\n") {
@@ -1554,14 +1491,14 @@ function buildDetails(
     const oldLines = countTextLines(oldText);
     const newLines = countTextLines(newText);
     diffTooExpensive =
-      oldLines + newLines > DIFF_TOTAL_LINE_LIMIT || oldLines * newLines > DIFF_LINE_PRODUCT_LIMIT;
+      oldLines + newLines > DIFF_TOTAL_LINE_LIMIT ||
+      oldLines * newLines > DIFF_LINE_PRODUCT_LIMIT;
   }
-  const patch =
-    oldText === newText
-      ? ""
-      : diffTooExpensive
-        ? `[Diff omitted because the before/after inputs exceed the bounded diff budget.]`
-        : generateUnifiedPatch(path, oldText, newText, 3);
+  const patch = oldText === newText
+    ? ""
+    : diffTooExpensive
+      ? `[Diff omitted because the before/after inputs exceed the bounded diff budget.]`
+      : generateUnifiedPatch(path, oldText, newText, 3);
   const { addedLines, deletedLines } = diffTooExpensive
     ? { addedLines: undefined, deletedLines: undefined }
     : countPatchLines(patch);
@@ -1614,10 +1551,7 @@ function truncateUtf8(value: string, maxBytes: number): { text: string; truncate
   let end = maxBytes;
   while (end > 0) {
     try {
-      return {
-        text: new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end)),
-        truncated: true,
-      };
+      return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end)), truncated: true };
     } catch {
       end--;
     }
@@ -1630,3 +1564,4 @@ function displayPathFor(path: string, cwd: string): string {
   const outside = candidate === ".." || candidate.startsWith(`..${sep}`) || isAbsolute(candidate);
   return (outside ? path : candidate || ".").split(sep).join("/");
 }
+
