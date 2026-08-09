@@ -185,8 +185,11 @@ are rejected rather than guessed.
   fully staged before publication, and the missing root and every file name are
   then claimed with exclusive no-clobber operations. Concurrent creates under one
   missing root, and two spellings of one missing target on a case-insensitive
-  volume, serialize through a package-local mutex whose keys are never resolved. If publication stops after a file name is claimed, the partial root
-  and private staging tree are retained at named paths for inspection.
+  volume, serialize through a package-local mutex whose keys are never resolved. It
+  case-folds the whole path and locks every missing prefix, so keys stay stable when an
+  ancestor appears or `realpath` begins returning its on-disk capitalization. If
+  publication stops after a file name is claimed, the partial root and private staging
+  tree are retained at named paths for inspection.
 - Cleanup atomically moves temporary, recovery, and staged paths into private
   quarantine directories, rechecks identity, and preserves detected swaps for inspection.
 - A newly claimed directory is owner-checked before publication or cleanup, so a

@@ -3,7 +3,7 @@
 ## 0.4.1 — 2026-08-08
 
 - Serialize mixed-case creates with later edits of the same path by keeping the exact-case target as Pi's single mutation-queue key.
-- Serialize sibling creates under a shared missing root, plus different spellings of one missing target, with a package-local mutex whose literal keys are never resolved and therefore cannot collapse.
+- Serialize sibling creates under a shared missing root, plus different spellings of one missing target, with a package-local mutex whose literal keys are never resolved. Whole-path case folding and a lock for every missing prefix keep those keys stable as ancestors appear.
 - Reject cross-user directory substitutions before adopting a newly claimed directory for publication or cleanup; document the remaining same-user `mkdir`-to-`lstat` window that needs a native primitive to close.
 - Reject dangling symbolic-link batch entries during key discovery so a static alias and its target cannot collapse onto one Pi queue; document the remaining external race that needs an atomic upstream multi-key API.
 - State zero-separator insert semantics in the tool description, parameter docs, prompt guidance, and successful result text, including a complete newline-bearing example. Insert behavior itself is unchanged.

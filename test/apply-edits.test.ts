@@ -82,6 +82,23 @@ async function withRacingFileSystem<T = FileSystemModule>(
   }
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = () => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, milliseconds = 3000): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`timeout: ${label}`)), milliseconds),
+    ),
+  ]);
+}
+
 async function firstExistingFile(paths: string[]): Promise<string | undefined> {
   for (const path of paths) {
     try {
@@ -3066,3 +3083,192 @@ test("a batch rejects a dangling ancestor before its lock can collapse onto the 
     await assert.rejects(lstat(targetParent), /ENOENT/);
   });
 });
+
+test("local create locks stay stable as missing ancestors are published", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const canonicalDirectory = await realpath(directory);
+    const root = join(canonicalDirectory, "r");
+    const shiftedRoot = join(root, "y");
+    await writeFile(join(directory, "sentinel.txt"), "old\n");
+    const originalMkdir = nodeFs.promises.mkdir;
+    const rootReached = deferred();
+    const releaseRoot = deferred();
+    const shiftedReached = deferred();
+    const releaseShifted = deferred();
+    let heldRoot = false;
+    let heldShifted = false;
+
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+          const value = String(path);
+          if (value === root && !heldRoot) {
+            heldRoot = true;
+            rootReached.resolve();
+            await releaseRoot.promise;
+          } else if (value === shiftedRoot && !heldShifted) {
+            heldShifted = true;
+            shiftedReached.resolve();
+            await releaseShifted.promise;
+          }
+          return (originalMkdir as Function).call(this, path, ...args);
+        }) as typeof promises.mkdir;
+      },
+      async (module) => {
+        let first: Promise<unknown> | undefined;
+        let batch: Promise<unknown> | undefined;
+        let later: Promise<unknown> | undefined;
+        try {
+          first = module.applyEditsToFile(
+            { path: "r/x/a.txt", rewrite: "A\n", onMissing: "create" },
+            directory,
+          );
+          await withTimeout(rootReached.promise, "first create reaching r");
+
+          batch = module.applyEditsToFile(
+            {
+              files: [
+                { path: "sentinel.txt", rewrite: "new\n" },
+                { path: "r/y/b.txt", rewrite: "B\n", onMissing: "create" },
+              ],
+            },
+            directory,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          releaseRoot.resolve();
+          await withTimeout(first, "first create finishing");
+          await withTimeout(shiftedReached.promise, "batch reaching r/y");
+
+          let laterSettled = false;
+          later = module
+            .applyEditsToFile(
+              { path: "r/y/c.txt", rewrite: "C\n", onMissing: "create" },
+              directory,
+            )
+            .finally(() => {
+              laterSettled = true;
+            });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          assert.equal(laterSettled, false, "the later create bypassed the batch's stale root lock");
+          releaseShifted.resolve();
+          await withTimeout(batch, "batch finishing");
+          await withTimeout(later, "later create finishing");
+        } finally {
+          releaseRoot.resolve();
+          releaseShifted.resolve();
+          await Promise.allSettled([first, batch, later].filter((item) => item !== undefined));
+        }
+      },
+      "../src/apply-edits.ts",
+    );
+
+    assert.equal(await readFile(join(directory, "sentinel.txt"), "utf8"), "new\n");
+    assert.equal(await readFile(join(root, "y/b.txt"), "utf8"), "B\n");
+    assert.equal(await readFile(join(root, "y/c.txt"), "utf8"), "C\n");
+  });
+});
+
+test(
+  "whole-path folding dedupes a batch when an ancestor appears with different case",
+  { skip: process.platform !== "darwin" && process.platform !== "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const canonicalDirectory = await realpath(directory);
+      const root = join(canonicalDirectory, "R");
+      const upperTarget = join(root, "b.txt");
+      const originalMkdir = nodeFs.promises.mkdir;
+      const originalRealpath = nodeFs.promises.realpath;
+      const originalLink = nodeFs.promises.link;
+      const rootReached = deferred();
+      const releaseRoot = deferred();
+      const releaseUpperDiscovery = deferred();
+      const targetLinkReached = deferred();
+      const releaseTargetLink = deferred();
+      let heldRoot = false;
+      let heldUpperDiscovery = false;
+      let heldTargetLink = false;
+
+      await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+        (promises) => {
+          promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (String(path) === root && !heldRoot) {
+              heldRoot = true;
+              rootReached.resolve();
+              await releaseRoot.promise;
+            }
+            return (originalMkdir as Function).call(this, path, ...args);
+          }) as typeof promises.mkdir;
+          promises.realpath = (async function (this: unknown, path: string, ...args: unknown[]) {
+            if (String(path) === upperTarget && !heldUpperDiscovery) {
+              heldUpperDiscovery = true;
+              await releaseUpperDiscovery.promise;
+            }
+            return (originalRealpath as Function).call(this, path, ...args);
+          }) as typeof promises.realpath;
+          promises.link = (async function (this: unknown, from: string, to: string, ...args: unknown[]) {
+            if (String(to) === upperTarget && !heldTargetLink) {
+              heldTargetLink = true;
+              targetLinkReached.resolve();
+              await releaseTargetLink.promise;
+            }
+            return (originalLink as Function).call(this, from, to, ...args);
+          }) as typeof promises.link;
+        },
+        async (module) => {
+          let rootCreate: Promise<unknown> | undefined;
+          let batchOutcome: Promise<string> | undefined;
+          let targetCreate: Promise<unknown> | undefined;
+          try {
+            rootCreate = module.applyEditsToFile(
+              { path: "R/x/a.txt", rewrite: "A\n", onMissing: "create" },
+              canonicalDirectory,
+            );
+            await withTimeout(rootReached.promise, "root reservation");
+
+            // Lowercase discovery completes while R is absent. Uppercase discovery waits
+            // until R exists and realpath returns that spelling. Suffix-only folding assigned
+            // different target keys; whole-path folding rejects them as the same file.
+            batchOutcome = module
+              .applyEditsToFile(
+                {
+                  files: [
+                    { path: "r/b.txt", rewrite: "one\n", onMissing: "create" },
+                    { path: "R/b.txt", rewrite: "two\n", onMissing: "create" },
+                  ],
+                },
+                canonicalDirectory,
+              )
+              .then(
+                () => "fulfilled",
+                (error: unknown) => `rejected: ${String(error)}`,
+              );
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            releaseRoot.resolve();
+            await withTimeout(rootCreate, "root create finishing");
+
+            targetCreate = module.applyEditsToFile(
+              { path: "R/b.txt", rewrite: "outside\n", onMissing: "create" },
+              canonicalDirectory,
+            );
+            await withTimeout(targetLinkReached.promise, "target create reaching link");
+            releaseUpperDiscovery.resolve();
+            const outcome = await withTimeout(batchOutcome, "batch duplicate rejection", 1000);
+            assert.match(outcome, /^rejected: .*refers to the same file/);
+            releaseTargetLink.resolve();
+            await withTimeout(targetCreate, "target create finishing");
+          } finally {
+            releaseRoot.resolve();
+            releaseUpperDiscovery.resolve();
+            releaseTargetLink.resolve();
+            // Do not await batchOutcome here: on the control tree it is the intentionally
+            // deadlocked promise this regression must detect. Its queue keys are temp-scoped.
+            await Promise.allSettled(
+              [rootCreate, targetCreate].filter((item) => item !== undefined),
+            );
+          }
+        },
+        "../src/apply-edits.ts",
+      );
+    });
+  },
+);

@@ -973,10 +973,12 @@ async function mutationQueueKeys(
       const realParent = await realpath(parent);
       missing.unshift(basename(current));
       const targetKey = normalizeLockKey(realParent, missing);
-      // Fold the target so two spellings of one create serialize, and the missing root so
-      // separate creates that would each claim it serialize instead of racing the claim.
-      const localKeys = [targetKey];
-      if (missing.length > 1) localKeys.push(normalizeLockKey(realParent, missing.slice(0, 1)));
+      // Hold every missing prefix, not just the first and last. As another operation creates
+      // ancestors, the same logical target discovers a shorter missing suffix; the complete
+      // prefix lattice guarantees the old and new discoveries still share a literal local key.
+      const localKeys = missing.map((_, index) =>
+        normalizeLockKey(realParent, missing.slice(0, index + 1)),
+      );
       return { targetKey, queueKeys: [join(realParent, ...missing)], localKeys };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
@@ -1007,17 +1009,18 @@ function isMissingPathError(error: unknown): boolean {
 }
 
 function normalizeLockKey(existingPrefix: string, missingParts: string[]): string {
-  if (missingParts.length === 0) return existingPrefix;
+  const fullPath = join(existingPrefix, ...missingParts);
   // Prefer over-dedupe on default macOS/Windows volumes over deterministic partial batch writes.
-  const foldCase = process.platform === "darwin" || process.platform === "win32";
-  const parts = missingParts.map((part) => {
-    if (!foldCase) return part;
+  // Fold the entire path, not only its missing suffix: an ancestor can move from missing to
+  // existing between two discoveries, and realpath then supplies its on-disk capitalization.
+  // A suffix-only fold would assign two local keys to the same logical path.
+  if (process.platform !== "darwin" && process.platform !== "win32") return fullPath;
+  return fullPath.split(sep).map((part) => {
     const normalized = part.normalize("NFC");
     // upper→lower is a closer caseless key than lower alone for APFS aliases:
     // ſ/s, ς/σ, ß/ss, and ﬀ/ff all collapse consistently.
     return normalized.toLowerCase().toUpperCase().toLowerCase().normalize("NFC");
-  });
-  return join(existingPrefix, ...parts);
+  }).join(sep);
 }
 
 function findOccurrences(content: string, search: string, limit = Number.POSITIVE_INFINITY): number[] {
