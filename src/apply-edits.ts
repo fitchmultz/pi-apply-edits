@@ -697,6 +697,7 @@ function assertCreatePathBudget(plan: NewFilePlan, displayPath: string): void {
       container,
       join(container, "q"),
       join(staging, ...plan.missingDirectories.slice(1), basename(plan.targetPath)),
+      shapedCleanupEntry(plan.targetPath),
     ]);
     return;
   }

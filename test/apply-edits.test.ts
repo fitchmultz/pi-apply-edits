@@ -4121,6 +4121,41 @@ test("non-empty temporary directory fails cleanup in place instead of being move
 });
 
 test(
+  "nested create whose rollback cleanup would exceed the budget is rejected during planning",
+  { skip: process.platform !== "darwin" && process.platform !== "linux" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const limit = process.platform === "darwin" ? 1024 : 4096;
+      const base = await realpath(directory);
+      // Long missing root keeps the staged copy of the tree well under the budget while the
+      // target itself stays legal; only the rollback quarantine beside the target overflows.
+      const root = "r".repeat(255);
+      const desiredParent = limit - 33 - 10;
+      let remaining = desiredParent - Buffer.byteLength(join(base, root));
+      const segments: string[] = [root];
+      while (remaining > 0) {
+        const length = Math.min(200, remaining - 1 > 0 ? remaining - 1 : 1);
+        segments.push("d".repeat(length));
+        remaining -= length + 1;
+      }
+      const target = join(base, ...segments, "f");
+      assert(Buffer.byteLength(target) <= limit - 33);
+      assert(Buffer.byteLength(dirname(target)) + 67 > limit - 33);
+
+      await assert.rejects(
+        applyEditsToFile({ path: target, rewrite: "x\n", onMissing: "create" }, base),
+        /planned staging and cleanup.*No changes were written/s,
+      );
+      await assert.rejects(lstat(join(base, root)), /ENOENT/);
+      assert.deepEqual(
+        (await readdir(base)).filter((name) => name.startsWith(".pi-apply-edits-")),
+        [],
+      );
+    });
+  },
+);
+
+test(
   "near-limit direct create is rejected during planning on supported POSIX platforms",
   { skip: process.platform !== "darwin" && process.platform !== "linux" },
   async () => {
