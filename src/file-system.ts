@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import {
   access,
@@ -404,7 +404,13 @@ export async function publishReplacement(
     const cleanupFailures: string[] = [];
     if (!published && !replacementPublished) {
       try {
-        await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary replacement");
+        const removed = await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary replacement");
+        if (!removed && temporaryIdentity) {
+          cleanupFailures.push(
+            `the temporary replacement is no longer at ${temporary}; ` +
+              "its location is uncertain and its content may remain elsewhere",
+          );
+        }
       } catch (error) {
         temporaryCleanupFailed = true;
         cleanupFailures.push(`${temporary}: ${errorMessage(error)}`);
@@ -412,7 +418,13 @@ export async function publishReplacement(
     }
     if (recoveryLinked && !replacementPublished) {
       try {
-        await unlinkOwnedPath(recovery, snapshot.stats, "Recovery link");
+        const removed = await unlinkOwnedPath(recovery, snapshot.stats, "Recovery link");
+        if (!removed) {
+          cleanupFailures.push(
+            `the pre-edit recovery link is no longer at ${recovery}; ` +
+              "its location is uncertain and the target may remain hard-linked to it",
+          );
+        }
       } catch (error) {
         cleanupFailures.push(`${recovery}: ${errorMessage(error)}`);
       }
@@ -1135,7 +1147,13 @@ export async function publishNewFile(
     if (!published) {
       const cleanupFailures: string[] = [];
       try {
-        await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary create file");
+        const removed = await unlinkOwnedPath(temporary, temporaryIdentity, "Temporary create file");
+        if (!removed && temporaryIdentity) {
+          cleanupFailures.push(
+            `the temporary create file is no longer at ${temporary}; ` +
+              "its location is uncertain and its content may remain elsewhere",
+          );
+        }
       } catch (error) {
         temporaryCleanupFailed = true;
         cleanupFailures.push(`${temporary}: ${errorMessage(error)}`);
@@ -1194,7 +1212,7 @@ function assertCreatedDirectoryOwner(stats: BigIntStats, path: string): void {
   // through Stats, so the existing identity checks remain the boundary there.
   if (process.platform === "win32" || typeof process.geteuid !== "function") return;
   if (stats.uid !== BigInt(process.geteuid())) {
-    throw new Error(`Created directory owner changed at ${path}; it was left untouched.`);
+    throw new Error(`Created entry owner changed at ${path}; it was left untouched.`);
   }
 }
 
@@ -1303,7 +1321,19 @@ async function quarantinePreparedStaging(
     }
     throw error;
   }
-  const movedStats = await lstat(prepared.quarantine, { bigint: true });
+  let movedStats: BigIntStats;
+  try {
+    movedStats = await lstat(prepared.quarantine, { bigint: true });
+  } catch (error) {
+    prepared.quarantineStats = undefined;
+    if (isCode(error, "ENOENT")) {
+      throw new Error(
+        "Staged create cleanup changed during quarantine; its location is uncertain and " +
+          "the published target may remain linked to private staging",
+      );
+    }
+    throw error;
+  }
   prepared.quarantineStats = undefined;
   if (!sameIdentity(stagingStats, movedStats)) {
     throw new Error(
@@ -1417,9 +1447,12 @@ async function currentOwnedPath(
 
 interface QuarantinedPath {
   path: string;
-  directory: string;
-  directoryStats: BigIntStats;
   stats: BigIntStats;
+}
+
+function quarantineSiblingName(name: string): string {
+  const byteLength = Buffer.byteLength(name);
+  return randomBytes(Math.ceil(byteLength / 2)).toString("hex").slice(0, byteLength);
 }
 
 async function quarantineOwnedPath(
@@ -1427,24 +1460,74 @@ async function quarantineOwnedPath(
   expected: BigIntStats | undefined,
   label: string,
 ): Promise<QuarantinedPath | undefined> {
-  if (!(await currentOwnedPath(path, expected, label))) return undefined;
-  const directory = temporaryDirectoryPath(path);
-  await mkdir(directory, { mode: 0o700 });
-  const directoryStats = await lstat(directory, { bigint: true });
-  assertCreatedDirectoryOwner(directoryStats, directory);
-  const quarantined = join(directory, "entry");
+  const current = await currentOwnedPath(path, expected, label);
+  if (!current) return undefined;
+
+  // Quarantine over a reserved same-length sibling so cleanup never lengthens a path that
+  // already fits: a legal maximum-length entry stays removable within the PATH_MAX budget.
+  const directory = dirname(path);
+  let quarantined: string | undefined;
+  let placeholderStats: BigIntStats | undefined;
+  for (let attempt = 0; attempt < 3 && !quarantined; attempt++) {
+    const candidate = join(directory, quarantineSiblingName(basename(path)));
+    if (candidate === path) continue;
+    try {
+      if (current.isDirectory()) {
+        await mkdir(candidate, { mode: 0o700 });
+      } else {
+        const handle = await open(candidate, "wx", 0o600);
+        await handle.close();
+      }
+    } catch (error) {
+      if (isCode(error, "EEXIST")) continue;
+      throw error;
+    }
+    const stats = await lstat(candidate, { bigint: true });
+    assertCreatedDirectoryOwner(stats, candidate);
+    quarantined = candidate;
+    placeholderStats = stats;
+  }
+  if (!quarantined || !placeholderStats) {
+    throw new Error(`Could not reserve a cleanup slot beside ${path}`);
+  }
+
+  let placeholderExists = true;
+  if (process.platform === "win32") {
+    // rename cannot replace an existing entry on Windows; remove the verified slot first.
+    if (placeholderStats.isDirectory()) {
+      await removeEmptyOwnedDirectory(quarantined, placeholderStats, "Cleanup slot");
+    } else if (await currentOwnedPath(quarantined, placeholderStats, "Cleanup slot")) {
+      await unlink(quarantined);
+    }
+    placeholderExists = false;
+  }
   try {
     await rename(path, quarantined);
   } catch (error) {
-    await removeEmptyOwnedDirectory(directory, directoryStats, "Cleanup quarantine");
+    if (placeholderExists) {
+      if (placeholderStats.isDirectory()) {
+        await removeEmptyOwnedDirectory(quarantined, placeholderStats, "Cleanup slot");
+      } else if (await currentOwnedPath(quarantined, placeholderStats, "Cleanup slot")) {
+        await unlink(quarantined);
+      }
+    }
     if (isCode(error, "ENOENT")) return undefined;
     throw error;
   }
-  const stats = await lstat(quarantined, { bigint: true });
-  if (!expected || !sameIdentity(expected, stats)) {
+  let stats: BigIntStats;
+  try {
+    stats = await lstat(quarantined, { bigint: true });
+  } catch (error) {
+    // The entry escaped between our rename and its verification; nothing of ours remains at
+    // the slot, so report the same missing-target fact the precheck does and let the caller
+    // word the uncertainty.
+    if (isCode(error, "ENOENT")) return undefined;
+    throw error;
+  }
+  if (!sameIdentity(current, stats)) {
     throw new Error(`${label} changed after validation and was preserved at ${quarantined}`);
   }
-  return { path: quarantined, directory, directoryStats, stats };
+  return { path: quarantined, stats };
 }
 
 async function removeEmptyOwnedDirectory(
@@ -1470,11 +1553,6 @@ async function unlinkOwnedPath(
     }
   }
   await unlink(quarantined.path);
-  await removeEmptyOwnedDirectory(
-    quarantined.directory,
-    quarantined.directoryStats,
-    "Cleanup quarantine",
-  );
   return true;
 }
 
@@ -1482,11 +1560,6 @@ async function rmdirOwnedPath(path: string, expected: BigIntStats, label: string
   const quarantined = await quarantineOwnedPath(path, expected, label);
   if (!quarantined) return;
   await rmdir(quarantined.path);
-  await removeEmptyOwnedDirectory(
-    quarantined.directory,
-    quarantined.directoryStats,
-    "Cleanup quarantine",
-  );
 }
 
 async function captureCreatedDirectoryIdentities(

@@ -487,9 +487,19 @@ async function applyEditsBatch(
           const completed = written + (error instanceof PartialCreatePublishError
             ? error.publishedFiles
             : 0);
+          const earlierWarnings = [
+            ...new Set(
+              detailsList
+                .filter((item): item is ApplyEditsDetails => item !== undefined)
+                .flatMap((item) => item.warnings),
+            ),
+          ];
           throw new Error(
             `Multi-file batch failed while writing files[${index}] (${plan.displayPath}) ` +
-              `after ${completed} successful write${completed === 1 ? "" : "s"}. ${reason}`,
+              `after ${completed} successful write${completed === 1 ? "" : "s"}. ${reason}` +
+              (earlierWarnings.length > 0
+                ? ` Earlier warnings from completed files: ${earlierWarnings.join(" ")}`
+                : ""),
           );
         }
       }
@@ -511,7 +521,7 @@ async function applyEditsBatch(
       const names = changed.length > 8
         ? `${visibleNames}, … ${changed.length - 8} more`
         : visibleNames;
-      const warnings = detailsList.flatMap((item) => item.warnings);
+      const warnings = [...new Set(detailsList.flatMap((item) => item.warnings))];
       const visibleWarnings = warnings.slice(0, 4).join(" ");
       const warningText = warnings.length > 0
         ? ` Warning: ${visibleWarnings}${warnings.length > 4 ? ` … ${warnings.length - 4} more` : ""}`

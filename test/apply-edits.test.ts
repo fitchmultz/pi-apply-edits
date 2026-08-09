@@ -3896,7 +3896,11 @@ test("direct create warns when its temporary link escapes before unlink", async 
     await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
       (promises) => {
         promises.rename = (async function (this: unknown, source: string, target: string) {
-          if (!moved && basename(String(source)) === "create" && basename(String(target)) === "entry") {
+          if (
+            !moved &&
+            basename(String(source)) === "create" &&
+            /^[0-9a-f]{6}$/.test(basename(String(target)))
+          ) {
             await (originalRename as Function).call(this, source, escaped);
             moved = true;
           }
@@ -4023,5 +4027,236 @@ test("container escape after quarantine rename returns a warning", async () => {
     );
     assert(moved);
     assert.equal((await stat(escaped)).isDirectory(), true);
+  });
+});
+
+test("direct create warns when its temporary link escapes after quarantine", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-temporary-link");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalRename as Function).call(this, source, target);
+          if (
+            !moved &&
+            basename(String(source)) === "create" &&
+            /^[0-9a-f]{6}$/.test(basename(String(target)))
+          ) {
+            moved = true;
+            await (originalRename as Function).call(this, target, escaped);
+          }
+          return result;
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(warnings.join("\n"), /temporary link is no longer at.*may remain hard-linked/s);
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+    assert.equal((await stat(join(directory, "file"))).ino, (await stat(escaped)).ino);
+  });
+});
+
+test("staged create cleanup reports an escape after its quarantine rename", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-staging");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          const result = await (originalRename as Function).call(this, source, target);
+          if (!moved && basename(String(source)) === "publish" && basename(String(target)) === "q") {
+            moved = true;
+            await (originalRename as Function).call(this, target, escaped);
+          }
+          return result;
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const result = await module.applyEditsToFile(
+          { path: "missing/file", rewrite: "secret\n", onMissing: "create" },
+          directory,
+        );
+        const warnings = "warnings" in result.details ? result.details.warnings : [];
+        assert.match(
+          warnings.join("\n"),
+          /changed during quarantine.*location is uncertain.*may remain linked/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+    assert.equal(
+      (await stat(join(directory, "missing", "file"))).ino,
+      (await stat(join(escaped, "file"))).ino,
+    );
+  });
+});
+
+test("deep direct create cleans up within the path budget", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    let ancestor = await realpath(directory);
+    let remaining = 949 - Buffer.byteLength(ancestor);
+    if (remaining % 2 === 1) {
+      ancestor = join(ancestor, "xx");
+      remaining -= 3;
+    }
+    while (remaining > 256) {
+      ancestor = join(ancestor, "x");
+      remaining -= 2;
+    }
+    ancestor = join(ancestor, "x".repeat(remaining - 1));
+    assert.equal(Buffer.byteLength(ancestor), 949);
+    await mkdir(ancestor, { recursive: true });
+    const target = join(ancestor, "f");
+
+    const { applyEditsToFile } = await import("../src/apply-edits.ts");
+    const first = await applyEditsToFile(
+      { path: target, rewrite: "secret\n", onMissing: "create" },
+      directory,
+    );
+    const warnings = "warnings" in first.details ? first.details.warnings : [];
+    assert.deepEqual(warnings, []);
+    assert.equal(Number((await stat(target)).nlink), 1);
+    assert.deepEqual(
+      (await readdir(ancestor)).filter((name) => name.startsWith(".pi-apply-edits-")),
+      [],
+    );
+    assert.equal(await readFile(target, "utf8"), "secret\n");
+    // Rewriting an existing file at this depth is a separate pre-existing limitation:
+    // replacement staging still grows past the path budget and refuses fail-closed.
+  });
+});
+
+test("create failure discloses an escaped temporary file", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const escaped = join(directory, "escaped-temporary");
+    const { publishNewFile } = await import("../src/file-system.ts");
+    await assert.rejects(
+      publishNewFile(join(directory, "file"), Buffer.from("secret\n"), undefined, undefined, {
+        beforeFilePublish: async ({ temporary }) => {
+          await rename(temporary, escaped);
+        },
+      }),
+      /temporary create file is no longer at.*content may remain elsewhere/s,
+    );
+    assert.equal(await readFile(escaped, "utf8"), "secret\n");
+    await assert.rejects(lstat(join(directory, "file")), /ENOENT/);
+  });
+});
+
+test("replacement failure discloses an escaped recovery link", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "file");
+    const escaped = join(directory, "escaped-recovery");
+    await writeFile(target, "old\n");
+    const { captureSnapshot, publishReplacement } = await import("../src/file-system.ts");
+    const snapshot = await captureSnapshot(target);
+    assert(snapshot);
+    const controller = new AbortController();
+    await assert.rejects(
+      publishReplacement(snapshot, Buffer.from("new\n"), controller.signal, {
+        beforeRename: async () => {
+          const recoveryName = (await readdir(directory)).find((name) => name.endsWith(".tmp"));
+          assert(recoveryName);
+          await rename(join(directory, recoveryName), escaped);
+          controller.abort();
+        },
+      }),
+      /recovery link is no longer at.*target may remain hard-linked/s,
+    );
+    assert.equal(await readFile(target, "utf8"), "old\n");
+    assert.equal(Number((await stat(target)).nlink), 2);
+    assert.equal((await stat(target)).ino, (await stat(escaped)).ino);
+  });
+});
+
+test("batch failure preserves warnings from completed files", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-temporary-link");
+    const controller = new AbortController();
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (
+            !moved &&
+            basename(String(source)) === "create" &&
+            /^[0-9a-f]{6}$/.test(basename(String(target)))
+          ) {
+            await (originalRename as Function).call(this, source, escaped);
+            moved = true;
+            controller.abort();
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        await assert.rejects(
+          module.applyEditsToFile(
+            {
+              files: [
+                { path: "first", rewrite: "secret\n", onMissing: "create" },
+                { path: "second", rewrite: "second\n", onMissing: "create" },
+              ],
+            },
+            directory,
+            controller.signal,
+          ),
+          /Earlier warnings from completed files:.*may remain hard-linked/s,
+        );
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
+    assert.equal((await stat(join(directory, "first"))).ino, (await stat(escaped)).ino);
+  });
+});
+
+test("summary deduplicates repeated warnings so unique ones stay visible", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    for (let index = 0; index < 4; index++) {
+      await writeFile(join(directory, `existing-${index}`), "a");
+    }
+    const originalRename = nodeFs.promises.rename;
+    const escaped = join(directory, "escaped-temporary-link");
+    let moved = false;
+    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+      (promises) => {
+        promises.rename = (async function (this: unknown, source: string, target: string) {
+          if (
+            !moved &&
+            basename(String(source)) === "create" &&
+            /^[0-9a-f]{6}$/.test(basename(String(target)))
+          ) {
+            await (originalRename as Function).call(this, source, escaped);
+            moved = true;
+          }
+          return (originalRename as Function).call(this, source, target);
+        }) as typeof promises.rename;
+      },
+      async (module) => {
+        const files: object[] = Array.from({ length: 4 }, (_, index) => ({
+          path: `existing-${index}`,
+          edits: [{ oldText: "a", newText: "b", insert: "after" }],
+        }));
+        files.push({ path: "created", rewrite: "secret\n", onMissing: "create" });
+        const result = await module.applyEditsToFile({ files } as never, directory);
+        assert.match(result.summary, /may remain hard-linked/);
+        assert.doesNotMatch(result.summary, / more\b/);
+      },
+      "../src/apply-edits.ts",
+    );
+    assert(moved);
   });
 });

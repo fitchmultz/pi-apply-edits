@@ -9,6 +9,9 @@
 - State zero-separator insert semantics in the tool description, parameter docs, prompt guidance, and successful result text, including a complete newline-bearing example. Insert behavior itself is unchanged.
 - Quarantine staged create trees in a reserved short slot inside their private container, then quarantine the empty container over a verified same-length sibling. Cleanup no longer extends legal deep macOS paths beyond `PATH_MAX`, leaves the published target hard-linked, or accumulates empty staging containers.
 - Owner-check every newly claimed private staging/quarantine directory before adoption. Rename-window `ENOENT` failures now warn that staging or an empty container may have moved instead of claiming cleanup succeeded or naming a stale location.
+- Quarantine every cleanup entry over a reserved same-length sibling instead of a nested container, so cleanup never lengthens a legal maximum-length path: creates near `PATH_MAX` no longer leak staging or leave the published file hard-linked to it.
+- Disclose escaped cleanup targets everywhere. Success- and failure-path temporary and recovery unlinks, post-quarantine escapes, and staging that cannot be inspected now name the uncertain location and possible remaining hard links instead of staying silent or claiming a stale path.
+- Carry warnings from completed files into multi-file batch failure text, and deduplicate repeated warnings so unique disclosures stay visible in result summaries.
 
 ## 0.4.0 — 2026-08-08
 
