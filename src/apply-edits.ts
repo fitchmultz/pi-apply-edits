@@ -290,7 +290,7 @@ function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Prom
   // Resolve aliases in invocation order, then let Pi's queue serialize only matching keys.
   // Wrapping the operation prevents Promise assimilation from serializing unrelated files.
   const registration = canonicalLockRegistration.then(async () => ({
-    operation: withFileMutationQueue((await mutationQueueKeys(inputPath)).queueKey, fn),
+    operation: withOrderedFileLocks((await mutationQueueKeys(inputPath)).queueKeys, fn),
   }));
   canonicalLockRegistration = registration.then(() => undefined, () => undefined);
   return registration.then(({ operation }) => operation);
@@ -373,7 +373,7 @@ async function applyEditsBatch(
   }
   rejectAncestorPathConflicts(resolved);
 
-  const lockPaths = [...new Set(resolved.map((item) => item.queueKey))].sort();
+  const lockPaths = [...new Set(resolved.flatMap((item) => item.queueKeys))].sort();
   return withOrderedFileLocks(lockPaths, async () => {
     const planned: PlannedMutation[] = [];
     const allRewrites = files.every(
@@ -574,7 +574,9 @@ function rejectAncestorPathConflicts(
   }
 }
 
-async function withOrderedFileLocks<T>(paths: string[], fn: () => Promise<T>): Promise<T> {
+async function withOrderedFileLocks<T>(unordered: string[], fn: () => Promise<T>): Promise<T> {
+  // Always acquire in one global order so nested keys cannot deadlock against each other.
+  const paths = [...new Set(unordered)].sort();
   const run = async (index: number): Promise<T> => {
     if (index >= paths.length) return fn();
     return withFileMutationQueue(paths[index]!, () => run(index + 1));
@@ -878,11 +880,11 @@ function toReplacement(
   return { start, end, matchStart: start, matchEnd: end, text, line };
 }
 
-async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string; queueKey: string }> {
+async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string; queueKeys: string[] }> {
   const resolvedPath = resolve(filePath);
   try {
     const key = await realpath(resolvedPath);
-    return { targetKey: key, queueKey: key };
+    return { targetKey: key, queueKeys: [key] };
   } catch (error) {
     if (!isMissingPathError(error)) throw error;
   }
@@ -894,13 +896,16 @@ async function mutationQueueKeys(filePath: string): Promise<{ targetKey: string;
     const parent = dirname(current);
     if (parent === current) {
       const targetKey = normalizeLockKey(resolvedPath, missing);
-      return { targetKey, queueKey: targetKey };
+      return { targetKey, queueKeys: [targetKey] };
     }
     try {
       const realParent = await realpath(parent);
       missing.unshift(basename(current));
       const targetKey = normalizeLockKey(realParent, missing);
-      return { targetKey, queueKey: normalizeLockKey(realParent, missing.slice(0, 1)) };
+      // Hold the missing root so sibling creates serialize, and the target itself so an edit
+      // of the same path serializes with the create that publishes it.
+      const rootKey = normalizeLockKey(realParent, missing.slice(0, 1));
+      return { targetKey, queueKeys: rootKey === targetKey ? [targetKey] : [rootKey, targetKey] };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
       missing.unshift(basename(current));

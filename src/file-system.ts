@@ -564,16 +564,17 @@ export async function publishPreparedNestedFiles(
         }
         throw error;
       }
-      const actualDirectory = await realpath(targetDirectory);
-      const targetStats = await lstat(actualDirectory, { bigint: true });
+      // Validate the entry we just claimed. Resolving it first would follow a symbolic link
+      // swapped in over the new name and point cleanup at an unrelated directory.
+      const targetStats = await lstat(targetDirectory, { bigint: true });
       if (!targetStats.isDirectory() || targetStats.isSymbolicLink()) {
-        throw new Error(`Created directory changed identity at ${actualDirectory}.`);
+        throw new Error(`Created directory changed identity at ${targetDirectory}.`);
       }
       try {
         await assertPublishedDirectoriesCurrent(publishedDirectories);
       } catch (error) {
         try {
-          await removeEmptyOwnedDirectory(actualDirectory, targetStats, "Escaped create directory");
+          await removeEmptyOwnedDirectory(targetDirectory, targetStats, "Escaped create directory");
         } catch (cleanupError) {
           throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`);
         }
@@ -939,7 +940,19 @@ export async function publishNewFile(
       if (plan) await assertNewFilePlanCurrent(plan);
       throwIfAborted(signal);
       await link(temporary, targetPath);
-      const targetState = await readStableRegularEntry(targetPath);
+      let targetState: { stats: BigIntStats; bytes: Buffer };
+      try {
+        targetState = await readStableRegularEntry(targetPath);
+      } catch (verifyError) {
+        // The link succeeded, so a file exists under whatever the parent is now. Claiming
+        // nothing was written would be wrong; name both retained paths instead.
+        published = true;
+        throw new Error(
+          `Create publication could not be verified at ${targetPath}. Commit status is uncertain; ` +
+            `the created file and its temporary source were retained at ${targetPath} and ${temporary}. ` +
+            `Cause: ${errorMessage(verifyError)}`,
+        );
+      }
       const temporaryState = await readStableFile(temporary);
       if (!sameIdentity(temporaryState.stats, targetState.stats) || !targetState.bytes.equals(bytes)) {
         throw new Error(`Created file changed during publication: ${targetPath}.`);

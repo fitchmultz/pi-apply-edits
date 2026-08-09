@@ -11,6 +11,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
@@ -65,15 +66,16 @@ type FileSystemModule = typeof import("../src/file-system.ts");
  * Loads a private copy of the file-system module with `node:fs/promises` patched, so a rename or
  * symlink swap can be injected in the middle of a publication syscall. Patches are reverted after.
  */
-async function withRacingFileSystem(
+async function withRacingFileSystem<T = FileSystemModule>(
   patch: (promises: typeof nodeFs.promises) => void,
-  run: (module: FileSystemModule) => Promise<void>,
+  run: (module: T) => Promise<void>,
+  specifier = "../src/file-system.ts",
 ): Promise<void> {
   const originals = { ...nodeFs.promises };
   try {
     patch(nodeFs.promises);
     syncBuiltinESMExports();
-    await run((await import(`../src/file-system.ts?race=${randomUUID()}`)) as FileSystemModule);
+    await run((await import(`${specifier}?race=${randomUUID()}`)) as T);
   } finally {
     Object.assign(nodeFs.promises, originals);
     syncBuiltinESMExports();
@@ -2553,6 +2555,163 @@ test(
 
       assert.equal(await readFile(join(original, "file.txt"), "utf8"), "before\n");
       assert.equal(await readFile(join(other, "file.txt"), "utf8"), "outside\n");
+    });
+  },
+);
+
+test(
+  "nested create cleanup never follows a swapped directory entry to an unrelated path",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      await mkdir(join(directory, "victim"));
+      const victim = await realpath(join(directory, "victim"));
+      const input = join(directory, "missing", "sub", "child.txt");
+      const originalMkdir = nodeFs.promises.mkdir;
+      const originalLstat = nodeFs.promises.lstat;
+      let publishRoot = "";
+      let subdirectory = "";
+      let phase = "idle";
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.mkdir = (async function (this: unknown, path: string, ...args: unknown[]) {
+            const result = await (originalMkdir as Function).call(this, path, ...args);
+            if (phase === "armed" && String(path) === subdirectory) {
+              // Replace the just-claimed entry with a link to an unrelated directory.
+              await rename(subdirectory, `${subdirectory}.saved`);
+              await symlink(victim, subdirectory);
+              phase = "move-root";
+            }
+            return result;
+          }) as typeof promises.mkdir;
+          promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
+            // Then invalidate the reserved root, so the revalidation guarding it fails and
+            // the cleanup branch for the new directory runs.
+            if (phase === "move-root" && String(path) === publishRoot) {
+              phase = "done";
+              await rename(publishRoot, `${publishRoot}.moved`);
+              await mkdir(publishRoot);
+            }
+            return (originalLstat as Function).call(this, path, ...args);
+          }) as typeof promises.lstat;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                afterRootReserve({ target }) {
+                  publishRoot = target;
+                  subdirectory = join(target, "sub");
+                  phase = "armed";
+                },
+              }),
+            /changed identity/,
+          );
+        },
+      );
+
+      // Following the swapped entry would have published into the unrelated directory, or
+      // deleted it during cleanup.
+      assert.equal((await lstat(victim)).isDirectory(), true);
+      assert.deepEqual(await readdir(victim), []);
+    });
+  },
+);
+
+test(
+  "create reports an uncertain commit when the parent moves right after linking",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const parent = join(directory, "parent");
+      await mkdir(parent);
+      const input = join(parent, "target.txt");
+      const moved = join(directory, "moved");
+      const originalLink = nodeFs.promises.link;
+      let target = "";
+      let armed = false;
+
+      await withRacingFileSystem(
+        (promises) => {
+          promises.link = (async function (this: unknown, from: string, to: string, ...args: unknown[]) {
+            const result = await (originalLink as Function).call(this, from, to, ...args);
+            if (armed && String(to) === target) {
+              armed = false;
+              await rename(parent, moved);
+            }
+            return result;
+          }) as typeof promises.link;
+        },
+        async (module) => {
+          const plan = await module.planNewFile(input);
+          target = plan.targetPath;
+          await assert.rejects(
+            () =>
+              module.publishNewFile(input, Buffer.from("created\n"), undefined, plan, {
+                beforeFilePublish() {
+                  armed = true;
+                },
+              }),
+            /Commit status is uncertain/,
+          );
+        },
+      );
+
+      assert.equal(await readFile(join(moved, "target.txt"), "utf8"), "created\n");
+    });
+  },
+);
+
+test(
+  "a rewrite of a path being created waits for the create to finish",
+  { skip: process.platform === "win32" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const originalRm = nodeFs.promises.rm;
+      let heldOnce = false;
+      let signalLinked = () => {};
+      const linked = new Promise<void>((resolve) => {
+        signalLinked = resolve;
+      });
+      let releaseTemporary = () => {};
+      const held = new Promise<void>((resolve) => {
+        releaseTemporary = resolve;
+      });
+
+      await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
+        (promises) => {
+          promises.rm = (async function (this: unknown, path: string, ...args: unknown[]) {
+            // Hold the staged copy so the published target stays at two links, widening the
+            // window in which a concurrent rewrite could observe a transient hard link.
+            if (!heldOnce && String(path).includes(".tmpdir")) {
+              heldOnce = true;
+              signalLinked();
+              await held;
+            }
+            return (originalRm as Function).call(this, path, ...args);
+          }) as typeof promises.rm;
+        },
+        async (module) => {
+          const create = module.applyEditsToFile(
+            { path: "missing/target.txt", rewrite: "created\n", onMissing: "create" },
+            directory,
+          );
+          await linked;
+          const rewrite = module.applyEditsToFile(
+            { path: "missing/target.txt", rewrite: "rewritten\n" },
+            directory,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          releaseTemporary();
+          await create;
+          await rewrite;
+        },
+        "../src/apply-edits.ts",
+      );
+
+      assert.equal(await readFile(join(directory, "missing", "target.txt"), "utf8"), "rewritten\n");
     });
   },
 );
