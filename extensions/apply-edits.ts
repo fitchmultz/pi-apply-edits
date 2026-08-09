@@ -23,7 +23,9 @@ const editSchema = Type.Object({
   }),
   newText: Type.String({
     description:
-      "Replacement text, or the text to insert when insert is set. May be empty only for replace (delete).",
+      "Replacement text, or the exact text to splice when insert is set. For insert, no newline or space is inferred: " +
+      'include it in newText, e.g. insert:"after", newText:"\\nimport path from \\"node:path\\";". ' +
+      "May be empty only for replace (delete).",
   }),
   all: Type.Optional(
     Type.Boolean({
@@ -33,8 +35,9 @@ const editSchema = Type.Object({
   insert: Type.Optional(
     StringEnum(["before", "after"] as const, {
       description:
-        'Insert newText exactly before or after the matched oldText instead of replacing it; no separator is added. ' +
-        'Example: insert an import after "import fs from \\"node:fs\\";".',
+        "Insert newText exactly before or after oldText without replacing the anchor. Zero separator: no newline or " +
+        'space is added. Example: oldText:"import fs from \\"node:fs\\";", ' +
+        'newText:"\\nimport path from \\"node:path\\";", insert:"after".',
     }),
   ),
 }, { additionalProperties: false });
@@ -300,7 +303,8 @@ function createApplyEditsToolWithStore(
       "rewrite, or the exact compact retry payload returned after an eligible failure. rewrite is " +
       "the easy whole-file path: pass the full new contents " +
       '(onMissing: "create" only when creating). edits is for small unique patches; set insert to ' +
-      '"before" or "after" to insert newText at an anchor without replacing it. Ordered edits run ' +
+      '"before" or "after" to splice newText at an anchor without replacing it; insert adds zero separator, so ' +
+      "newText must include any newline or space. Ordered edits run " +
       "sequentially in memory; nothing is written unless every edit (and every file in a batch) can be " +
       "planned successfully. oldText matches exactly first, then tolerates only an unambiguous full-line " +
       "typography, trailing-whitespace, or uniform-indentation difference. A repeated match is an error " +
@@ -310,7 +314,7 @@ function createApplyEditsToolWithStore(
     promptGuidelines: [
       "Use apply_edits for file mutations when available; it replaces built-in edit and write when safe.",
       'Use rewrite for full files or creates; use edits with short unique anchors and insert: "before"|"after" ' +
-        "for surgical changes.",
+        "for surgical changes. Insert splices with zero separator; include any newline or space in newText.",
       "Use files: [...] for plan-first batches. Reuse an exact compact retry payload when one is returned.",
     ],
     parameters: applyEditsSchema,

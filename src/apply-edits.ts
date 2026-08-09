@@ -348,6 +348,7 @@ interface PlannedMutation {
   matches: AppliedEditDetail[];
   operation: ApplyEditsDetails["operation"];
   editsRequested: number;
+  insertsRequested: number;
   needsWrite: boolean;
   createPlan?: NewFilePlan;
   lockKey?: string;
@@ -727,6 +728,7 @@ async function planFileMutation(
     matches,
     operation: needsWrite ? operation : "no_change",
     editsRequested: input.edits?.length ?? 1,
+    insertsRequested: input.edits?.filter((edit) => edit.insert !== undefined).length ?? 0,
     needsWrite,
     createPlan,
     lockKey,
@@ -776,6 +778,12 @@ async function commitPlannedMutation(
       ? await publishReplacement(plan.snapshot, plan.nextBytes, signal)
       : await publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan));
   details.warnings.push(...warnings);
+  if (plan.insertsRequested > 0) {
+    details.warnings.push(
+      `${plan.insertsRequested} insert${plan.insertsRequested === 1 ? "" : "s"} spliced exactly with zero separator; ` +
+        "all newlines and spaces came from newText.",
+    );
+  }
   const corrected = plan.matches.filter((item) => item.strategy !== "exact").length;
   const counts =
     (details.addedLines ?? 0) + (details.deletedLines ?? 0) > 0
@@ -785,7 +793,8 @@ async function commitPlannedMutation(
     corrected > 0
       ? `; ${corrected} edit${corrected === 1 ? "" : "s"} matched safely after normalization`
       : "";
-  const warningText = warnings.length > 0 ? ` Warning: ${warnings.join(" ")}` : "";
+  const warningText =
+    details.warnings.length > 0 ? ` Warning: ${details.warnings.join(" ")}` : "";
   const verb =
     plan.operation === "create" ? "Created" : plan.operation === "rewrite" ? "Rewrote" : "Edited";
   const unit =

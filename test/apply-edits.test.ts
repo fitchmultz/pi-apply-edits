@@ -1385,6 +1385,7 @@ test("multi-file batch plans then writes all files", async () => {
     );
 
     assert.match(result.summary, /Updated 2 files/);
+    assert.match(result.summary, /zero separator/);
     assert.equal("files" in result.details, true);
     if (!("files" in result.details)) throw new Error("expected batch details");
     assert.equal(result.details.files.length, 2);
@@ -1392,10 +1393,6 @@ test("multi-file batch plans then writes all files", async () => {
     assert.equal(await readFile(join(directory, "b.ts"), "utf8"), "const b = 1;\nexport {};\n");
   });
 });
-
-// Concurrent single-file creates under a shared missing root are not serialized: one wins the
-// exclusive mkdir and the other fails closed, which the caller retries. Serializing them needs
-// a second lock, and a second lock keyed by a resolvable path can canonicalize onto the first.
 
 test("multi-file batch publishes sibling creates under one missing root together", async () => {
   await inTemporaryDirectory(async (directory) => {
@@ -2980,5 +2977,31 @@ test("a batch rejects a dangling alias before its lock can collapse onto the tar
     );
 
     await assert.rejects(lstat(target), /ENOENT/);
+  });
+});
+
+test("insert results state that no separator was inferred", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const target = join(directory, "imports.ts");
+    await writeFile(target, 'import fs from "node:fs";\n');
+    const result = await applyEditsToFile(
+      {
+        path: target,
+        edits: [
+          {
+            oldText: 'import fs from "node:fs";',
+            newText: '\nimport path from "node:path";',
+            insert: "after",
+          },
+        ],
+      },
+      directory,
+    );
+    assert.match(result.summary, /Warning: 1 insert spliced exactly with zero separator/);
+    assert.match(result.summary, /all newlines and spaces came from newText/);
+    assert.equal(
+      await readFile(target, "utf8"),
+      'import fs from "node:fs";\nimport path from "node:path";\n',
+    );
   });
 });

@@ -7,6 +7,7 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import { visibleWidth } from "@earendil-works/pi-tui";
 import applyEditsExtension, {
   type ApplyEditsParameters,
+  applyEditsSchema,
   createApplyEditsTool,
   prepareApplyEditsArguments,
 } from "../extensions/apply-edits.ts";
@@ -326,13 +327,20 @@ test("tool contract covers rewrite, insert, and multi-file batch", () => {
   const tool = createApplyEditsTool();
   assert.match(tool.description, /multi-file batch/);
   assert.match(tool.description, /insert/);
+  assert.match(tool.description, /zero separator/);
   assert.match(tool.description, /onMissing: "create"/);
   assert.match(tool.description, /easy whole-file path/);
   assert.match(tool.description, /compact retry/);
   assert.match(tool.promptSnippet ?? "", /files:\[\]/);
   assert(tool.promptGuidelines?.some((g) => /rewrite for full files/.test(g)));
   assert(tool.promptGuidelines?.some((g) => /insert: "before"\|\"after"/.test(g)));
+  assert(tool.promptGuidelines?.some((g) => /zero separator/.test(g)));
   assert(tool.promptGuidelines?.some((g) => /files: \[\.\.\.\]/.test(g)));
+  const editItems = (applyEditsSchema.properties.edits as unknown as {
+    items: { properties: { newText: { description?: string }; insert: { anyOf?: Array<{ description?: string }> } } };
+  }).items;
+  assert.match(editItems.properties.newText.description ?? "", /no newline or space is inferred/);
+  assert.match(JSON.stringify(editItems.properties.insert), /Zero separator/);
   assert.equal((tool.parameters as { additionalProperties?: boolean }).additionalProperties, false);
 });
 
