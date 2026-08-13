@@ -129,6 +129,86 @@ test("ordered edits see prior replacements", () => {
   assert.deepEqual(result.matches.map((match) => match.strategy), ["exact", "exact"]);
 });
 
+test("range edits replace both anchors inclusively and stay ordered", () => {
+  const result = applyTargetedEdits(
+    "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/main\nafter\n",
+    [
+      {
+        oldText: "<<<<<<< HEAD\n",
+        endText: ">>>>>>> origin/main\n",
+        newText: "resolved\n",
+      },
+      { oldText: "after", newText: "done" },
+    ],
+    "conflicted.txt",
+  );
+
+  assert.equal(result.text, "before\nresolved\ndone\n");
+  assert.deepEqual(result.matches.map((match) => match.strategy), ["exact", "exact"]);
+});
+
+test("range anchors use existing line-ending and indentation correction", () => {
+  const result = applyTargetedEdits(
+    "before\r\n  START\r\n    old\r\n  END\r\nafter\r\n",
+    [{ oldText: "START\n  old\n", endText: "END\n", newText: "DONE\n" }],
+    "windows.txt",
+  );
+
+  assert.equal(result.text, "before\r\n  DONE\r\nafter\r\n");
+  assert.equal(result.matches[0]?.strategy, "indent-normalized");
+});
+
+test("range edits reject ambiguous, missing, reversed, and incompatible anchors", () => {
+  assert.throws(
+    () => applyTargetedEdits(
+      "START\none\nSTART\ntwo\nEND\n",
+      [{ oldText: "START\n", endText: "END\n", newText: "" }],
+      "file.txt",
+    ),
+    /range start unique/,
+  );
+  assert.throws(
+    () => applyTargetedEdits(
+      "START\none\nEND\ntwo\nEND\n",
+      [{ oldText: "START\n", endText: "END\n", newText: "" }],
+      "file.txt",
+    ),
+    /range end unique/,
+  );
+  assert.throws(
+    () => applyTargetedEdits(
+      "START\none\n",
+      [{ oldText: "START\n", endText: "END\n", newText: "" }],
+      "file.txt",
+    ),
+    /Could not find edits\[0\]\.endText/,
+  );
+  assert.throws(
+    () => applyTargetedEdits(
+      "END\none\nSTART\n",
+      [{ oldText: "START\n", endText: "END\n", newText: "" }],
+      "file.txt",
+    ),
+    /endText must match after oldText/,
+  );
+  assert.throws(
+    () => applyTargetedEdits(
+      "START\nEND\n",
+      [{ oldText: "START\n", endText: "END\n", newText: "", all: false }],
+      "file.txt",
+    ),
+    /all cannot be combined with endText/,
+  );
+  assert.throws(
+    () => applyTargetedEdits(
+      "START\nEND\n",
+      [{ oldText: "START\n", endText: "END\n", newText: "x", insert: "after" }],
+      "file.txt",
+    ),
+    /insert cannot be combined with endText/,
+  );
+});
+
 test("repeated text requires all or more context", () => {
   assert.throws(
     () => applyTargetedEdits("x\nx\n", [{ oldText: "x", newText: "y" }], "file.txt"),
@@ -366,9 +446,15 @@ test("all must be a boolean even through the core API", () => {
 test("empty, NUL, and no-op targeted edits fail", () => {
   assert.throws(() => applyTargetedEdits("x", [{ oldText: "", newText: "y" }], "f"), /must not be empty/);
   assert.throws(() => applyTargetedEdits("x", [{ oldText: "x", newText: "x" }], "f"), /no change/);
+  assert.throws(() => applyTargetedEdits("xy", [{ oldText: "x", endText: "", newText: "" }], "f"), /endText must not be empty/);
+  assert.throws(() => applyTargetedEdits("xy", [{ oldText: "x", endText: "\0", newText: "" }], "f"), /NUL/);
   assert.throws(() => applyTargetedEdits("x", [{ oldText: "x", newText: "\0" }], "f"), /NUL/);
   assert.throws(
     () => applyTargetedEdits("x", [{ oldText: "x", newText: "\ud800" }], "f"),
+    /valid Unicode/,
+  );
+  assert.throws(
+    () => applyTargetedEdits("xy", [{ oldText: "x", endText: "\ud800", newText: "" }], "f"),
     /valid Unicode/,
   );
 });

@@ -12,7 +12,7 @@ entries, so they remain active on unsupported platforms or when requested.
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v0.4.0
+pi install git:github.com/fitchmultz/pi-apply-edits@v0.5.0
 ```
 
 Or load a checkout directly:
@@ -41,8 +41,9 @@ Ladder (cheapest correct choice first):
 
 1. **Whole file / most of file / new file** → `rewrite` with full contents (`onMissing: "create"` only when creating). No `oldText` matching.
 2. **Small unique substring** → `edits` with short exact `oldText`
-3. **Insert at an anchor** → `edits` with `insert: "before"` or `insert: "after"`
-4. **Several files together** → `files: [{ path, edits|rewrite }, ...]` (plan-first batch; nothing writes until every file can be planned)
+3. **Large middle range** → `edits` with unique `oldText` and inclusive `endText` anchors
+4. **Insert at an anchor** → `edits` with `insert: "before"` or `insert: "after"`
+5. **Several files together** → `files: [{ path, edits|rewrite }, ...]` (plan-first batch; nothing writes until every file can be planned)
 
 Provide `files: [...]`, a single-file `path` with exactly one of `edits` or
 `rewrite`, or the exact compact retry payload returned after an eligible failure:
@@ -54,6 +55,21 @@ Provide `files: [...]`, a single-file `path` with exactly one of `edits` or
     {
       "oldText": "const state = 'old';",
       "newText": "const state = 'new';"
+    }
+  ]
+}
+```
+
+Replace or delete a range without resending its contents. Both anchors are included, must be unique and ordered, and cannot be combined with `all` or `insert`:
+
+```json
+{
+  "path": "src/conflicted.ts",
+  "edits": [
+    {
+      "oldText": "<<<<<<< HEAD\n",
+      "endText": ">>>>>>> origin/main\n",
+      "newText": ""
     }
   ]
 }
@@ -94,7 +110,8 @@ Multi-file batch (plan all, then write):
 
 Edits are ordered. Each edit sees the in-memory result of prior edits, but the
 file is committed only after every edit succeeds. A repeated match is rejected
-unless that edit explicitly sets `"all": true`.
+unless a non-range edit explicitly sets `"all": true`. Range edits require one
+unique start and one unique end anchor.
 
 To rewrite an existing file:
 
@@ -133,19 +150,21 @@ The tool includes the appropriate payload in eligible error text. `create` is
 available only for rewrite-only requests and refuses to overwrite every target
 observed missing during the original failure if any of them appears before retry.
 `oldText` is available only for edit-only
-requests and changes only the failing anchor; the original `newText` is preserved.
-Both retries are single-use when execution begins, remain available while a
+requests and changes only the failing start anchor; the original `endText` and
+`newText` are preserved. Range-end failures require a normal request. Both retries
+are single-use when execution begins, remain available while a
 prepared call awaits approval, expire when the current agent run settles or the
 session changes, and pass the reconstructed full request through normal
 validation and `tool_call` policy hooks. Other failures require a normal request.
 
 ## Matching and failure behavior
 
-1. Exact text is tried first.
+1. Exact text is tried first for every anchor.
 2. If exact text is absent, complete-line matching may correct typography,
    Unicode compatibility, trailing whitespace, or one uniform indentation
    shift.
-3. Corrected matches must still be unambiguous unless `all` is explicit.
+3. Corrected matches must still be unambiguous unless `all` is explicit on a
+   non-range edit. A range requires unique, ordered `oldText` and `endText` anchors.
 4. A failed or ambiguous edit returns current nearby text when useful and
    writes nothing from that call.
 

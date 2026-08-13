@@ -22,6 +22,8 @@ export type InsertPosition = "before" | "after";
 export interface TargetedEdit {
   oldText: string;
   newText: string;
+  /** When set, replace from oldText through endText, including both anchors. */
+  endText?: string;
   all?: boolean;
   /** When set, insert newText before/after the matched oldText instead of replacing it. */
   insert?: InsertPosition;
@@ -191,28 +193,47 @@ export function applyTargetedEdits(
     if (edit.insert !== undefined && edit.insert !== "before" && edit.insert !== "after") {
       throw new Error(`edits[${index}].insert must be "before" or "after"`);
     }
-    // Preserve the caller's exact anchor. Line-ending tolerance belongs in fuzzy matching,
-    // otherwise a mixed-EOL file can redirect an exact LF edit to a different CRLF block.
+    if (edit.endText !== undefined && typeof edit.endText !== "string") {
+      throw new Error(`edits[${index}].endText must be a string`);
+    }
+    // Preserve the caller's exact anchors. Line-ending tolerance belongs in fuzzy matching,
+    // otherwise a mixed-EOL file can redirect an exact LF edit to a different block.
     const oldText = edit.oldText;
     const newText = edit.newText;
+    const endText = edit.endText;
     if (oldText.length === 0) {
       throw new Error(`edits[${index}].oldText must not be empty`);
     }
-    if (oldText.includes("\0") || newText.includes("\0")) {
+    if (endText !== undefined && endText.length === 0) {
+      throw new Error(`edits[${index}].endText must not be empty`);
+    }
+    if (oldText.includes("\0") || newText.includes("\0") || endText?.includes("\0")) {
       throw new Error(`edits[${index}] cannot read or write NUL bytes`);
     }
-    if (hasUnpairedSurrogate(oldText) || hasUnpairedSurrogate(newText)) {
+    if (
+      hasUnpairedSurrogate(oldText) ||
+      hasUnpairedSurrogate(newText) ||
+      (endText !== undefined && hasUnpairedSurrogate(endText))
+    ) {
       throw new Error(`edits[${index}] must contain valid Unicode text`);
+    }
+    if (endText !== undefined && edit.all !== undefined) {
+      throw new Error(`edits[${index}].all cannot be combined with endText`);
+    }
+    if (endText !== undefined && edit.insert !== undefined) {
+      throw new Error(`edits[${index}].insert cannot be combined with endText`);
     }
     if (edit.insert) {
       if (newText.length === 0) {
         throw new Error(`edits[${index}].newText must not be empty when insert is set`);
       }
-    } else if (oldText === newText) {
+    } else if (endText === undefined && oldText === newText) {
       throw new Error(`edits[${index}] would make no change because oldText and newText are identical`);
     }
 
-    const match = findMatch(current, oldText, newText, edit.insert, edit.all === true, maxResultLength);
+    const match = endText === undefined
+      ? findMatch(current, oldText, newText, edit.insert, edit.all === true, maxResultLength)
+      : findRangeMatch(current, oldText, endText, newText, displayPath, index);
     if (!match) {
       throw new OldTextMatchError(
         missingEditMessage(current, oldText, newText, displayPath, index),
@@ -1009,6 +1030,83 @@ function findMatch(
   return undefined;
 }
 
+function findRangeMatch(
+  content: string,
+  oldText: string,
+  endText: string,
+  newText: string,
+  displayPath: string,
+  editIndex: number,
+): MatchResult | undefined {
+  const startMatch = findMatch(
+    content,
+    oldText,
+    newText,
+    undefined,
+    false,
+    Number.MAX_SAFE_INTEGER,
+  );
+  if (!startMatch) return undefined;
+  if (startMatch.replacements.length > 1) {
+    const lines = startMatch.replacements.slice(0, 8).map((item) => item.line);
+    const suffix = startMatch.replacements.length > lines.length ? ", …" : "";
+    throw new OldTextMatchError(
+      `edits[${editIndex}].oldText matched ${startMatch.replacements.length} locations in ${displayPath} ` +
+        `(lines ${lines.join(", ")}${suffix}). Add enough surrounding text to make the range start unique. ` +
+        "endText ranges do not support all. No changes were written.",
+      editIndex,
+    );
+  }
+
+  const endMatch = findMatch(
+    content,
+    endText,
+    "",
+    undefined,
+    false,
+    Number.MAX_SAFE_INTEGER,
+  );
+  if (!endMatch) {
+    throw new Error(missingEditMessage(content, endText, "", displayPath, editIndex, "endText"));
+  }
+  if (endMatch.replacements.length > 1) {
+    const lines = endMatch.replacements.slice(0, 8).map((item) => item.line);
+    const suffix = endMatch.replacements.length > lines.length ? ", …" : "";
+    throw new Error(
+      `edits[${editIndex}].endText matched ${endMatch.replacements.length} locations in ${displayPath} ` +
+        `(lines ${lines.join(", ")}${suffix}). Add enough surrounding text to make the range end unique. ` +
+        "No changes were written.",
+    );
+  }
+
+  const start = startMatch.replacements[0]!;
+  const end = endMatch.replacements[0]!;
+  if (end.matchStart < start.matchEnd) {
+    throw new Error(
+      `edits[${editIndex}].endText must match after oldText in ${displayPath} ` +
+        `(oldText line ${start.line}, endText line ${end.line}). No changes were written.`,
+    );
+  }
+
+  const strategy: MatchStrategy =
+    startMatch.strategy === "indent-normalized" || endMatch.strategy === "indent-normalized"
+      ? "indent-normalized"
+      : startMatch.strategy === "normalized" || endMatch.strategy === "normalized"
+        ? "normalized"
+        : "exact";
+  return {
+    strategy,
+    replacements: [{
+      start: start.matchStart,
+      end: end.matchEnd,
+      matchStart: start.matchStart,
+      matchEnd: end.matchEnd,
+      text: start.text,
+      line: start.line,
+    }],
+  };
+}
+
 function toReplacement(
   start: number,
   end: number,
@@ -1358,6 +1456,7 @@ function missingEditMessage(
   newText: string,
   path: string,
   index: number,
+  field: "oldText" | "endText" = "oldText",
 ): string {
   const replacementOffsets = newText.length > 0 ? findOccurrences(content, newText, 7) : [];
   const replacementLines = replacementOffsets
@@ -1373,9 +1472,9 @@ function missingEditMessage(
   const candidateLabel = closest?.sampled ? "Similar sampled block" : "Closest block";
   const hint = closest
     ? `\n${candidateLabel} is lines ${closest.startLine}-${closest.endLine} (${similarity}% similar):\n` +
-      `${closest.excerpt}\nUse the actual block above as oldText and retry.`
+      `${closest.excerpt}\nUse the actual block above as ${field} and retry.`
     : fileHeadHint(content);
-  return `Could not find edits[${index}].oldText in ${path}.${alreadyPresent}${hint}\nNo changes were written.`;
+  return `Could not find edits[${index}].${field} in ${path}.${alreadyPresent}${hint}\nNo changes were written.`;
 }
 
 function fileHeadHint(content: string): string {
