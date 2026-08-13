@@ -959,6 +959,7 @@ function findMatch(
   insert: InsertPosition | undefined,
   applyAll: boolean,
   maxResultLength: number,
+  field: "oldText" | "endText" = "oldText",
 ): MatchResult | undefined {
   const maximumReplacementLength = convertLineEndings(newText, "\r\n").length;
   const findExact = (search: string) => {
@@ -991,7 +992,7 @@ function findMatch(
   if (exactOffsets.length > maximumExpansionMatches) throwExpansionError();
   if (exactOffsets.length > MAX_REPLACEMENTS) {
     throw new Error(
-      `oldText matched more than ${MAX_REPLACEMENTS.toLocaleString()} locations. ` +
+      `${field} matched more than ${MAX_REPLACEMENTS.toLocaleString()} locations. ` +
         `Add surrounding context instead. No changes were written.`,
     );
   }
@@ -1018,12 +1019,12 @@ function findMatch(
   if (exact.length > 0) return { strategy: "exact", replacements: exact };
 
   const normalized = findLineBlockMatches(
-    content, oldText, newText, false, insert, applyAll, maxResultLength,
+    content, oldText, newText, false, insert, applyAll, maxResultLength, field,
   );
   if (normalized.length > 0) return { strategy: "normalized", replacements: normalized };
 
   const indentation = findLineBlockMatches(
-    content, oldText, newText, true, insert, applyAll, maxResultLength,
+    content, oldText, newText, true, insert, applyAll, maxResultLength, field,
   );
   if (indentation.length > 0) return { strategy: "indent-normalized", replacements: indentation };
 
@@ -1038,6 +1039,8 @@ function findRangeMatch(
   displayPath: string,
   editIndex: number,
 ): MatchResult | undefined {
+  // Match anchors without charging the replacement against only the start span;
+  // applyReplacements enforces the expansion budget against the full range.
   const startMatch = findMatch(
     content,
     oldText,
@@ -1065,6 +1068,7 @@ function findRangeMatch(
     undefined,
     false,
     Number.MAX_SAFE_INTEGER,
+    "endText",
   );
   if (!endMatch) {
     throw new Error(missingEditMessage(content, endText, "", displayPath, editIndex, "endText"));
@@ -1096,14 +1100,7 @@ function findRangeMatch(
         : "exact";
   return {
     strategy,
-    replacements: [{
-      start: start.matchStart,
-      end: end.matchEnd,
-      matchStart: start.matchStart,
-      matchEnd: end.matchEnd,
-      text: start.text,
-      line: start.line,
-    }],
+    replacements: [toReplacement(start.matchStart, end.matchEnd, start.text, start.line)],
   };
 }
 
@@ -1247,6 +1244,7 @@ function findLineBlockMatches(
   insert: InsertPosition | undefined,
   applyAll: boolean,
   maxResultLength: number,
+  field: "oldText" | "endText",
 ): Replacement[] {
   if (Buffer.byteLength(search) > FUZZY_SEARCH_LIMIT_BYTES) return [];
   const searchLines = splitLines(search);
@@ -1300,7 +1298,7 @@ function findLineBlockMatches(
     matches.push(toReplacement(matchStart, matchEnd, text, first.number, insert));
     if (matches.length > MAX_REPLACEMENTS) {
       throw new Error(
-        `Corrected oldText matched more than ${MAX_REPLACEMENTS.toLocaleString()} locations. ` +
+        `Corrected ${field} matched more than ${MAX_REPLACEMENTS.toLocaleString()} locations. ` +
           `Add surrounding context instead. No changes were written.`,
       );
     }

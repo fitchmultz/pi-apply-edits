@@ -207,6 +207,14 @@ test("range edits reject ambiguous, missing, reversed, and incompatible anchors"
     ),
     /insert cannot be combined with endText/,
   );
+  assert.throws(
+    () => applyTargetedEdits(
+      `START${"x".repeat(10_001)}`,
+      [{ oldText: "START", endText: "x", newText: "" }],
+      "file.txt",
+    ),
+    /endText matched more than 10,000 locations/,
+  );
 });
 
 test("repeated text requires all or more context", () => {

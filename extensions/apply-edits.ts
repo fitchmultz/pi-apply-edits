@@ -82,7 +82,7 @@ const fileSchema = Type.Object({
       minItems: 1,
       maxItems: MAX_EDITS_PER_FILE,
       description:
-        "Ordered replacements/inserts. Each edit sees the result of prior edits. " +
+        "Ordered replacements, ranges, and inserts. Each edit sees the result of prior edits. " +
         "The file is committed only if all succeed.",
     }),
   ),
@@ -108,7 +108,7 @@ export const applyEditsSchema = Type.Object({
       minItems: 1,
       maxItems: MAX_EDITS_PER_FILE,
       description:
-        "Single-file ordered replacements/inserts. Each edit sees the result of prior edits. " +
+        "Single-file ordered replacements, ranges, and inserts. Each edit sees the result of prior edits. " +
         "The file is committed only if all succeed.",
     }),
   ),
@@ -318,7 +318,7 @@ function createApplyEditsToolWithStore(
       "typography, trailing-whitespace, or uniform-indentation difference. A repeated match is an error " +
       "unless all is true for a non-range edit. Eligible no-write failures return a single-use compact retry payload.",
     promptSnippet:
-      "File writes: rewrite whole files, use edits for replacements/inserts/inclusive ranges, and files:[] for plan-first batches.",
+      "File writes: rewrite whole files, use edits for replacements, inserts, and inclusive ranges, and files:[] for plan-first batches.",
     promptGuidelines: [
       "Use apply_edits for file mutations when available; it replaces built-in edit and write when safe.",
       "Use apply_edits with rewrite for full files or creates, or edits with short unique anchors for surgical changes. " +

@@ -580,6 +580,25 @@ test("compact oldText retry changes only the failed range start in a five-file b
 
     await assert.rejects(
       tool.execute(
+        "call-missing-range-end",
+        prepare(tool, {
+          path: "4.txt",
+          edits: [{ oldText: "target one\n", endText: "MISSING", newText: "" }],
+        }),
+        undefined,
+        undefined,
+        { cwd: directory } as never,
+      ),
+      (error: unknown) => {
+        assert(error instanceof Error);
+        assert.match(error.message, /Could not find edits\[0\]\.endText/);
+        assert.doesNotMatch(error.message, /Compact retry/);
+        return true;
+      },
+    );
+
+    await assert.rejects(
+      tool.execute(
         "call-old-text",
         prepare(tool, { files }),
         undefined,
