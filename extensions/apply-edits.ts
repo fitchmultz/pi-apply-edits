@@ -18,15 +18,22 @@ import { supportsExistingFileReplacement } from "../src/file-system.ts";
 const editSchema = Type.Object({
   oldText: Type.String({
     description:
-      "Anchor text to find. For replace, this is the text to remove. " +
+      "Anchor text to find. For replace, this is the text to remove, or the inclusive range start when endText is set. " +
       "For insert, this is the unique nearby text to insert before/after.",
   }),
   newText: Type.String({
     description:
       "Replacement text, or the exact text to splice when insert is set. For insert, no newline or space is inferred: " +
       'include it in newText, e.g. insert:"after", newText:"\\nimport path from \\"node:path\\";". ' +
-      "May be empty only for replace (delete).",
+      "May be empty only for replace or range delete.",
   }),
+  endText: Type.Optional(
+    Type.String({
+      description:
+        "Inclusive range end. When set, replace from the start of oldText through the end of endText. " +
+        "Both anchors must be unique and ordered. Cannot be combined with all or insert.",
+    }),
+  ),
   all: Type.Optional(
     Type.Boolean({
       description: "Apply at every non-overlapping match. Default false; unique match required.",
@@ -75,7 +82,7 @@ const fileSchema = Type.Object({
       minItems: 1,
       maxItems: MAX_EDITS_PER_FILE,
       description:
-        "Ordered replacements/inserts. Each edit sees the result of prior edits. " +
+        "Ordered replacements, ranges, and inserts. Each edit sees the result of prior edits. " +
         "The file is committed only if all succeed.",
     }),
   ),
@@ -101,7 +108,7 @@ export const applyEditsSchema = Type.Object({
       minItems: 1,
       maxItems: MAX_EDITS_PER_FILE,
       description:
-        "Single-file ordered replacements/inserts. Each edit sees the result of prior edits. " +
+        "Single-file ordered replacements, ranges, and inserts. Each edit sees the result of prior edits. " +
         "The file is committed only if all succeed.",
     }),
   ),
@@ -142,7 +149,7 @@ type RetryStore = Map<string, StoredRetry>;
 const MAX_PENDING_RETRIES = 4;
 const SINGLE_FILE_ARGUMENT_KEYS = [
   "path", "file_path", "filePath", "edits", "rewrite", "content", "onMissing", "on_missing",
-  "requireMissing", "oldText", "old_string", "newText", "new_string", "all", "replace_all", "insert",
+  "requireMissing", "oldText", "old_string", "newText", "new_string", "endText", "all", "replace_all", "insert",
 ] as const;
 const RETRY_UNAVAILABLE =
   "Compact retry is unavailable or does not match this failure. Send a normal apply_edits request.";
@@ -298,24 +305,26 @@ function createApplyEditsToolWithStore(
     name: "apply_edits",
     label: "apply edits",
     description:
-      "Apply ordered text replacements/inserts, rewrite a UTF-8 text file, create one file, or apply " +
+      "Apply ordered text replacements, inclusive ranges, and inserts; rewrite a UTF-8 text file; create one file; or apply " +
       "a multi-file batch. Provide files: [...], a single-file path with exactly one of edits or " +
       "rewrite, or the exact compact retry payload returned after an eligible failure. rewrite is " +
       "the easy whole-file path: pass the full new contents " +
-      '(onMissing: "create" only when creating). edits is for small unique patches; set insert to ' +
+      '(onMissing: "create" only when creating). edits is for targeted patches; set endText to replace ' +
+      "from oldText through endText inclusively, or set insert to " +
       '"before" or "after" to splice newText at an anchor without replacing it; insert adds zero separator, so ' +
       "newText must include any newline or space. Ordered edits run " +
       "sequentially in memory; nothing is written unless every edit (and every file in a batch) can be " +
-      "planned successfully. oldText matches exactly first, then tolerates only an unambiguous full-line " +
+      "planned successfully. Anchors match exactly first, then tolerate only an unambiguous full-line " +
       "typography, trailing-whitespace, or uniform-indentation difference. A repeated match is an error " +
-      "unless all is true. Eligible no-write failures return a single-use compact retry payload.",
+      "unless all is true for a non-range edit. Eligible no-write failures return a single-use compact retry payload.",
     promptSnippet:
-      "File writes: rewrite whole files, edits/inserts for small patches, files:[] for plan-first multi-file batches.",
+      "File writes: rewrite whole files, use edits for replacements, inserts, and inclusive ranges, and files:[] for plan-first batches.",
     promptGuidelines: [
       "Use apply_edits for file mutations when available; it replaces built-in edit and write when safe.",
-      'Use rewrite for full files or creates; use edits with short unique anchors and insert: "before"|"after" ' +
-        "for surgical changes. Insert splices with zero separator; include any newline or space in newText.",
-      "Use files: [...] for plan-first batches. Reuse an exact compact retry payload when one is returned.",
+      "Use apply_edits with rewrite for full files or creates, or edits with short unique anchors for surgical changes. " +
+        "Set endText to replace a large middle range inclusively. " +
+        'Use insert: "before"|"after" to splice with zero separator; include any newline or space in newText.',
+      "Use apply_edits files: [...] for plan-first batches. Reuse an exact compact retry payload when one is returned.",
     ],
     parameters: applyEditsSchema,
     prepareArguments: (raw) => prepareToolArguments(raw, retries),
@@ -455,10 +464,11 @@ function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
 
   const oldText = readAlias(raw, ["oldText", "old_string"], "top-level oldText");
   const newText = readAlias(raw, ["newText", "new_string"], "top-level newText");
+  const endText = readAlias(raw, ["endText"], "top-level endText");
   const all = readAlias(raw, ["all", "replace_all"], "top-level all");
   const insert = readAlias(raw, ["insert"], "top-level insert");
   const hasTopLevelEdit =
-    oldText !== undefined || newText !== undefined || all !== undefined || insert !== undefined;
+    oldText !== undefined || newText !== undefined || endText !== undefined || all !== undefined || insert !== undefined;
   if (hasTopLevelEdit) {
     if (edits !== undefined || rewrite !== undefined) {
       throw new Error("Top-level edit fields cannot be combined with edits, rewrite, or content");
@@ -466,7 +476,7 @@ function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
     if (typeof oldText !== "string" || typeof newText !== "string") {
       throw new Error("Top-level edit repair requires both string oldText and newText fields");
     }
-    edits = [{ oldText, newText, all, insert }];
+    edits = [{ oldText, newText, all, insert, ...(endText === undefined ? {} : { endText }) }];
   }
   if (Array.isArray(edits)) edits = edits.map(normalizeEditAliases);
   if ((edits === undefined) === (rewrite === undefined)) {
@@ -489,14 +499,16 @@ function normalizeEditAliases(value: unknown): unknown {
   if (!isRecord(value)) return value;
   assertSupportedFields(
     value,
-    ["oldText", "old_string", "newText", "new_string", "all", "replace_all", "insert"],
+    ["oldText", "old_string", "newText", "new_string", "endText", "all", "replace_all", "insert"],
     "edit",
   );
+  const endText = readAlias(value, ["endText"], "edit endText");
   return {
     oldText: readAlias(value, ["oldText", "old_string"], "edit oldText"),
     newText: readAlias(value, ["newText", "new_string"], "edit newText"),
     all: readAlias(value, ["all", "replace_all"], "edit all"),
     insert: readAlias(value, ["insert"], "edit insert"),
+    ...(endText === undefined ? {} : { endText }),
   };
 }
 

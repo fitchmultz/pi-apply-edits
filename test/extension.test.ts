@@ -81,6 +81,21 @@ test("argument preparation repairs only common unambiguous edit and write shapes
     },
   );
 
+  assert.deepEqual(
+    prepareApplyEditsArguments({
+      path: "a.ts",
+      oldText: "START\n",
+      endText: "END\n",
+      newText: "done\n",
+    }),
+    {
+      path: "a.ts",
+      edits: [{ oldText: "START\n", endText: "END\n", newText: "done\n", all: undefined, insert: undefined }],
+      rewrite: undefined,
+      onMissing: undefined,
+    },
+  );
+
   assert.deepEqual(prepareApplyEditsArguments({ path: "new.ts", content: "hello\n", on_missing: "create" }), {
     path: "new.ts",
     edits: undefined,
@@ -323,9 +338,11 @@ test("renderer uses warning styling and does not invent a 201st diff line", () =
   assert.doesNotMatch(text, /more diff lines/);
 });
 
-test("tool contract covers rewrite, insert, and multi-file batch", () => {
+test("tool contract covers rewrite, range, insert, and multi-file batch", () => {
   const tool = createApplyEditsTool();
   assert.match(tool.description, /multi-file batch/);
+  assert.match(tool.description, /endText/);
+  assert.match(tool.description, /inclusively/);
   assert.match(tool.description, /insert/);
   assert.match(tool.description, /zero separator/);
   assert.match(tool.description, /onMissing: "create"/);
@@ -337,9 +354,16 @@ test("tool contract covers rewrite, insert, and multi-file batch", () => {
   assert(tool.promptGuidelines?.some((g) => /zero separator/.test(g)));
   assert(tool.promptGuidelines?.some((g) => /files: \[\.\.\.\]/.test(g)));
   const editItems = (applyEditsSchema.properties.edits as unknown as {
-    items: { properties: { newText: { description?: string }; insert: { anyOf?: Array<{ description?: string }> } } };
+    items: {
+      properties: {
+        newText: { description?: string };
+        endText: { anyOf?: Array<{ description?: string }> };
+        insert: { anyOf?: Array<{ description?: string }> };
+      };
+    };
   }).items;
   assert.match(editItems.properties.newText.description ?? "", /no newline or space is inferred/);
+  assert.match(JSON.stringify(editItems.properties.endText), /Inclusive range end/);
   assert.match(JSON.stringify(editItems.properties.insert), /Zero separator/);
   assert.equal((tool.parameters as { additionalProperties?: boolean }).additionalProperties, false);
 });
@@ -537,7 +561,7 @@ test("retry capacity never invalidates an advertised handle", async () => {
   }
 });
 
-test("compact oldText retry changes only the failed anchor in a five-file batch", async () => {
+test("compact oldText retry changes only the failed range start in a five-file batch", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-old-text-retry-"));
   try {
     const tool = createApplyEditsTool();
@@ -545,13 +569,33 @@ test("compact oldText retry changes only the failed anchor in a five-file batch"
       path: `${index}.txt`,
       edits: [{
         oldText: index === 4 ? "target" : `value-${index}`,
-        newText: index === 4 ? "changed" : `VALUE-${index}`,
+        newText: index === 4 ? "changed\n" : `VALUE-${index}`,
+        ...(index === 4 ? { endText: "END\n" } : {}),
       }],
     }));
     for (let index = 0; index < 4; index++) {
       await writeFile(join(directory, `${index}.txt`), `value-${index}\n`);
     }
-    await writeFile(join(directory, "4.txt"), "target one\ntarget two\n");
+    await writeFile(join(directory, "4.txt"), "target one\nmiddle\nEND\ntarget two\n");
+
+    await assert.rejects(
+      tool.execute(
+        "call-missing-range-end",
+        prepare(tool, {
+          path: "4.txt",
+          edits: [{ oldText: "target one\n", endText: "MISSING", newText: "" }],
+        }),
+        undefined,
+        undefined,
+        { cwd: directory } as never,
+      ),
+      (error: unknown) => {
+        assert(error instanceof Error);
+        assert.match(error.message, /Could not find edits\[0\]\.endText/);
+        assert.doesNotMatch(error.message, /Compact retry/);
+        return true;
+      },
+    );
 
     await assert.rejects(
       tool.execute(
@@ -578,6 +622,7 @@ test("compact oldText retry changes only the failed anchor in a five-file batch"
     assert.equal(expanded.files?.length, 5);
     assert.equal(expanded.files?.[0]?.edits?.[0]?.oldText, "value-0");
     assert.equal(expanded.files?.[4]?.edits?.[0]?.oldText, "target one");
+    assert.equal(expanded.files?.[4]?.edits?.[0]?.endText, "END\n");
 
     await tool.execute(
       "call-old-text-retry",

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0 — 2026-08-13
+
+- Add inclusive `endText` range replacements and deletions. Both anchors use the existing exact-then-corrected matching, must be unique and ordered, and ranges fail closed when combined with `all` or `insert`.
+- Expose range edits in the tool schema, argument repair, prompt guidance, documentation, and focused regression coverage.
+
 ## 0.4.2 — 2026-08-09
 
 - Fix the batch dedupe key produced by the key-discovery root terminator. When `realpath` failed for every ancestor, the missing components were appended to a path that already contained them, so a batch targeting a path and its ancestor bypassed the nested-entry rejection and could complete a partial write. The root branch now rebuilds the key from the filesystem root, and a regression drives both batch walks to the root terminator.
