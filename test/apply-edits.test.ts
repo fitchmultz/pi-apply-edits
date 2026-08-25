@@ -877,6 +877,39 @@ test(
 );
 
 test(
+  "Android refuses extended metadata that Termux cp cannot preserve",
+  { skip: process.platform !== "android" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const path = join(directory, "metadata.txt");
+      const bin = dirname(process.execPath);
+      await writeFile(path, "before\n");
+      await execFile(join(bin, "setfattr"), ["-n", "user.pi-apply-edits-test", "-v", "retained", path]);
+
+      await assert.rejects(
+        applyEditsToFile(
+          { path, edits: [{ oldText: "before", newText: "after" }] },
+          directory,
+        ),
+        /cannot preserve extended attribute user\.pi-apply-edits-test/,
+      );
+      assert.equal(await readFile(path, "utf8"), "before\n");
+
+      await execFile(join(bin, "setfattr"), ["-x", "user.pi-apply-edits-test", path]);
+      await execFile(join(bin, "setfacl"), ["-m", `u:${userInfo().username}:rw`, path]);
+      await assert.rejects(
+        applyEditsToFile(
+          { path, edits: [{ oldText: "before", newText: "after" }] },
+          directory,
+        ),
+        /cannot preserve (?:its extended ACL|extended attribute system\.posix_acl_access)/,
+      );
+      assert.equal(await readFile(path, "utf8"), "before\n");
+    });
+  },
+);
+
+test(
   "read-only files are refused even when their directory permits replacement",
   {
     skip: process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0),
@@ -899,7 +932,7 @@ test(
   },
 );
 
-test("hard-linked files are refused without changing either name", { skip: process.platform === "win32" }, async () => {
+test("hard-linked files are refused without changing either name", { skip: process.platform === "win32" || process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const first = join(directory, "first.txt");
     const second = join(directory, "second.txt");
@@ -1754,7 +1787,7 @@ test("multi-file batch rejects case-alias paths of the same file on case-insensi
   });
 });
 
-test("multi-file batch refuses hard-linked targets during plan before any write", async () => {
+test("multi-file batch refuses hard-linked targets during plan before any write", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const first = join(directory, "a.txt");
     const second = join(directory, "b.txt");
@@ -2528,7 +2561,7 @@ test("multi-file batch rejects unwritable target directories during plan", async
 });
 
 test(
-  "create rejects a target entry swapped for a symbolic link after linking",
+  "create rejects a target entry swapped for a symbolic link after publication",
   { skip: process.platform === "win32" },
   async () => {
     await inTemporaryDirectory(async (directory) => {
@@ -2572,7 +2605,7 @@ test(
 
 test(
   "create reports an uncertain commit when the parent moves after exclusive open",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
     await inTemporaryDirectory(async (directory) => {
       const parent = join(directory, "parent");
@@ -2619,7 +2652,7 @@ test(
 
 test(
   "replacement rejects a parent alias swapped during target validation",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
     await inTemporaryDirectory(async (directory) => {
       const original = join(directory, "original");
@@ -2731,7 +2764,7 @@ test(
 
 test(
   "create reports an uncertain commit when the parent moves right after linking",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
     await inTemporaryDirectory(async (directory) => {
       const parent = join(directory, "parent");
@@ -2849,7 +2882,7 @@ for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
 
 test(
   "a rewrite that resolves a path before it is created still completes",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
     // Pi canonicalizes each lock key with realpath when the lock is taken, so a create must
     // never hold two keys that name the same file once it exists. This is the window that
@@ -2909,7 +2942,7 @@ test(
 
 test(
   "an unverifiable create claims nothing about what remains on disk",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
     await inTemporaryDirectory(async (directory) => {
       const input = join(directory, "target.txt");
@@ -3684,7 +3717,10 @@ test("staging quarantine ENOENT reports an uncertain location", async () => {
     );
 
     assert.equal((await stat(join(escaped, "file"))).isFile(), true);
-    assert.equal((await stat(join(directory, "missing/file"))).nlink, 2);
+    assert.equal(
+      (await stat(join(directory, "missing/file"))).nlink,
+      process.platform === "android" ? 1 : 2,
+    );
   });
 });
 
@@ -3776,8 +3812,9 @@ test("nested create warns when staging disappears before quarantine precheck", a
     );
 
     assert(moved);
-    assert.equal((await stat(join(directory, "missing/file"))).nlink, 2);
-    assert.equal((await stat(join(escaped, "file"))).nlink, 2);
+    const expectedLinks = process.platform === "android" ? 1 : 2;
+    assert.equal((await stat(join(directory, "missing/file"))).nlink, expectedLinks);
+    assert.equal((await stat(join(escaped, "file"))).nlink, expectedLinks);
   });
 });
 
@@ -3870,7 +3907,7 @@ test(
   },
 );
 
-test("partial publication reports a moved staging tree as uncertain", async () => {
+test("partial publication reports a moved staging tree as uncertain", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalLink = nodeFs.promises.link;
     const originalRename = nodeFs.promises.rename;
@@ -3948,7 +3985,7 @@ test("staged container disappearance before cleanup returns a warning", async ()
   });
 });
 
-test("direct create warns when its temporary link escapes before unlink", async () => {
+test("direct create warns when its temporary link escapes before unlink", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRename = nodeFs.promises.rename;
     const escaped = join(directory, "escaped-temporary-link");
@@ -4010,7 +4047,7 @@ test("replacement warns when the recovery link escapes before unlink", async () 
   });
 });
 
-test("partial publication does not claim absence when staging cannot be inspected", async () => {
+test("partial publication does not claim absence when staging cannot be inspected", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalLink = nodeFs.promises.link;
     const originalLstat = nodeFs.promises.lstat;
@@ -4097,7 +4134,7 @@ test("staged container disappearance during rmdir returns a warning", async () =
   });
 });
 
-test("direct create warns when its temporary link escapes after quarantine", async () => {
+test("direct create warns when its temporary link escapes after quarantine", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRename = nodeFs.promises.rename;
     const escaped = join(directory, "escaped-temporary-link");
@@ -4132,7 +4169,7 @@ test("direct create warns when its temporary link escapes after quarantine", asy
   });
 });
 
-test("staged create cleanup reports an escape after its quarantine rename", async () => {
+test("staged create cleanup reports an escape after its quarantine rename", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRename = nodeFs.promises.rename;
     const escaped = join(directory, "escaped-staging");
@@ -4219,7 +4256,7 @@ test("non-empty temporary directory fails cleanup in place instead of being move
 
 test(
   "nested create whose rollback cleanup would exceed the budget is rejected during planning",
-  { skip: process.platform !== "darwin" && process.platform !== "linux" },
+  { skip: process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "android" },
   async () => {
     await inTemporaryDirectory(async (directory) => {
       const limit = process.platform === "darwin" ? 1024 : 4096;
@@ -4254,7 +4291,7 @@ test(
 
 test(
   "near-limit direct create is rejected during planning on supported POSIX platforms",
-  { skip: process.platform !== "darwin" && process.platform !== "linux" },
+  { skip: process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "android" },
   async () => {
     await inTemporaryDirectory(async (directory) => {
       const limit = process.platform === "darwin" ? 1024 : 4096;
@@ -4293,7 +4330,7 @@ test(
   },
 );
 
-test("replacement failure discloses an unverifiable recovery link", async () => {
+test("replacement failure discloses an unverifiable recovery link", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRename = nodeFs.promises.rename;
     const originalLstat = nodeFs.promises.lstat;
@@ -4328,7 +4365,7 @@ test("replacement failure discloses an unverifiable recovery link", async () => 
   });
 });
 
-test("successful create discloses an unverifiable temporary link", async () => {
+test("successful create discloses an unverifiable temporary link", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalLink = nodeFs.promises.link;
     const originalMkdir = nodeFs.promises.mkdir;
@@ -4368,7 +4405,7 @@ test("successful create discloses an unverifiable temporary link", async () => {
   });
 });
 
-test("post-unlink quarantine failure reports unknown state, not a retained link", async () => {
+test("post-unlink quarantine failure reports unknown state, not a retained link", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalLink = nodeFs.promises.link;
     const originalRmdir = nodeFs.promises.rmdir;
@@ -4550,7 +4587,7 @@ test("simulated Windows path budget rejects the overlong path during planning", 
   });
 });
 
-test("create failure discloses an unverifiable temporary file", async () => {
+test("create failure discloses an unverifiable temporary file", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalLink = nodeFs.promises.link;
     const originalLstat = nodeFs.promises.lstat;
@@ -4603,7 +4640,7 @@ test("create failure discloses an escaped temporary file", async () => {
   });
 });
 
-test("replacement failure discloses an escaped recovery link", async () => {
+test("replacement failure discloses an escaped recovery link", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const target = join(directory, "file");
     const escaped = join(directory, "escaped-recovery");
@@ -4629,7 +4666,7 @@ test("replacement failure discloses an escaped recovery link", async () => {
   });
 });
 
-test("batch failure preserves warnings from completed files", async () => {
+test("batch failure preserves warnings from completed files", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRename = nodeFs.promises.rename;
     const escaped = join(directory, "escaped-temporary-link");
@@ -4672,7 +4709,7 @@ test("batch failure preserves warnings from completed files", async () => {
   });
 });
 
-test("summary deduplicates repeated warnings so unique ones stay visible", async () => {
+test("summary deduplicates repeated warnings so unique ones stay visible", { skip: process.platform === "android" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     for (let index = 0; index < 4; index++) {
       await writeFile(join(directory, `existing-${index}`), "a");

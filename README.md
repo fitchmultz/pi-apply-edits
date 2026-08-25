@@ -12,13 +12,20 @@ entries, so they remain active on unsupported platforms or when requested.
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v0.5.0
+pi install git:github.com/fitchmultz/pi-apply-edits@v0.6.0
 ```
 
 Or load a checkout directly:
 
 ```sh
 pi -e /path/to/pi-apply-edits
+```
+
+On Android/Termux, atomic publication also requires GNU `cp`/`mv`, `getfacl`, and
+`getfattr`:
+
+```sh
+pkg install coreutils attr libacl
 ```
 
 Keep all three mutation tools for a session:
@@ -183,13 +190,15 @@ are rejected rather than guessed.
 - Calls on the same file share Pi's mutation queue; calls on different files
   remain parallel.
 - Existing files are published by same-directory atomic replacement from a
-  metadata-preserving native clone.
+  metadata-preserving native clone. Android/Termux uses GNU `mv --exchange` so the
+  displaced inode becomes the recovery file atomically.
 - A best-effort directory-entry, metadata, and content recheck runs immediately
-  before rename. Portable Node has no compare-and-swap rename, so an external writer in the
-  final system-call window can still win or be overwritten. Post-rename
-  verification reports success only for the prepared target. If either inode
-  changes, it never attempts rollback: the target is left untouched and a named
-  recovery path retains the earlier version for inspection.
+  before publication. Portable Node has no compare-and-swap rename, so on macOS
+  and Linux an external writer in the final system-call window can still win or
+  be overwritten. Android's exchange retains whichever inode occupied the target
+  at that instant. Post-publication verification reports success only for the
+  prepared target. If either inode changes, it never attempts rollback: the target
+  is left untouched and a named recovery path retains the earlier version for inspection.
 - Symbolic links are followed without replacing the link itself.
 - Existing ownership, ordinary permissions, ACLs, extended attributes, UTF-8
   BOMs, and dominant line endings are preserved on macOS and Linux. Setuid and
@@ -197,9 +206,13 @@ are rejected rather than guessed.
   rejects capability-bearing files because the kernel can clear capabilities
   when content changes. Replacement relies on `/bin/cp` metadata cloning, requires
   GNU `cp` on Linux, and fails before mutation if metadata cannot be verified.
-- Existing-file replacement fails closed on other platforms; keep Pi's
-  built-ins enabled there until a native metadata-preserving publisher is
-  implemented. Explicit create remains available.
+- Android/Termux preserves ownership, ordinary permissions, SELinux context,
+  UTF-8 BOMs, and line endings. It fails closed on extended ACLs or non-SELinux
+  extended attributes because Termux `cp` cannot preserve them. Startup probes
+  GNU `mv --exchange` and `--no-clobber`; Pi's built-ins remain enabled if any
+  required command or atomic operation is unavailable.
+- Existing-file replacement fails closed on other platforms. Explicit create
+  remains available.
 - Missing parent directories are created only for an explicit create. Creates are
   fully staged before publication, and the missing root and every file name are
   then claimed with exclusive no-clobber operations. Concurrent creates under one
@@ -215,8 +228,8 @@ are rejected rather than guessed.
   relocated with its parent. Identity is rechecked after each file move, and detected swaps are
   preserved for inspection.
 - Planning rejects a mutation before staging or any batch write when its longest computed
-  temporary, staging, or cleanup path exceeds 991 UTF-8 bytes on macOS, 4063 on Linux, or
-  32702 UTF-16 code units on Windows. These explicit support boundaries retain a 32-unit
+  temporary, staging, or cleanup path exceeds 991 UTF-8 bytes on macOS, 4063 on Linux or
+  Android, or 32702 UTF-16 code units on Windows. These explicit support boundaries retain a 32-unit
   POSIX or 64-unit Windows safety margin below the platform path limit. The error reports the
   planned length and limit; no filesystem mutation occurs.
 - A newly claimed directory is owner-checked before publication or cleanup, so a

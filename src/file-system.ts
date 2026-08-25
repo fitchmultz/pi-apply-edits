@@ -6,7 +6,9 @@ import {
   link,
   lstat,
   mkdir,
+  mkdtemp,
   open,
+  readFile,
   readdir,
   realpath,
   rename,
@@ -14,7 +16,9 @@ import {
   rmdir,
   stat,
   unlink,
+  writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 export interface FileSnapshot {
@@ -25,6 +29,8 @@ export interface FileSnapshot {
   bytes: Buffer;
   symbolicLink: boolean;
 }
+
+const androidMetadataBySnapshot = new WeakMap<FileSnapshot, string>();
 
 export interface ReplacementPublishHooks {
   beforeRename?: (paths: { target: string; temporary: string }) => void | Promise<void>;
@@ -154,6 +160,11 @@ export async function assertSafeToReplace(
   await assertDirectoryWritableForPublish(dirname(snapshot.actualPath), snapshot.inputPath);
   if (process.platform === "linux") {
     await assertNoLinuxCapabilities(snapshot.actualPath, signal);
+  } else if (support.strategy === "exchange") {
+    androidMetadataBySnapshot.set(
+      snapshot,
+      await readPreservableAndroidMetadata(snapshot.actualPath, support, signal),
+    );
   }
 }
 
@@ -264,6 +275,8 @@ export async function publishReplacement(
   hooks?: ReplacementPublishHooks,
 ): Promise<string[]> {
   await assertSafeToReplace(snapshot, signal);
+  const support = await replacementSupportInfo();
+  if (!support.supported) throw new Error(`${support.reason}. No changes were written.`);
 
   const directory = dirname(snapshot.actualPath);
   const temporaryDirectory = temporaryDirectoryPath(snapshot.actualPath);
@@ -285,7 +298,12 @@ export async function publishReplacement(
       const createdDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
       assertCreatedDirectoryOwner(createdDirectoryStats, temporaryDirectory);
       temporaryDirectoryStats = createdDirectoryStats;
-      await cloneWithMetadata(snapshot.actualPath, temporary, signal);
+      await cloneWithMetadata(
+        snapshot.actualPath,
+        temporary,
+        signal,
+        androidMetadataBySnapshot.get(snapshot),
+      );
     } catch (error) {
       throwIfAborted(signal);
       throw new Error(
@@ -315,20 +333,47 @@ export async function publishReplacement(
     if (!temporaryStats || !sameSnapshotStats(temporaryStats, currentTemporary)) {
       throw new Error(`Temporary file changed before commit: ${temporary}. No changes were written.`);
     }
-    // ponytail: Node has no portable compare-and-swap rename. A recovery link protects in-place
-    // external writes; use a platform exchange primitive if atomic-replacement races are observed.
     await assertSnapshotCurrent(snapshot);
     throwIfAborted(signal);
-    await link(snapshot.actualPath, recovery);
-    recoveryLinked = true;
-    const linkedBaseline = await assertLinkedTargetCurrent(snapshot);
-    await hooks?.beforeRename?.({ target: snapshot.actualPath, temporary });
-    throwIfAborted(signal);
-    await assertPreparedFileCurrent(temporary, temporaryStats, bytes, "Temporary replacement");
-    await assertLinkedTargetCurrent(snapshot, linkedBaseline);
-    throwIfAborted(signal);
-    await rename(temporary, snapshot.actualPath);
-    replacementPublished = true;
+    if (support.strategy === "exchange") {
+      await hooks?.beforeRename?.({ target: snapshot.actualPath, temporary });
+      throwIfAborted(signal);
+      await assertPreparedFileCurrent(temporary, temporaryStats, bytes, "Temporary replacement");
+      await assertSnapshotCurrent(snapshot);
+      throwIfAborted(signal);
+      try {
+        await exchangePreparedFiles(temporary, snapshot.actualPath, temporaryStats, snapshot.stats);
+        replacementPublished = true;
+        const retained = await movePreparedFileNoReplace(temporary, recovery, snapshot.stats);
+        if (!retained) {
+          throw new Error(`Recovery path appeared during atomic replacement: ${recovery}`);
+        }
+        recoveryLinked = true;
+      } catch (error) {
+        if (replacementPublished || error instanceof AtomicMoveUncertainError) {
+          recoveryLinked = true;
+          replacementPublished = true;
+          throw new AtomicMoveUncertainError(
+            `Atomic replacement or recovery retention could not be verified. Commit status is uncertain; ` +
+              `inspect ${snapshot.actualPath}, ${temporary}, and ${recovery}. Cause: ${errorMessage(error)}`,
+          );
+        }
+        throw error;
+      }
+    } else {
+      // ponytail: Node has no portable compare-and-swap rename. A recovery link protects in-place
+      // external writes; use a platform exchange primitive if atomic-replacement races are observed.
+      await link(snapshot.actualPath, recovery);
+      recoveryLinked = true;
+      const linkedBaseline = await assertLinkedTargetCurrent(snapshot);
+      await hooks?.beforeRename?.({ target: snapshot.actualPath, temporary });
+      throwIfAborted(signal);
+      await assertPreparedFileCurrent(temporary, temporaryStats, bytes, "Temporary replacement");
+      await assertLinkedTargetCurrent(snapshot, linkedBaseline);
+      throwIfAborted(signal);
+      await rename(temporary, snapshot.actualPath);
+      replacementPublished = true;
+    }
 
     let recoveryState: { stats: BigIntStats; bytes: Buffer };
     let publishedStats: BigIntStats;
@@ -553,6 +598,7 @@ export async function publishPreparedNestedFiles(
   const publishedDirectories = new Map<string, BigIntStats>();
   const stagedAfterPublish = new Map(prepared.stagedIdentities);
   const publishedFiles: string[] = [];
+  const replacementSupport = await replacementSupportInfo();
   let copyHandle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     await prepared.hooks?.beforeDirectoryPublish?.({ staging, target: publishRoot });
@@ -639,65 +685,99 @@ export async function publishPreparedNestedFiles(
       const stagedIdentity = stagedIdentities.get(relativePath);
       await assertPreparedFileCurrent(stagedTarget, stagedIdentity, bytes, "Staged create file");
       await assertPublishedDirectoriesCurrent(publishedDirectories);
-      let linked = true;
-      try {
-        throwIfAborted(signal);
-        await link(stagedTarget, target);
-        publishedFiles.push(target);
-      } catch (error) {
-        if (isCode(error, "EEXIST")) {
-          throw new Error(`File appeared before create: ${target}.`);
-        }
-        if (!isCode(error, "EPERM") && !isCode(error, "ENOTSUP") && !isCode(error, "ENOSYS")) {
-          throw error;
-        }
-        linked = false;
+      let publication: "link" | "move" | "copy" = "link";
+      let movedIdentity: BigIntStats | undefined;
+      if (replacementSupport.supported && replacementSupport.strategy === "exchange") {
+        publication = "move";
+        const candidate = join(prepared.container, "move");
+        movedIdentity = await preparePrivatePublicationFile(candidate, bytes, signal);
         await assertPublishedDirectoriesCurrent(publishedDirectories);
         throwIfAborted(signal);
-        copyHandle = await open(target, "wx", 0o666);
-        publishedFiles.push(target);
-        const openedStats = await copyHandle.stat({ bigint: true });
-        const pathStats = await lstat(target, { bigint: true });
-        if (!pathStats.isFile() || pathStats.isSymbolicLink() || !sameIdentity(openedStats, pathStats)) {
-          throw new Error(`Created file path changed during publication: ${target}.`);
-        }
+        let moved: boolean;
         try {
-          await assertPublishedDirectoriesCurrent(publishedDirectories);
-          throwIfAborted(signal);
+          moved = await movePreparedFileNoReplace(candidate, target, movedIdentity);
         } catch (error) {
+          if (error instanceof AtomicMoveUncertainError) {
+            publishedFiles.push(target);
+            throw error;
+          }
           try {
-            const removed = await unlinkOwnedPath(target, openedStats, "Escaped fallback create file");
-            if (!removed) throw new Error(`Fallback create file location changed before cleanup: ${target}.`);
-            publishedFiles.pop();
+            await unlinkOwnedPath(candidate, movedIdentity, "Atomic create candidate");
           } catch (cleanupError) {
             throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`);
-          } finally {
-            await copyHandle.close();
-            copyHandle = undefined;
           }
           throw error;
         }
-        await copyHandle.writeFile(bytes, { signal });
-        await copyHandle.sync();
-        const copiedStats = await copyHandle.stat({ bigint: true });
-        await copyHandle.close();
-        copyHandle = undefined;
-        const copiedState = await readStableRegularEntry(target);
-        if (!samePublishedState(copiedStats, copiedState.stats) || !copiedState.bytes.equals(bytes)) {
-          throw new Error(`Created file changed during publication: ${target}.`);
+        if (!moved) {
+          await unlinkOwnedPath(candidate, movedIdentity, "Atomic create candidate");
+          throw new Error(`File appeared before create: ${target}.`);
         }
-        prepared.warnings.push(
-          `Atomic hard-link publication was unavailable for ${target}; exclusive create fallback was used.`,
-        );
+        publishedFiles.push(target);
+      } else {
+        try {
+          throwIfAborted(signal);
+          await link(stagedTarget, target);
+          publishedFiles.push(target);
+        } catch (error) {
+          if (isCode(error, "EEXIST")) {
+            throw new Error(`File appeared before create: ${target}.`);
+          }
+          if (!isCode(error, "EACCES") && !isCode(error, "EPERM") && !isCode(error, "ENOTSUP") && !isCode(error, "ENOSYS")) {
+            throw error;
+          }
+          publication = "copy";
+          await assertPublishedDirectoriesCurrent(publishedDirectories);
+          throwIfAborted(signal);
+          copyHandle = await open(target, "wx", 0o666);
+          publishedFiles.push(target);
+          const openedStats = await copyHandle.stat({ bigint: true });
+          const pathStats = await lstat(target, { bigint: true });
+          if (!pathStats.isFile() || pathStats.isSymbolicLink() || !sameIdentity(openedStats, pathStats)) {
+            throw new Error(`Created file path changed during publication: ${target}.`);
+          }
+          try {
+            await assertPublishedDirectoriesCurrent(publishedDirectories);
+            throwIfAborted(signal);
+          } catch (error) {
+            try {
+              const removed = await unlinkOwnedPath(target, openedStats, "Escaped fallback create file");
+              if (!removed) throw new Error(`Fallback create file location changed before cleanup: ${target}.`);
+              publishedFiles.pop();
+            } catch (cleanupError) {
+              throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`);
+            } finally {
+              await copyHandle.close();
+              copyHandle = undefined;
+            }
+            throw error;
+          }
+          await copyHandle.writeFile(bytes, { signal });
+          await copyHandle.sync();
+          const copiedStats = await copyHandle.stat({ bigint: true });
+          await copyHandle.close();
+          copyHandle = undefined;
+          const copiedState = await readStableRegularEntry(target);
+          if (!samePublishedState(copiedStats, copiedState.stats) || !copiedState.bytes.equals(bytes)) {
+            throw new Error(`Created file changed during publication: ${target}.`);
+          }
+          prepared.warnings.push(
+            `Atomic hard-link publication was unavailable for ${target}; exclusive create fallback was used.`,
+          );
+        }
       }
 
       const publishedState = await readStableRegularEntry(target);
       if (!publishedState.bytes.equals(bytes)) {
         throw new Error(`Created file changed during publication: ${target}.`);
       }
-      if (linked) {
+      if (publication !== "copy") {
         const stagedState = await readStableFile(stagedTarget);
-        if (!sameIdentity(stagedState.stats, publishedState.stats) || !stagedState.bytes.equals(bytes)) {
+        const expectedPublishedIdentity = publication === "link" ? stagedState.stats : movedIdentity;
+        if (
+          !expectedPublishedIdentity ||
+          !sameIdentity(expectedPublishedIdentity, publishedState.stats) ||
+          !stagedState.bytes.equals(bytes)
+        ) {
           throw new Error(`Staged create file changed during publication: ${stagedTarget}.`);
         }
         stagedAfterPublish.set(relativePath, stagedState.stats);
@@ -705,7 +785,7 @@ export async function publishPreparedNestedFiles(
       try {
         await assertPublishedDirectoriesCurrent(publishedDirectories);
       } catch (error) {
-        if (linked) {
+        if (publication !== "copy") {
           try {
             const removed = await unlinkOwnedPath(target, publishedState.stats, "Escaped create file");
             if (!removed) throw new Error(`Created file location changed before cleanup: ${target}.`);
@@ -967,6 +1047,7 @@ export async function publishNewFile(
   }
   const temporaryDirectory = temporaryDirectoryPath(targetPath);
   const temporary = join(temporaryDirectory, "create");
+  const replacementSupport = await replacementSupportInfo();
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let temporaryStats: BigIntStats | undefined;
   let temporaryIdentity: BigIntStats | undefined;
@@ -1014,44 +1095,96 @@ export async function publishNewFile(
       await assertPreparedFileCurrent(temporary, temporaryStats, bytes, "Temporary create file");
       if (plan) await assertNewFilePlanCurrent(plan);
       throwIfAborted(signal);
-      await link(temporary, targetPath);
-      let targetState: { stats: BigIntStats; bytes: Buffer };
-      try {
-        targetState = await readStableRegularEntry(targetPath);
-      } catch (verifyError) {
-        // The link succeeded, so the create may be published, but nothing further can be
-        // asserted: the entry may have been removed, or a parent may have moved. Name the
-        // original locations and claim nothing about what still exists.
-        published = true;
-        throw new Error(
-          `Create publication could not be verified at ${targetPath}. Commit status is uncertain; ` +
-            `nothing was rolled back. Inspect ${targetPath} and the temporary source ${temporary}, ` +
-            `and their new locations if a parent directory moved. Cause: ${errorMessage(verifyError)}`,
-        );
-      }
-      const temporaryState = await readStableFile(temporary);
-      if (!sameIdentity(temporaryState.stats, targetState.stats) || !targetState.bytes.equals(bytes)) {
-        throw new Error(`Created file changed during publication: ${targetPath}.`);
-      }
-      try {
-        if (plan) await assertNewFilePlanCurrent(plan);
-      } catch (parentError) {
+      if (replacementSupport.supported && replacementSupport.strategy === "exchange") {
+        const candidate = join(temporaryDirectory, "publish");
+        const candidateStats = await preparePrivatePublicationFile(candidate, bytes, signal);
+        let moved: boolean;
         try {
-          const removed = await unlinkOwnedPath(targetPath, targetState.stats, "Escaped create file");
-          if (!removed) throw new Error(`Created file location changed before cleanup: ${targetPath}.`);
-        } catch (cleanupError) {
+          moved = await movePreparedFileNoReplace(candidate, targetPath, candidateStats);
+        } catch (error) {
+          if (error instanceof AtomicMoveUncertainError) {
+            published = true;
+            throw error;
+          }
+          try {
+            await unlinkOwnedPath(candidate, candidateStats, "Atomic create candidate");
+          } catch (cleanupError) {
+            throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`);
+          }
+          throw error;
+        }
+        if (!moved) {
+          await unlinkOwnedPath(candidate, candidateStats, "Atomic create candidate");
+          throw new Error(`File appeared before create: ${targetPath}. No changes were written.`);
+        }
+        let targetState: { stats: BigIntStats; bytes: Buffer };
+        try {
+          targetState = await readStableRegularEntry(targetPath);
+        } catch (verifyError) {
+          published = true;
           throw new Error(
-            `${errorMessage(parentError)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
+            `Create publication could not be verified at ${targetPath}. Commit status is uncertain; ` +
+              `nothing was rolled back. Inspect ${targetPath} and the temporary source ${temporary}, ` +
+              `and their new locations if a parent directory moved. Cause: ${errorMessage(verifyError)}`,
           );
         }
-        throw parentError;
+        if (!sameIdentity(candidateStats, targetState.stats) || !targetState.bytes.equals(bytes)) {
+          throw new Error(`Created file changed during publication: ${targetPath}.`);
+        }
+        try {
+          if (plan) await assertNewFilePlanCurrent(plan);
+        } catch (parentError) {
+          try {
+            const removed = await unlinkOwnedPath(targetPath, targetState.stats, "Escaped create file");
+            if (!removed) throw new Error(`Created file location changed before cleanup: ${targetPath}.`);
+          } catch (cleanupError) {
+            throw new Error(
+              `${errorMessage(parentError)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
+            );
+          }
+          throw parentError;
+        }
+        published = true;
+      } else {
+        await link(temporary, targetPath);
+        let targetState: { stats: BigIntStats; bytes: Buffer };
+        try {
+          targetState = await readStableRegularEntry(targetPath);
+        } catch (verifyError) {
+          // The link succeeded, so the create may be published, but nothing further can be
+          // asserted: the entry may have been removed, or a parent may have moved. Name the
+          // original locations and claim nothing about what still exists.
+          published = true;
+          throw new Error(
+            `Create publication could not be verified at ${targetPath}. Commit status is uncertain; ` +
+              `nothing was rolled back. Inspect ${targetPath} and the temporary source ${temporary}, ` +
+              `and their new locations if a parent directory moved. Cause: ${errorMessage(verifyError)}`,
+          );
+        }
+        const temporaryState = await readStableFile(temporary);
+        if (!sameIdentity(temporaryState.stats, targetState.stats) || !targetState.bytes.equals(bytes)) {
+          throw new Error(`Created file changed during publication: ${targetPath}.`);
+        }
+        try {
+          if (plan) await assertNewFilePlanCurrent(plan);
+        } catch (parentError) {
+          try {
+            const removed = await unlinkOwnedPath(targetPath, targetState.stats, "Escaped create file");
+            if (!removed) throw new Error(`Created file location changed before cleanup: ${targetPath}.`);
+          } catch (cleanupError) {
+            throw new Error(
+              `${errorMessage(parentError)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
+            );
+          }
+          throw parentError;
+        }
+        published = true;
       }
-      published = true;
     } catch (error) {
       if (isCode(error, "EEXIST")) {
         throw new Error(`File appeared before create: ${targetPath}. No changes were written.`);
       }
-      if (!isCode(error, "EPERM") && !isCode(error, "ENOTSUP") && !isCode(error, "ENOSYS")) {
+      if (!isCode(error, "EACCES") && !isCode(error, "EPERM") && !isCode(error, "ENOTSUP") && !isCode(error, "ENOSYS")) {
         throw error;
       }
       let target: Awaited<ReturnType<typeof open>> | undefined;
@@ -1690,19 +1823,47 @@ function temporaryDirectoryPath(targetPath: string): string {
   return `${temporaryPath(targetPath)}dir`;
 }
 
-async function cloneWithMetadata(source: string, target: string, signal?: AbortSignal): Promise<void> {
+class AtomicMoveUncertainError extends Error {}
+
+type ReplacementSupport =
+  | { supported: true; strategy: "hard-link"; cp: string; getcap?: string }
+  | {
+      supported: true;
+      strategy: "exchange";
+      cp: string;
+      mv: string;
+      getfacl: string;
+      getfattr: string;
+    }
+  | { supported: false; reason: string };
+
+type AndroidReplacementSupport = Extract<
+  ReplacementSupport,
+  { supported: true; strategy: "exchange" }
+>;
+
+async function cloneWithMetadata(
+  source: string,
+  target: string,
+  signal?: AbortSignal,
+  expectedAndroidMetadata?: string,
+): Promise<void> {
   // Platform/capability checks run in assertSafeToReplace before publish/plan commit.
+  const support = await replacementSupportInfo();
+  if (!support.supported) throw new Error(support.reason);
   const args = process.platform === "darwin"
     ? ["-p", source, target]
     : ["--preserve=all", "--", source, target];
-  await new Promise<void>((resolve, reject) => {
-    execFile("/bin/cp", args, { signal }, (error) => (error ? reject(error) : resolve()));
-  });
+  await execText(support.cp, args, signal);
+  if (support.strategy === "exchange") {
+    const sourceMetadata = expectedAndroidMetadata ??
+      await readPreservableAndroidMetadata(source, support, signal);
+    const targetMetadata = await readPreservableAndroidMetadata(target, support, signal);
+    if (sourceMetadata !== targetMetadata) {
+      throw new Error(`Termux could not preserve ACL or SELinux metadata for ${source}`);
+    }
+  }
 }
-
-type ReplacementSupport =
-  | { supported: true; getcap?: string }
-  | { supported: false; reason: string };
 
 let cachedReplacementSupport: Promise<ReplacementSupport> | undefined;
 
@@ -1716,6 +1877,7 @@ function replacementSupportInfo(): Promise<ReplacementSupport> {
 }
 
 async function detectReplacementSupport(): Promise<ReplacementSupport> {
+  if (process.platform === "android") return detectAndroidReplacementSupport();
   if (process.platform !== "darwin" && process.platform !== "linux") {
     return {
       supported: false,
@@ -1727,7 +1889,9 @@ async function detectReplacementSupport(): Promise<ReplacementSupport> {
   } catch {
     return { supported: false, reason: "Atomic replacement requires executable /bin/cp" };
   }
-  if (process.platform === "darwin") return { supported: true };
+  if (process.platform === "darwin") {
+    return { supported: true, strategy: "hard-link", cp: "/bin/cp" };
+  }
 
   const getcap = await firstExecutable([
     "/usr/sbin/getcap",
@@ -1749,7 +1913,224 @@ async function detectReplacementSupport(): Promise<ReplacementSupport> {
   } catch {
     return { supported: false, reason: "Atomic replacement on Linux requires GNU cp" };
   }
-  return { supported: true, getcap };
+  return { supported: true, strategy: "hard-link", cp: "/bin/cp", getcap };
+}
+
+async function detectAndroidReplacementSupport(): Promise<ReplacementSupport> {
+  const bin = dirname(process.execPath);
+  const cp = join(bin, "cp");
+  const mv = join(bin, "mv");
+  const getfacl = join(bin, "getfacl");
+  const getfattr = join(bin, "getfattr");
+  for (const executable of [cp, mv, getfacl, getfattr]) {
+    try {
+      await access(executable, constants.X_OK);
+    } catch {
+      return {
+        supported: false,
+        reason: `Atomic replacement on Android/Termux requires executable ${executable}`,
+      };
+    }
+  }
+  try {
+    const [cpVersion, mvVersion] = await Promise.all([
+      execText(cp, ["--version"]),
+      execText(mv, ["--version"]),
+    ]);
+    if (!cpVersion.includes("GNU coreutils") || !mvVersion.includes("GNU coreutils")) {
+      throw new Error("GNU coreutils cp and mv are required");
+    }
+    await probeAndroidAtomicMoves(mv);
+  } catch (error) {
+    return {
+      supported: false,
+      reason: `Atomic replacement on Android/Termux is unavailable: ${errorMessage(error)}`,
+    };
+  }
+  return { supported: true, strategy: "exchange", cp, mv, getfacl, getfattr };
+}
+
+async function probeAndroidAtomicMoves(mv: string): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-mv-"));
+  try {
+    const left = join(directory, "left");
+    const right = join(directory, "right");
+    await writeFile(left, "left");
+    await writeFile(right, "right");
+    await execText(mv, ["--exchange", "--", left, right]);
+    if ((await readFile(left, "utf8")) !== "right" || (await readFile(right, "utf8")) !== "left") {
+      throw new Error("mv --exchange did not exchange files");
+    }
+
+    const source = join(directory, "source");
+    const target = join(directory, "target");
+    await writeFile(source, "source");
+    await writeFile(target, "target");
+    await execText(mv, ["--no-clobber", "--", source, target]);
+    if ((await readFile(source, "utf8")) !== "source" || (await readFile(target, "utf8")) !== "target") {
+      throw new Error("mv --no-clobber replaced an existing file");
+    }
+    await unlink(target);
+    await execText(mv, ["--no-clobber", "--", source, target]);
+    if ((await readFile(target, "utf8")) !== "source" || (await lstatIfExists(source))) {
+      throw new Error("mv --no-clobber did not publish a missing file");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function readPreservableAndroidMetadata(
+  path: string,
+  support: AndroidReplacementSupport,
+  signal?: AbortSignal,
+): Promise<string> {
+  const [xattrOutput, aclOutput] = await Promise.all([
+    execText(
+      support.getfattr,
+      ["--absolute-names", "--dump", "--encoding=hex", "-m", ".", "--", path],
+      signal,
+    ),
+    execText(
+      support.getfacl,
+      ["--absolute-names", "--omit-header", "--", path],
+      signal,
+    ),
+  ]);
+  const xattrs = xattrOutput
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  const unsupportedXattrs = xattrs.filter((line) => !line.startsWith("security.selinux="));
+  if (unsupportedXattrs.length > 0) {
+    throw new Error(
+      `Refusing to replace ${path}: Termux cp cannot preserve extended attribute${unsupportedXattrs.length === 1 ? "" : "s"} ` +
+        unsupportedXattrs.map((line) => line.slice(0, line.indexOf("="))).join(", "),
+    );
+  }
+
+  const acl = aclOutput.split("\n").map((line) => line.trim()).filter(Boolean).sort();
+  if (
+    acl.length !== 3 ||
+    acl.some((line) => !/^(?:user::|group::|other::)[r-][w-][x-]$/.test(line))
+  ) {
+    throw new Error(`Refusing to replace ${path}: Termux cp cannot preserve its extended ACL`);
+  }
+  return `${xattrs.sort().join("\n")}\n${acl.join("\n")}`;
+}
+
+async function preparePrivatePublicationFile(
+  path: string,
+  bytes: Buffer,
+  signal?: AbortSignal,
+): Promise<BigIntStats> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let identity: BigIntStats | undefined;
+  try {
+    handle = await open(path, "wx", 0o666);
+    identity = await handle.stat({ bigint: true });
+    await handle.writeFile(bytes, { signal });
+    await handle.sync();
+    const stats = await handle.stat({ bigint: true });
+    await handle.close();
+    handle = undefined;
+    const current = await readStableRegularEntry(path);
+    if (!sameSnapshotStats(stats, current.stats) || !current.bytes.equals(bytes)) {
+      throw new Error(`Private publication file changed while preparing ${path}`);
+    }
+    return current.stats;
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    if (identity) {
+      try {
+        await unlinkOwnedPath(path, identity, "Private publication file");
+      } catch (cleanupError) {
+        throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`);
+      }
+    }
+    throw error;
+  }
+}
+
+async function exchangePreparedFiles(
+  source: string,
+  target: string,
+  expectedSource: BigIntStats,
+  expectedTarget: BigIntStats,
+): Promise<void> {
+  const support = await replacementSupportInfo();
+  if (!support.supported || support.strategy !== "exchange") {
+    throw new Error("Atomic file exchange is unavailable");
+  }
+  let commandError: unknown;
+  try {
+    await execText(support.mv, ["--exchange", "--", source, target]);
+  } catch (error) {
+    commandError = error;
+  }
+  const [currentSource, currentTarget] = await Promise.all([
+    lstatIfExists(source),
+    lstatIfExists(target),
+  ]);
+  if (
+    currentSource &&
+    currentTarget &&
+    sameIdentity(currentSource, expectedTarget) &&
+    sameIdentity(currentTarget, expectedSource)
+  ) {
+    return;
+  }
+  if (
+    commandError &&
+    currentSource &&
+    currentTarget &&
+    sameIdentity(currentSource, expectedSource) &&
+    sameIdentity(currentTarget, expectedTarget)
+  ) {
+    throw commandError;
+  }
+  throw new AtomicMoveUncertainError(
+    `Atomic exchange could not be verified. Commit status is uncertain; inspect ${source} and ${target}`,
+  );
+}
+
+async function movePreparedFileNoReplace(
+  source: string,
+  target: string,
+  expectedSource: BigIntStats,
+): Promise<boolean> {
+  const support = await replacementSupportInfo();
+  if (!support.supported || support.strategy !== "exchange") {
+    throw new Error("Atomic no-clobber publication is unavailable");
+  }
+  let commandError: unknown;
+  try {
+    await execText(support.mv, ["--no-clobber", "--", source, target]);
+  } catch (error) {
+    commandError = error;
+  }
+  const [currentSource, currentTarget] = await Promise.all([
+    lstatIfExists(source),
+    lstatIfExists(target),
+  ]);
+  if (!currentSource && currentTarget && sameIdentity(currentTarget, expectedSource)) return true;
+  if (currentSource && sameSnapshotStats(currentSource, expectedSource)) {
+    if (currentTarget) return false;
+    if (commandError) throw commandError;
+  }
+  throw new AtomicMoveUncertainError(
+    `Atomic no-clobber publication changed during publication or could not be verified. ` +
+      `Commit status is uncertain; inspect ${source} and ${target}`,
+  );
+}
+
+async function lstatIfExists(path: string): Promise<BigIntStats | undefined> {
+  try {
+    return await lstat(path, { bigint: true });
+  } catch (error) {
+    if (isCode(error, "ENOENT")) return undefined;
+    throw error;
+  }
 }
 
 async function firstExecutable(candidates: string[]): Promise<string | undefined> {
@@ -1775,7 +2156,7 @@ function execText(executable: string, args: string[], signal?: AbortSignal): Pro
 
 async function assertNoLinuxCapabilities(path: string, signal?: AbortSignal): Promise<void> {
   const support = await replacementSupportInfo();
-  if (!support.supported || !support.getcap) {
+  if (!support.supported || support.strategy !== "hard-link" || !support.getcap) {
     throw new Error("Cannot verify Linux file capabilities because getcap is unavailable");
   }
   const output = await execText(support.getcap, ["-n", path], signal);

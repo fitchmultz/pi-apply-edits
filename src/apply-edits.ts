@@ -657,7 +657,9 @@ const PATH_UUID_SHAPE = "00000000-0000-4000-8000-000000000000";
 
 function pathBudget(): { platform: string; limit: number; margin: number } {
   if (process.platform === "darwin") return { platform: "macOS", limit: 1024, margin: 32 };
-  if (process.platform === "linux") return { platform: "Linux", limit: 4096, margin: 32 };
+  if (process.platform === "linux" || process.platform === "android") {
+    return { platform: process.platform === "android" ? "Android" : "Linux", limit: 4096, margin: 32 };
+  }
   if (process.platform === "win32") return { platform: "Windows", limit: 32767, margin: 64 };
   return { platform: process.platform, limit: 1024, margin: 32 };
 }

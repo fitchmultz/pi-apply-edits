@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 — 2026-08-25
+
+- Support existing-file replacement and atomic no-clobber creates on Android/Termux by capability-probing GNU `mv --exchange` and `--no-clobber`.
+- Preserve ordinary ownership, permissions, and SELinux context on Android; fail closed on extended ACLs and non-SELinux extended attributes that Termux `cp` cannot preserve.
+- Apply the Linux 4096-byte path budget to Android and keep Pi's built-in mutation tools active when the required Termux commands or atomic operations are unavailable.
+
 ## 0.5.0 — 2026-08-13
 
 - Add inclusive `endText` range replacements and deletions. Both anchors use the existing exact-then-corrected matching, must be unique and ordered, and ranges fail closed when combined with `all` or `insert`.
