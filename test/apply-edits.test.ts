@@ -23,12 +23,15 @@ import { tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { applyPatch } from "diff";
 import {
   applyEditsToFile,
   applyTargetedEdits,
   resolveInputPath,
   RetryableApplyEditsError,
   type ApplyEditsDetails,
+  type ApplyEditsRequest,
 } from "../src/apply-edits.ts";
 
 function singleDetails(details: { files?: ApplyEditsDetails[] } | ApplyEditsDetails): ApplyEditsDetails {
@@ -137,6 +140,7 @@ test("range edits replace both anchors inclusively and stay ordered", () => {
         oldText: "<<<<<<< HEAD\n",
         endText: ">>>>>>> origin/main\n",
         newText: "resolved\n",
+        all: false,
       },
       { oldText: "after", newText: "done" },
     ],
@@ -194,7 +198,7 @@ test("range edits reject ambiguous, missing, reversed, and incompatible anchors"
   assert.throws(
     () => applyTargetedEdits(
       "START\nEND\n",
-      [{ oldText: "START\n", endText: "END\n", newText: "", all: false }],
+      [{ oldText: "START\n", endText: "END\n", newText: "", all: true }],
       "file.txt",
     ),
     /all cannot be combined with endText/,
@@ -373,7 +377,7 @@ test("indent correction preserves relative width when common indentation cuts th
     "file.ts",
   );
 
-  assert.equal(result.text, "    if (ready) {\n      prepare();\n    }\n");
+  assert.equal(result.text, "    if (ready) {\n\t  prepare();\n    }\n");
   assert.equal(result.matches[0]?.strategy, "indent-normalized");
 });
 
@@ -386,6 +390,49 @@ test("indent correction preserves non-indentation Unicode whitespace", () => {
 
   assert.equal(result.text, "  if (ready)\n    \u00a0value\n");
   assert.equal(result.matches[0]?.strategy, "indent-normalized");
+});
+
+test("indent correction preserves recipe tabs for zero, positive, and negative shifts", { skip: process.platform === "win32" || process.platform === "android" }, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "Makefile");
+    for (const [actual, anchor, replacement, expected] of [
+      ["\t@echo before\n", "    @echo before\n", "\t@echo after\n \t\n", "\t@echo after\n \t\n"],
+      ["\t\t@echo before\n", "    @echo before\n", "    @echo after\n", "\t\t@echo after\n"],
+      ["\t@echo before\n", "        @echo before\n", "        @echo after\n", "\t@echo after\n"],
+    ]) {
+      await writeFile(path, `build:\n${actual}`);
+      await execFile("make", ["-n", "-f", path]);
+      const result = await applyEditsToFile({ path, edits: [{ oldText: anchor!, newText: replacement! }] }, directory);
+      assert.equal(await readFile(path, "utf8"), `build:\n${expected}`);
+      await execFile("make", ["-n", "-f", path]);
+      assert.match(result.summary, /indent-normalized matching \(start line 2\)/);
+      assert.doesNotMatch(result.summary, /safely/);
+    }
+    const original = "build:\n\t@echo before\n";
+    await writeFile(path, original);
+    await assert.rejects(applyEditsToFile({ path, edits: [{ oldText: "      @echo before", newText: "\t@echo after" }] }, directory), /Cannot preserve tab indentation.*Use exact oldText/);
+    assert.equal(await readFile(path, "utf8"), original);
+    await execFile("make", ["-n", "-f", path]);
+  });
+});
+
+test("nonzero indentation shifts reuse target tabs and preserve relative depth at new levels", () => {
+  const result = applyTargetedEdits(
+    "\tif (ready) {\n\t\told();\n\t}\n",
+    [{ oldText: "if (ready) {\n    old();\n}", newText: "if (ready) {\n\tprepare();\n\t\tdeep();\n}" }],
+    "tabs.ts",
+  );
+  assert.equal(result.text, "\tif (ready) {\n\t\tprepare();\n\t\t\tdeep();\n\t}\n");
+  assert.equal(result.matches[0]?.strategy, "indent-normalized");
+});
+
+test("indent correction does not replace caller tabs with a known space-only depth", () => {
+  const result = applyTargetedEdits(
+    "    if (ready) {\n      old();\n    }\n",
+    [{ oldText: "  if (ready) {\n    old();\n  }", newText: "  if (ready) {\n\tnew();\n  }" }],
+    "tabs.ts",
+  );
+  assert.equal(result.text, "    if (ready) {\n\t  new();\n    }\n");
 });
 
 test("ordered edits can match prior CRLF output with LF anchors", () => {
@@ -646,6 +693,108 @@ test("existing rewrites preserve UTF-8 BOM and CRLF line endings", async () => {
   });
 });
 
+test("exact rewrite controls BOM and line endings per file while default and create behavior stay intact", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const original = "\uFEFFbefore\r\n";
+    await writeFile(join(directory, "default.txt"), original);
+    await writeFile(join(directory, "exact.txt"), original);
+    const created = "\uFEFFcreated\r\nmixed\nend\r";
+    await applyEditsToFile({ files: [
+      { path: "default.txt", rewrite: "after\n" },
+      { path: "exact.txt", rewrite: "after\n", preserveFormatting: false },
+      { path: "created.txt", rewrite: created, preserveFormatting: true, onMissing: "create" },
+    ] }, directory);
+    assert.deepEqual(await readFile(join(directory, "default.txt")), Buffer.from("\uFEFFafter\r\n"));
+    assert.deepEqual(await readFile(join(directory, "exact.txt")), Buffer.from("after\n"));
+    assert.deepEqual(await readFile(join(directory, "created.txt")), Buffer.from(created));
+    await applyEditsToFile({ path: "exact.txt", rewrite: created, preserveFormatting: false }, directory);
+    assert.deepEqual(await readFile(join(directory, "exact.txt")), Buffer.from(created));
+  });
+});
+
+test("rewrite controls and preview reject invalid booleans without writing", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "file"), "before\n");
+    for (const flag of ["preserveFormatting", "requireMissing", "preview"]) {
+      for (const value of ["false", 0, null]) {
+        await assert.rejects(
+          applyEditsToFile({ path: "file", rewrite: "after\n", [flag]: value } as never, directory),
+          new RegExp(`${flag} must be a boolean`),
+        );
+      }
+    }
+    await assert.rejects(applyEditsToFile({ files: [
+      { path: "created", rewrite: "created", onMissing: "create" },
+      { path: "file", edits: [{ oldText: "before", newText: "after" }], preserveFormatting: false },
+    ] }, directory), /preserveFormatting is valid only with rewrite/);
+    for (const rewrite of ["\0", "\ud800"]) {
+      await assert.rejects(applyEditsToFile({ path: "file", rewrite, preserveFormatting: false }, directory), /NUL|valid Unicode/);
+    }
+    assert.equal(await readFile(join(directory, "file"), "utf8"), "before\n");
+    assert.deepEqual(await readdir(directory), ["file"]);
+  });
+});
+
+test("preview shares ordered range, normalization, insertion, and create planning without staging", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const original = "before\n  START\n  old\n  END\nafter\n";
+    await writeFile(join(directory, "file"), original);
+    const request: ApplyEditsRequest = { files: [
+      { path: "file", edits: [
+        { oldText: "START\nold\n", endText: "END\n", newText: "const v = “draft”;\n" },
+        { oldText: 'const v = "draft";', newText: 'const v = "ready";' },
+        { oldText: 'const v = "ready";', newText: "\n  done();", insert: "after" },
+      ] },
+      { path: "missing/nested.txt", rewrite: "\uFEFFexact\r\nmixed\n", onMissing: "create", preserveFormatting: false },
+    ] };
+    let preview: Awaited<ReturnType<typeof applyEditsToFile>> | undefined;
+    await withRacingFileSystem((promises) => {
+      const noWrites = async () => { throw new Error("preview attempted publication preflight or staging"); };
+      promises.access = noWrites;
+      promises.mkdir = noWrites;
+      promises.mkdtemp = noWrites;
+      promises.link = noWrites;
+      promises.rename = noWrites;
+      promises.writeFile = noWrites;
+    }, async () => {
+      preview = await applyEditsToFile({ ...request, preview: true }, directory);
+    });
+    assert(preview && "files" in preview.details);
+    assert.equal(preview.details.preview, true);
+    assert.equal(preview.details.files.every((file) => file.preview && file.editsApplied === 0), true);
+    assert.deepEqual(preview.details.files[0]?.matches.map((match) => match.strategy), ["indent-normalized", "indent-normalized", "exact"]);
+    assert.match(preview.summary, /Would update 2 files.*No files written/);
+    assert.match(preview.summary, /file: edits\[0\] used indent-normalized matching \(start line 2\)/);
+    assert.equal(await readFile(join(directory, "file"), "utf8"), original);
+    assert.deepEqual(await readdir(directory), ["file"]);
+    const applied = await applyEditsToFile(request, directory);
+    assert("files" in applied.details);
+    assert.deepEqual(applied.details.files.map((file) => file.diff), preview.details.files.map((file) => file.diff));
+    assert.equal(await readFile(join(directory, "file"), "utf8"), 'before\n  const v = "ready";\n  done();\nafter\n');
+  });
+});
+
+test("preview is advisory, allows read-only content, and never supplies a stale commit plan", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "file");
+    await writeFile(path, "before\n");
+    await chmod(path, 0o444);
+    const request = { path, edits: [{ oldText: "before", newText: "after" }] };
+    try {
+      const preview = await applyEditsToFile({ ...request, preview: true }, directory);
+      assert.equal(preview.details.preview, true);
+      if (process.platform !== "win32" && process.getuid?.() !== 0) {
+        await assert.rejects(applyEditsToFile(request, directory), /readable and writable/);
+      }
+    } finally {
+      await chmod(path, 0o644);
+    }
+    await writeFile(path, "external\n");
+    await assert.rejects(applyEditsToFile(request, directory), /Could not find/);
+    assert.equal(await readFile(path, "utf8"), "external\n");
+  });
+});
+
 test("targeted edits preserve CRLF and BOM", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "windows.txt");
@@ -875,6 +1024,46 @@ test(
     });
   },
 );
+
+test("Linux native copy preserves ACLs/xattrs and rejects xattr failures before publishing", { skip: process.platform !== "linux" }, async (t) => {
+  const setfattr = await firstExistingFile(["/usr/bin/setfattr", "/bin/setfattr"]);
+  const getfattr = await firstExistingFile(["/usr/bin/getfattr", "/bin/getfattr"]);
+  const setfacl = await firstExistingFile(["/usr/bin/setfacl", "/bin/setfacl"]);
+  const getfacl = await firstExistingFile(["/usr/bin/getfacl", "/bin/getfacl"]);
+  if (!setfattr || !getfattr || !setfacl || !getfacl || spawnSync("cc", ["--version"]).status !== 0) {
+    t.skip("native metadata test requires attr, acl, and a C compiler");
+    return;
+  }
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "file");
+    const attribute = "user.pi-apply-edits-test";
+    await writeFile(path, "before\n");
+    await execFile(setfattr, ["-n", attribute, "-v", "retained", path]);
+    await execFile(setfacl, ["-m", "u:65534:r--", path]);
+    const before = await stat(path);
+    const acl = (await execFile(getfacl, ["--omit-header", path])).stdout;
+    await applyEditsToFile({ path, rewrite: "after\n" }, directory);
+    const after = await stat(path);
+    assert.deepEqual([after.uid, after.gid, after.mode], [before.uid, before.gid, before.mode]);
+    assert.equal((await execFile(getfacl, ["--omit-header", path])).stdout, acl);
+    assert.equal((await execFile(getfattr, ["--only-values", "-n", attribute, path])).stdout, "retained");
+
+    const library = join(directory, "reject-xattr.so");
+    await execFile("cc", ["-shared", "-fPIC", "-o", library, fileURLToPath(new URL("./fixtures/reject-xattr.c", import.meta.url)), "-ldl"]);
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+      import { applyEditsToFile } from ${JSON.stringify(new URL("../src/apply-edits.ts", import.meta.url).href)};
+      try {
+        await applyEditsToFile({ path: ${JSON.stringify(path)}, rewrite: "MUST NOT PUBLISH\\n" }, ${JSON.stringify(directory)});
+        process.exitCode = 1;
+      } catch (error) { console.log(error.message); }
+    `], { encoding: "utf8", timeout: 10_000, env: { ...process.env, LD_PRELOAD: library } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /metadata-preserving replacement.*Operation not supported/s);
+    assert.equal(await readFile(path, "utf8"), "after\n");
+    assert.equal((await execFile(getfacl, ["--omit-header", path])).stdout, acl);
+    assert.equal((await execFile(getfattr, ["--only-values", "-n", attribute, path])).stdout, "retained");
+  });
+});
 
 test(
   "Android refuses extended metadata that Termux cp cannot preserve",
@@ -1342,6 +1531,33 @@ test("diff statistics count content that resembles patch headers", async () => {
   });
 });
 
+test("sparse edits in a 2200-line file retain a useful diff", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "large.txt");
+    const original = Array.from({ length: 2_200 }, (_, index) => `line ${index}\n`).join("");
+    await writeFile(path, original);
+    const result = await applyEditsToFile({ path, edits: [{ oldText: "line 1200\n", newText: "changed\n" }] }, directory);
+    const details = singleDetails(result.details);
+    assert.equal(details.diffTruncated, false);
+    assert.equal(details.addedLines, 1);
+    assert.equal(details.deletedLines, 1);
+    assert.equal(applyPatch(original, details.diff), await readFile(path, "utf8"));
+  });
+});
+
+test("generated patches larger than 32 KiB remain complete and applicable", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "large.txt");
+    const before = Array.from({ length: 120 }, (_, index) => `${index}:${"a".repeat(300)}\n`).join("");
+    const after = before.replaceAll("a", "b");
+    await writeFile(path, before);
+    const largePatch = singleDetails((await applyEditsToFile({ path, rewrite: after }, directory)).details);
+    assert(Buffer.byteLength(largePatch.diff) > 32 * 1024);
+    assert.equal(largePatch.diffTruncated, false);
+    assert.equal(applyPatch(before, largePatch.diff), after);
+  });
+});
+
 test("many-line rewrites skip quadratic diff work even when byte size is small", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "many-lines.txt");
@@ -1357,6 +1573,24 @@ test("many-line rewrites skip quadratic diff work even when byte size is small",
     assert.equal(singleDetails(result.details).addedLines, undefined);
     assert.equal(singleDetails(result.details).deletedLines, undefined);
   });
+});
+
+test("adversarial diff work finishes within a bounded subprocess", () => {
+  const result = spawnSync(process.execPath, ["--max-old-space-size=128", "--input-type=module", "--eval", `
+    import { mkdtemp, writeFile, rm } from "node:fs/promises";
+    import { tmpdir } from "node:os";
+    import { join } from "node:path";
+    import { applyEditsToFile } from ${JSON.stringify(new URL("../src/apply-edits.ts", import.meta.url).href)};
+    const directory = await mkdtemp(join(tmpdir(), "pi-diff-work-"));
+    try {
+      const text = Array.from({ length: 8000 }, (_, i) => "before-" + i + "\\n").join("");
+      await writeFile(join(directory, "file"), text);
+      const result = await applyEditsToFile({ path: "file", rewrite: text.replaceAll("before", "after"), preview: true }, directory);
+      console.log(result.details.diffTruncated ? "bounded" : "unbounded");
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  `], { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "bounded");
 });
 
 test("batch summary omits aggregate counts when one changed diff count is unavailable", async () => {
@@ -1537,7 +1771,7 @@ test("multi-file batch plans then writes all files", async () => {
     );
 
     assert.match(result.summary, /Updated 2 files/);
-    assert.match(result.summary, /zero separator/);
+    assert.doesNotMatch(result.summary, /Warning:/);
     assert.equal("files" in result.details, true);
     if (!("files" in result.details)) throw new Error("expected batch details");
     assert.equal(result.details.files.length, 2);
@@ -1574,6 +1808,92 @@ test("multi-file batch publishes sibling creates under one missing root together
       (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
       false,
     );
+  });
+});
+
+test("batch failure lists completed out-of-order nested creates, failed, and unattempted paths", { skip: process.platform === "android" }, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "failed.txt"), "old\n");
+    await writeFile(join(directory, "last.txt"), "old\n");
+    const originalRename = nodeFs.promises.rename;
+    const updates: string[] = [];
+    await withRacingFileSystem((promises) => {
+      promises.rename = async (source, target) => {
+        if (basename(String(source)) === "replacement" && basename(String(target)) === "failed.txt") {
+          throw Object.assign(new Error("forced publication failure"), { code: "EIO" });
+        }
+        return originalRename(source, target);
+      };
+    }, async () => {
+      await assert.rejects(applyEditsToFile({ files: [
+        { path: "shared/a.txt", rewrite: "A\n", onMissing: "create" },
+        { path: "failed.txt", rewrite: "new\n" },
+        { path: "shared/b.txt", rewrite: "B\n", onMissing: "create" },
+        { path: "last.txt", rewrite: "new\n" },
+      ] }, directory, undefined, (update) => updates.push(update)), (error: unknown) => {
+        assert(error instanceof Error && !(error instanceof RetryableApplyEditsError));
+        assert.match(error.message, /after 2 verified writes/);
+        assert.match(error.message, /Completed: shared\/a\.txt, shared\/b\.txt\n/);
+        assert.match(error.message, /Failed or uncertain: failed\.txt\n/);
+        assert.match(error.message, /Unattempted: last\.txt\n/);
+        return true;
+      });
+    });
+    assert(updates.some((update) => /Completed 2\/4: shared\/a\.txt, shared\/b\.txt/.test(update)));
+    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
+    assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
+    assert.equal(await readFile(join(directory, "failed.txt"), "utf8"), "old\n");
+    assert.equal(await readFile(join(directory, "last.txt"), "utf8"), "old\n");
+  });
+});
+
+test("progress callback failures still report files already committed", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await assert.rejects(applyEditsToFile({ files: [
+      { path: "first.txt", rewrite: "first\n", onMissing: "create" },
+      { path: "last.txt", rewrite: "last\n", onMissing: "create" },
+    ] }, directory, undefined, (progress) => {
+      if (progress.startsWith("Completed")) throw new Error("progress consumer failed");
+    }), (error: unknown) => {
+      assert(error instanceof Error);
+      assert.match(error.message, /Completed: first\.txt\n/);
+      assert.match(error.message, /Failed or uncertain: none\n/);
+      assert.match(error.message, /Unattempted: last\.txt\n/);
+      return true;
+    });
+    assert.equal(await readFile(join(directory, "first.txt"), "utf8"), "first\n");
+    await assert.rejects(lstat(join(directory, "last.txt")), /ENOENT/);
+  });
+});
+
+test("a claimed but unverified nested create is not reported as completed", { skip: process.platform === "android" }, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "first.txt"), "old\n");
+    const originalLink = nodeFs.promises.link;
+    await withRacingFileSystem((promises) => {
+      promises.link = async (source, target) => {
+        await originalLink(source, target);
+        if (String(target).endsWith("shared/a.txt")) await writeFile(target, "external\n");
+      };
+    }, async () => {
+      await assert.rejects(applyEditsToFile({ files: [
+        { path: "first.txt", rewrite: "new\n" },
+        { path: "shared/a.txt", rewrite: "A\n", onMissing: "create" },
+        { path: "shared/b.txt", rewrite: "B\n", onMissing: "create" },
+        { path: "last.txt", rewrite: "last\n", onMissing: "create" },
+      ] }, directory), (error: unknown) => {
+        assert(error instanceof Error);
+        assert.match(error.message, /after 1 verified write/);
+        assert.match(error.message, /Partial create publication retained 1 file/);
+        assert.match(error.message, /Completed: first\.txt\n/);
+        assert.match(error.message, /Failed or uncertain: shared\/a\.txt, shared\/b\.txt\n/);
+        assert.match(error.message, /Unattempted: last\.txt\n/);
+        return true;
+      });
+    });
+    assert.equal(await readFile(join(directory, "first.txt"), "utf8"), "new\n");
+    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "external\n");
+    await assert.rejects(lstat(join(directory, "last.txt")), /ENOENT/);
   });
 });
 
@@ -3132,7 +3452,7 @@ test("a batch rejects a dangling alias before its lock can collapse onto the tar
   });
 });
 
-test("insert results state that no separator was inferred", async () => {
+test("successful inserts retain exact separators without warnings", async () => {
   await inTemporaryDirectory(async (directory) => {
     const target = join(directory, "imports.ts");
     await writeFile(target, 'import fs from "node:fs";\n');
@@ -3149,8 +3469,8 @@ test("insert results state that no separator was inferred", async () => {
       },
       directory,
     );
-    assert.match(result.summary, /Warning: 1 insert spliced exactly with zero separator/);
-    assert.match(result.summary, /all newlines and spaces came from newText/);
+    assert.deepEqual(singleDetails(result.details).warnings, []);
+    assert.doesNotMatch(result.summary, /Warning:/);
     assert.equal(
       await readFile(target, "utf8"),
       'import fs from "node:fs";\nimport path from "node:path";\n',
@@ -4587,41 +4907,42 @@ test("simulated Windows path budget rejects the overlong path during planning", 
   });
 });
 
-test("create failure discloses an unverifiable temporary file", { skip: process.platform === "android" }, async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const originalLink = nodeFs.promises.link;
-    const originalLstat = nodeFs.promises.lstat;
-    let failed = false;
-    await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
-      (promises) => {
-        promises.link = (async function (this: unknown, source: string, target: string) {
+for (const linkCode of ["EIO", "EACCES"]) {
+  test(`${linkCode === "EIO" ? "create failure" : "exclusive-create fallback success"} discloses an unverifiable temporary file`, { skip: process.platform === "android" }, async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const originalLink = nodeFs.promises.link;
+      const originalLstat = nodeFs.promises.lstat;
+      let failed = false;
+      await withRacingFileSystem((promises) => {
+        promises.link = async (source, target) => {
           if (basename(String(source)) === "create") {
             failed = true;
-            throw Object.assign(new Error("forced link failure"), { code: "EACCES" });
+            throw Object.assign(new Error("forced link failure"), { code: linkCode });
           }
-          return (originalLink as Function).call(this, source, target);
-        }) as typeof promises.link;
+          return originalLink(source, target);
+        };
         promises.lstat = (async function (this: unknown, path: string, ...args: unknown[]) {
           if (failed && basename(String(path)) === "create") {
             throw Object.assign(new Error("forced verification failure"), { code: "EACCES" });
           }
           return (originalLstat as Function).call(this, path, ...args);
         }) as typeof promises.lstat;
-      },
-      async (module) => {
-        await assert.rejects(
-          module.applyEditsToFile(
-            { path: "file", rewrite: "secret\n", onMissing: "create" },
-            directory,
-          ),
-          /the temporary create file's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, or only leftover temporary directories may remain/s,
-        );
-      },
-      "../src/apply-edits.ts",
-    );
-    assert(failed);
+      }, async () => {
+        const operation = applyEditsToFile({ path: "file", rewrite: "secret\n", onMissing: "create" }, directory);
+        if (linkCode === "EIO") {
+          await assert.rejects(operation, /the temporary create file's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, or only leftover temporary directories may remain/s);
+          await assert.rejects(lstat(join(directory, "file")), /ENOENT/);
+        } else {
+          const result = await operation;
+          assert.equal(await readFile(join(directory, "file"), "utf8"), "secret\n");
+          assert.match(result.summary, /used exclusive write publication/);
+          assert.match(result.summary, /temporary link's cleanup failed and its final state is unknown/);
+        }
+      });
+      assert(failed);
+    });
   });
-});
+}
 
 test("create failure discloses an escaped temporary file", async () => {
   await inTemporaryDirectory(async (directory) => {
@@ -4714,11 +5035,23 @@ test("summary deduplicates repeated warnings so unique ones stay visible", { ski
     for (let index = 0; index < 4; index++) {
       await writeFile(join(directory, `existing-${index}`), "a");
     }
+    const canonicalDirectory = await realpath(directory);
+    const directorySyncFailure = "forced directory fsync failure";
+    const originalOpen = nodeFs.promises.open;
     const originalRename = nodeFs.promises.rename;
     const escaped = join(directory, "escaped-temporary-link");
     let moved = false;
     await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
       (promises) => {
+        promises.open = async (path, flags, mode) => {
+          const handle = await originalOpen(path, flags, mode);
+          if (String(path) === canonicalDirectory) {
+            handle.sync = async () => {
+              throw Object.assign(new Error(directorySyncFailure), { code: "EIO" });
+            };
+          }
+          return handle;
+        };
         promises.rename = (async function (this: unknown, source: string, target: string) {
           if (
             !moved &&
@@ -4738,6 +5071,12 @@ test("summary deduplicates repeated warnings so unique ones stay visible", { ski
         }));
         files.push({ path: "created", rewrite: "secret\n", onMissing: "create" });
         const result = await module.applyEditsToFile({ files } as never, directory);
+        assert("files" in result.details);
+        const repeatedWarnings = result.details.files.flatMap((file) => file.warnings)
+          .filter((warning) => warning.includes(directorySyncFailure));
+        assert.equal(repeatedWarnings.length, files.length);
+        assert.equal(new Set(repeatedWarnings).size, 1);
+        assert.equal(result.summary.split(directorySyncFailure).length - 1, 1);
         assert.match(result.summary, /may remain hard-linked/);
         assert.doesNotMatch(result.summary, / more\b/);
       },

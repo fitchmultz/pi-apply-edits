@@ -89,7 +89,7 @@ export interface PreparedNestedFiles {
   stagedIdentities?: Map<string, BigIntStats>;
 }
 
-export async function captureSnapshot(inputPath: string): Promise<FileSnapshot | undefined> {
+export async function captureSnapshot(inputPath: string, requireWritable = true): Promise<FileSnapshot | undefined> {
   let inputStats: BigIntStats;
   try {
     inputStats = await lstat(inputPath, { bigint: true });
@@ -122,10 +122,12 @@ export async function captureSnapshot(inputPath: string): Promise<FileSnapshot |
     try {
       const before = await handle.stat({ bigint: true });
       if (!before.isFile()) throw new Error(`Target is not a regular file: ${inputPath}`);
-      try {
-        await access(actualPath, constants.R_OK | constants.W_OK);
-      } catch {
-        throw new Error(`File must be readable and writable: ${inputPath}. No changes were written.`);
+      if (requireWritable) {
+        try {
+          await access(actualPath, constants.R_OK | constants.W_OK);
+        } catch {
+          throw new Error(`File must be readable and writable: ${inputPath}. No changes were written.`);
+        }
       }
       const bytes = await handle.readFile();
       const after = await handle.stat({ bigint: true });
@@ -1853,7 +1855,8 @@ async function cloneWithMetadata(
   if (!support.supported) throw new Error(support.reason);
   const args = process.platform === "darwin"
     ? ["-p", source, target]
-    : ["--preserve=all", "--", source, target];
+    // `all` makes xattrs/context best-effort. Explicit xattr routes Linux labels through strict native copying too.
+    : [process.platform === "linux" ? "--preserve=mode,ownership,timestamps,links,xattr" : "--preserve=all", "--", source, target];
   await execText(support.cp, args, signal);
   if (support.strategy === "exchange") {
     const sourceMetadata = expectedAndroidMetadata ??

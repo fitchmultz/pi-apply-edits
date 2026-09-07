@@ -2,7 +2,7 @@
 
 A Pi package that provides one reliable file-mutation tool: `apply_edits`.
 
-Requires Pi 0.84.1 or later. Pi 0.84.0 and earlier are not supported.
+Requires Node 22.19 or later and Pi 0.84.1 or later.
 
 By default, the extension removes Pi's built-in `edit` and `write` tools before
 the first model turn when this package owns the active `apply_edits` registration
@@ -12,8 +12,11 @@ entries, so they remain active on unsupported platforms or when requested.
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v0.6.0
+pi install git:github.com/fitchmultz/pi-apply-edits@v0.7.0
 ```
+
+Restart Pi after installing or updating extension code. `/reload` does not replace
+already-loaded code.
 
 Or load a checkout directly:
 
@@ -67,7 +70,9 @@ Provide `files: [...]`, a single-file `path` with exactly one of `edits` or
 }
 ```
 
-Replace or delete a range without resending its contents. Both anchors are included, must be unique and ordered, and cannot be combined with `all` or `insert`:
+Replace or delete a range without resending its contents. Both anchors are included,
+must be unique and ordered, and cannot be combined with `all: true` or `insert`.
+An explicit `all: false` is allowed:
 
 ```json
 {
@@ -82,7 +87,9 @@ Replace or delete a range without resending its contents. Both anchors are inclu
 }
 ```
 
-Insert without replacing the anchor. `newText` is inserted exactly; include any needed newline or separator:
+Inserts keep the anchor unchanged and infer no separators. Include any needed
+newline or space in `newText`; supplied newlines use the matched area's
+line-ending style:
 
 ```json
 {
@@ -139,7 +146,54 @@ Creation is explicit so a typo does not silently create the wrong path:
 }
 ```
 
-`onMissing` is valid only with `rewrite`.
+Add `requireMissing: true` alongside `onMissing: "create"` for a create-only guard
+that refuses to overwrite an existing file. Without the guard, `onMissing` controls
+only what happens when the target is missing.
+
+Rewrites preserve an existing UTF-8 BOM and its dominant line ending by default.
+To intentionally change those bytes, set `preserveFormatting: false`:
+
+```json
+{
+  "path": "src/example.ts",
+  "rewrite": "exact UTF-8 content with LF endings\n",
+  "preserveFormatting": false
+}
+```
+
+This writes the supplied UTF-8 content exactly, including any BOM and LF, CRLF, or
+mixed line endings. Creates are always exact. `onMissing`, `requireMissing`, and
+`preserveFormatting` are valid only with `rewrite`, including inside `files`.
+Invalid Unicode and NUL-containing content remain rejected in every mode.
+
+## Previews
+
+Add `preview: true` to a normal single-file or batch request to inspect changes
+without writing:
+
+```json
+{
+  "path": "src/example.ts",
+  "edits": [{ "oldText": "ready()", "newText": "start()" }],
+  "preview": true
+}
+```
+
+Previews use the same ordered edits, range anchors, insertions, normalization, and
+formatting rules as an apply. They return “Would…” results and diffs without
+creating files, staging directories, or running publication capability probes.
+They are content-only checks, not a promise that publication will succeed. Applying
+without `preview` re-reads the files and checks all filesystem protections again;
+a preview is never a cached commit plan or permission grant.
+
+Preview diff text sent to the model is capped at 50 KB or 2,000 lines, with an
+explicit truncation note. Complete generated patches remain in structured details
+for SDK/RPC clients and the expanded TUI result. Actual writes keep diffs out of
+model-facing text and return a compact summary instead.
+
+`preview` belongs at the top level, not inside file entries. It also works with a
+compact retry and does not consume that retry. Preview failures do not allocate
+new compact retries.
 
 ## Compact retries
 
@@ -159,7 +213,8 @@ observed missing during the original failure if any of them appears before retry
 `oldText` is available only for edit-only
 requests and changes only the failing start anchor; the original `endText` and
 `newText` are preserved. Range-end failures require a normal request. Both retries
-are single-use when execution begins, remain available while a
+keep the original absolute paths even after working-directory changes. They
+are single-use when write execution begins, remain available while a
 prepared call awaits approval, expire when the current agent run settles or the
 session changes, and pass the reconstructed full request through normal
 validation and `tool_call` policy hooks. Other failures require a normal request.
@@ -169,7 +224,9 @@ validation and `tool_call` policy hooks. Other failures require a normal request
 1. Exact text is tried first for every anchor.
 2. If exact text is absent, complete-line matching may correct typography,
    Unicode compatibility, trailing whitespace, or one uniform indentation
-   shift.
+   shift. Corrections report their matching strategy and starting lines. Tab
+   indentation is retained; a correction that cannot represent a caller's tab at
+   the adjusted depth is rejected with exact-anchor guidance.
 3. Corrected matches must still be unambiguous unless `all` is explicit on a
    non-range edit. A range requires unique, ordered `oldText` and `endText` anchors.
 4. A failed or ambiguous edit returns current nearby text when useful and
@@ -177,7 +234,8 @@ validation and `tool_call` policy hooks. Other failures require a normal request
 
 The extension repairs a small closed set of common model argument mistakes:
 `file_path`, write-style `content`, Claude-style `old_string` / `new_string` /
-`replace_all`, top-level replacement fields, and JSON-stringified `edits`.
+`replace_all`, `preserve_formatting`, top-level replacement fields, and
+JSON-stringified `edits` or `files`.
 Canonical and alias fields must agree; conflicting aliases or mutation modes
 are rejected rather than guessed.
 
@@ -200,14 +258,17 @@ are rejected rather than guessed.
   prepared target. If either inode changes, it never attempts rollback: the target
   is left untouched and a named recovery path retains the earlier version for inspection.
 - Symbolic links are followed without replacing the link itself.
-- Existing ownership, ordinary permissions, ACLs, extended attributes, UTF-8
-  BOMs, and dominant line endings are preserved on macOS and Linux. Setuid and
-  setgid files are rejected without mutation. Linux also requires `getcap` and
+- Existing ownership, ordinary permissions, ACLs, and extended attributes are
+  preserved using native copying on macOS and Linux. Text formatting is preserved
+  by default as described above. Setuid and setgid files are rejected without
+  mutation. Linux also requires `getcap` and
   rejects capability-bearing files because the kernel can clear capabilities
   when content changes. Replacement relies on `/bin/cp` metadata cloning, requires
-  GNU `cp` on Linux, and fails before mutation if metadata cannot be verified.
+  GNU `cp` on Linux, and fails before target publication on required metadata-copy
+  errors. Linux follows native ACL/xattr copy rules, including system xattr-policy
+  exclusions; it no longer treats xattr-copy errors as best-effort success.
 - Android/Termux preserves ownership, ordinary permissions, SELinux context,
-  UTF-8 BOMs, and line endings. It fails closed on extended ACLs or non-SELinux
+  and default text formatting. It fails closed on extended ACLs or non-SELinux
   extended attributes because Termux `cp` cannot preserve them. Startup probes
   GNU `mv --exchange` and `--no-clobber`; Pi's built-ins remain enabled if any
   required command or atomic operation is unavailable.
@@ -238,18 +299,25 @@ are rejected rather than guessed.
   the `mkdir`-to-`lstat` gap. Portable Node exposes neither the identity created by
   `mkdir` nor dirfd-relative operations, so closing that gap cleanly needs a native
   primitive. Later identity checks still fail closed on detected swaps.
-- Non-UTF-8, NUL-containing, non-regular, dangling-symlink, and hard-linked
-  targets are rejected without mutation. A dangling symbolic-link batch entry is
+- Writes reject non-UTF-8, NUL-containing, non-regular, dangling-symlink, and
+  hard-linked targets without mutation. A dangling symbolic-link batch entry is
   rejected during key discovery, before Pi acquires any lock; otherwise its target
   could appear and make two batch keys resolve to one queue. Pi 0.84.1 has no atomic
   multi-key queue API, so an external process can still create both an alias and its
   target after this check. Closing that final window requires an upstream primitive.
-- Corrective matching and diff generation have explicit work budgets.
-  Oversized fuzzy matches fail for a more exact retry; expensive diffs are
-  omitted from details before publication.
-- Diffs are kept out of model-facing result text but retained in bounded
-  structured details and shown when the TUI row is expanded. Requests are capped
-  at 64 files and 100 ordered edits per file.
+- Batches report planning and per-file publication progress. A publication error
+  lists completed, failed-or-uncertain, and unattempted paths, including nested
+  groups that published out of input order. Inspect those paths and any named
+  recovery files before submitting remaining changes; partial batches are never
+  automatically retried.
+- Corrective matching and diff generation have explicit work budgets. Oversized
+  fuzzy matches fail for a more exact retry. Diffs use native time/edit-distance
+  limits plus 1 MiB of combined input and 20,000 total lines; omitted diffs and
+  unavailable counts are stated, not guessed. Sparse edits in large files still
+  produce useful patches within those limits.
+- Every generated patch is retained in structured details and is accessible when
+  the TUI row is expanded; there is no second display-only line cap. Requests are
+  capped at 64 files and 100 ordered edits per file.
 
 `apply_edits` is a distinct tool name. Extensions that specifically listen for
 `edit` or `write` tool-call events will not observe it and should add
@@ -262,5 +330,8 @@ npm ci
 npm run check
 ```
 
-The package uses Pi's public peer APIs and declares TypeBox as its only direct
-runtime dependency. Validated against Pi 0.84.1.
+The package uses public Pi and TypeBox peer APIs, with jsdiff as its only direct
+runtime dependency. CI checks macOS and Linux on Node 22.19 and 24, against Pi 0.84.1 and
+0.85.1. The suite includes a real Pi loader/policy/settlement smoke with scripted
+responses and no network or provider calls. Linux metadata fault tests require
+`attr`, `acl`, and a C compiler.

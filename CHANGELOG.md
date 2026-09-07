@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0 — 2026-09-06
+
+- Add `preview: true` for read-only single-file, batch, and compact-retry previews using the same ordered editing and formatting rules. Return bounded model-visible diffs and complete generated patches in the TUI/SDK/RPC, without staging files, probing publication capabilities, or consuming retries.
+- Add rewrite-only `preserveFormatting: false` for exact UTF-8 content, including intentional BOM and line-ending changes. Default formatting preservation and exact creation remain unchanged.
+- Bind compact retries to the original absolute paths so working-directory changes cannot redirect edits or creates. Keep full policy preflight, single-use write execution, and settlement/session expiry.
+- Preserve tabs and blank-line indentation during correction. Keep explicit caller tabs at adjusted depths and reject corrections that cannot represent them instead of breaking Makefiles.
+- Require Linux native ACL/xattr-copy errors to fail before publication; retain Android's separate metadata checks and macOS copying behavior.
+- Retain useful sparse diffs in large files with jsdiff's time and edit-distance budgets. Remove the stored-patch and expanded-renderer caps so every generated file diff can be inspected.
+- Report native per-file batch progress and completed, failed-or-uncertain, and unattempted paths on publication failure, including out-of-order nested groups. Do not call merely claimed create paths verified successes.
+- Remove ordinary insert warnings, shorten repeated tool guidance, report corrective matching strategies and lines, describe `requireMissing` as a public create-only guard, and allow `all: false` with ranges.
+- Correct the stale create-failure fault from `EACCES` to `EIO` and cover successful exclusive-create fallback cleanup warnings. Add focused regressions, native Pi runtime checks, and a macOS/Linux × Node/Pi compatibility matrix.
+
 ## 0.6.0 — 2026-08-25
 
 - Support existing-file replacement and atomic no-clobber creates on Android/Termux by capability-probing GNU `mv --exchange` and `--no-clobber`.

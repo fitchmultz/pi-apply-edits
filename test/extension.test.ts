@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -155,6 +155,23 @@ test("argument preparation rejects conflicting aliases instead of choosing one",
   );
 });
 
+test("preview and exact rewrite controls survive aliases and batches without coercion", () => {
+  const single = prepareApplyEditsArguments({ file_path: "file", content: "\uFEFFbody\r\n", preserve_formatting: false, preview: true });
+  assert.equal(single.preserveFormatting, false);
+  assert.equal(single.preview, true);
+  assert.equal(single.rewrite, "\uFEFFbody\r\n");
+  const batch = prepareApplyEditsArguments({ preview: true, files: [
+    { path: "file", content: "body\n", preserveFormatting: false, preserve_formatting: false },
+  ] });
+  assert.equal(batch.files?.[0]?.preserveFormatting, false);
+  assert.equal(batch.preview, true);
+  assert.throws(() => prepareApplyEditsArguments({ path: "file", rewrite: "x", preserveFormatting: true, preserve_formatting: false }), /Conflicting preserveFormatting/);
+  assert.throws(() => prepareApplyEditsArguments({ path: "file", oldText: "x", newText: "y", preserveFormatting: false }), /valid only with rewrite/);
+  assert.throws(() => prepareApplyEditsArguments({ files: [{ path: "file", rewrite: "x" }], preserveFormatting: false }), /cannot be combined/);
+  assert.throws(() => prepareApplyEditsArguments({ files: [{ path: "file", rewrite: "x", preview: true }] }), /unsupported fields: preview/);
+  assert.throws(() => prepareApplyEditsArguments({ path: "file", rewrite: "x", preview: "true" }), /preview must be a boolean/);
+});
+
 test("argument preparation rejects unknown fields instead of stripping them", () => {
   assert.throws(
     () => prepareApplyEditsArguments({ path: "a.ts", rewrite: "x", typo: true }),
@@ -307,7 +324,7 @@ test("renderer keeps collapsed output compact and exposes the diff when expanded
   for (const line of [...collapsedLines, ...expandedLines]) assert(visibleWidth(line) <= 80);
 });
 
-test("renderer uses warning styling and does not invent a 201st diff line", () => {
+test("expanded batch renderer exposes every retained file diff beyond 200 lines", () => {
   const tool = createApplyEditsTool();
   const theme = {
     fg: (color: string, text: string) => `<${color}>${text}`,
@@ -323,12 +340,15 @@ test("renderer uses warning styling and does not invent a 201st diff line", () =
     bytesAfter: 1,
     addedLines: 1,
     deletedLines: 1,
-    diff: `${Array.from({ length: 200 }, () => "context").join("\n")}\n`,
+    diff: `${Array.from({ length: 254 }, () => "context").join("\n")}\n`,
     diffTruncated: false,
     warnings: ["directory sync failed"],
   };
   const rendered = tool.renderResult?.(
-    { content: [{ type: "text", text: "Edited with warning" }], details },
+    { content: [{ type: "text", text: "Edited with warning" }], details: { files: [
+      details,
+      { ...details, path: "last.txt", diff: "--- last.txt\n+++ last.txt\n@@ -1 +1 @@\n-before\n+last visible\n", warnings: [] },
+    ] } },
     { expanded: true, isPartial: false },
     theme,
     { isError: false } as never,
@@ -336,22 +356,28 @@ test("renderer uses warning styling and does not invent a 201st diff line", () =
   const text = rendered?.render(200).join("\n") ?? "";
   assert.match(text, /<warning>⚠ Edited with warning/);
   assert.doesNotMatch(text, /more diff lines/);
+  assert.match(text, /last\.txt/);
+  assert.match(text, /\+last visible/);
+  assert.equal(text.split("context").length - 1, 254);
 });
 
 test("tool contract covers rewrite, range, insert, and multi-file batch", () => {
   const tool = createApplyEditsTool();
   assert.match(tool.description, /multi-file batch/);
   assert.match(tool.description, /endText/);
-  assert.match(tool.description, /inclusively/);
+  assert.match(tool.description, /inclusive/);
   assert.match(tool.description, /insert/);
-  assert.match(tool.description, /zero separator/);
+  assert.match(tool.description, /zero-separator/);
   assert.match(tool.description, /onMissing: "create"/);
-  assert.match(tool.description, /easy whole-file path/);
+  assert.match(tool.description, /rewrite for full content/);
+  assert.match(tool.description, /preview: true/);
+  assert(applyEditsSchema.properties.preserveFormatting);
+  assert.match(JSON.stringify(applyEditsSchema.properties.requireMissing), /Create-only guard/);
   assert.match(tool.description, /compact retry/);
   assert.match(tool.promptSnippet ?? "", /files:\[\]/);
   assert(tool.promptGuidelines?.some((g) => /rewrite for full files/.test(g)));
   assert(tool.promptGuidelines?.some((g) => /insert: "before"\|\"after"/.test(g)));
-  assert(tool.promptGuidelines?.some((g) => /zero separator/.test(g)));
+  assert(tool.promptGuidelines?.some((g) => /zero-separator/.test(g)));
   assert(tool.promptGuidelines?.some((g) => /files: \[\.\.\.\]/.test(g)));
   const editItems = (applyEditsSchema.properties.edits as unknown as {
     items: {
@@ -404,6 +430,7 @@ test("tool execution applies a multi-file batch from the session cwd", async () 
     await writeFile(join(directory, "a.txt"), "a\n");
     await writeFile(join(directory, "b.txt"), "b\n");
     const tool = createApplyEditsTool();
+    const updates: string[] = [];
     const result = await tool.execute(
       "call-batch",
       {
@@ -413,9 +440,11 @@ test("tool execution applies a multi-file batch from the session cwd", async () 
         ],
       },
       undefined,
-      undefined,
+      (update) => updates.push(update.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n")),
       { cwd: directory } as never,
     );
+    assert.match(updates[0] ?? "", /Planned 1\/2: a\.txt/);
+    assert.match(updates.at(-1) ?? "", /Completed 2\/2: b\.txt/);
     assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "A\n");
     assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "b!\n");
     assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /Updated 2 files/);
@@ -425,15 +454,45 @@ test("tool execution applies a multi-file batch from the session cwd", async () 
   }
 });
 
+for (const mode of ["edit", "create"] as const) {
+  test(`compact ${mode} retry mutates the original target after a cwd change`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-apply-edits-retry-cwd-"));
+    const a = join(root, "a");
+    const b = join(root, "b");
+    try {
+      await mkdir(a);
+      await mkdir(b);
+      if (mode === "edit") {
+        await writeFile(join(a, "same.txt"), "before\n");
+        await writeFile(join(b, "same.txt"), "before\n");
+      }
+      const tool = createApplyEditsTool();
+      const request = mode === "edit"
+        ? { path: "same.txt", edits: [{ oldText: "typo", newText: "after" }] }
+        : { path: "same.txt", rewrite: "after\n" };
+      await assert.rejects(tool.execute("original", prepare(tool, request), undefined, undefined, { cwd: a } as never), /Compact retry/);
+      const retry = { from: "original", ...(mode === "edit" ? { oldText: "before" } : {}) };
+      await tool.execute("retry", prepare(tool, { retry }), undefined, undefined, { cwd: b } as never);
+      assert.equal(await readFile(join(a, "same.txt"), "utf8"), "after\n");
+      if (mode === "edit") assert.equal(await readFile(join(b, "same.txt"), "utf8"), "before\n");
+      else await assert.rejects(readFile(join(b, "same.txt")), /ENOENT/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("compact create retry reuses full bodies and is single-use", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-create-retry-"));
   try {
     const tool = createApplyEditsTool();
-    await writeFile(join(directory, "existing.txt"), "before\n");
+    await writeFile(join(directory, "existing.txt"), "\uFEFFbefore\r\n");
+    const otherDirectory = join(directory, "other");
+    await mkdir(otherDirectory);
     const original = {
       files: [
         { path: "a.txt", rewrite: "A body\n" },
-        { path: "existing.txt", rewrite: "after\n" },
+        { path: "existing.txt", rewrite: "after\n", preserveFormatting: false },
         { path: "b.txt", rewrite: "B body\n" },
       ],
     };
@@ -466,17 +525,25 @@ test("compact create retry reuses full bodies and is single-use", async () => {
     assert.equal(expanded.files?.[2]?.onMissing, "create");
     assert.equal(expanded.files?.[2]?.requireMissing, true);
     assert.deepEqual(prepare(tool, retry).files, expanded.files);
+    assert.deepEqual(expanded.files?.map((file) => file.path), ["a.txt", "existing.txt", "b.txt"].map((path) => join(directory, path)));
+    assert.equal(expanded.files?.[1]?.preserveFormatting, false);
+    const preview = await tool.execute("preview-create-retry", prepare(tool, { ...retry, preview: true }), undefined, undefined, { cwd: otherDirectory } as never);
+    assert.equal(preview.details?.preview, true);
+    await assert.rejects(readFile(join(directory, "a.txt")), /ENOENT/);
+    assert.equal(await readFile(join(directory, "existing.txt"), "utf8"), "\uFEFFbefore\r\n");
+    assert.deepEqual(prepare(tool, retry).files, expanded.files);
 
     await tool.execute(
       "call-create-retry",
       expanded,
       undefined,
       undefined,
-      { cwd: directory } as never,
+      { cwd: otherDirectory } as never,
     );
     assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "A body\n");
     assert.equal(await readFile(join(directory, "existing.txt"), "utf8"), "after\n");
     assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "B body\n");
+    assert.deepEqual(await readdir(otherDirectory), []);
     assert.throws(() => prepare(tool, retry), /Compact retry is unavailable/);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -623,16 +690,67 @@ test("compact oldText retry changes only the failed range start in a five-file b
     assert.equal(expanded.files?.[0]?.edits?.[0]?.oldText, "value-0");
     assert.equal(expanded.files?.[4]?.edits?.[0]?.oldText, "target one");
     assert.equal(expanded.files?.[4]?.edits?.[0]?.endText, "END\n");
+    const otherDirectory = join(directory, "other");
+    await mkdir(otherDirectory);
+    await writeFile(join(otherDirectory, "0.txt"), "value-0\n");
+    assert.equal(expanded.files?.[0]?.path, join(directory, "0.txt"));
 
     await tool.execute(
       "call-old-text-retry",
       expanded,
       undefined,
       undefined,
-      { cwd: directory } as never,
+      { cwd: otherDirectory } as never,
     );
     assert.equal(await readFile(join(directory, "0.txt"), "utf8"), "VALUE-0\n");
     assert.equal(await readFile(join(directory, "4.txt"), "utf8"), "changed\ntarget two\n");
+    assert.equal(await readFile(join(otherDirectory, "0.txt"), "utf8"), "value-0\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("preview failures do not allocate compact retries or render as committed writes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-preview-"));
+  try {
+    const tool = createApplyEditsTool();
+    await assert.rejects(tool.execute("failed-preview", prepare(tool, { path: "new", rewrite: "body", preview: true }), undefined, undefined, { cwd: directory } as never), (error: unknown) => {
+      assert(error instanceof Error);
+      assert.doesNotMatch(error.message, /Compact retry/);
+      return true;
+    });
+    assert.throws(() => prepare(tool, { retry: { from: "failed-preview" } }), /unavailable/);
+    const result = await tool.execute("preview", prepare(tool, { path: "new", rewrite: "body", onMissing: "create", preview: true }), undefined, undefined, { cwd: directory } as never);
+    const theme = { fg: (color: string, text: string) => `<${color}>${text}`, bold: (text: string) => text } as never;
+    const rendered = tool.renderResult?.(result, { expanded: true, isPartial: false }, theme, { isError: false } as never)?.render(120).join("\n") ?? "";
+    assert.match(rendered, /<accent>◇ Would create/);
+    assert.doesNotMatch(rendered, /✓/);
+    assert.match(rendered, /\+body/);
+    const diffContent = result.content[1];
+    assert(diffContent?.type === "text");
+    assert.match(diffContent.text, /\+body/);
+    assert.deepEqual(await readdir(directory), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("preview gives the model bounded diff text while retaining complete generated patches", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-preview-output-"));
+  try {
+    const tool = createApplyEditsTool();
+    for (const body of ["line\n".repeat(3_000), `${"x".repeat(1_000)}\n`.repeat(100)]) {
+      const result = await tool.execute("preview-output", { path: "new", rewrite: `${body}FINAL-LINE\n`, onMissing: "create", preview: true }, undefined, undefined, { cwd: directory } as never);
+      const diff = result.content[1];
+      assert(diff?.type === "text");
+      assert.match(diff.text, /Preview truncated:.*Full generated diffs remain in tool details/);
+      assert(Buffer.byteLength(diff.text) < 51 * 1024);
+      assert(diff.text.split("\n").length < 2010);
+      assert.doesNotMatch(diff.text, /FINAL-LINE/);
+      assert.match(singleDetails(result.details).diff, /\+FINAL-LINE/);
+      assert.equal(singleDetails(result.details).diffTruncated, false);
+    }
+    assert.deepEqual(await readdir(directory), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
