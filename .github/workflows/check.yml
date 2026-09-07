@@ -1,0 +1,47 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [22.19.0, 24.x]
+        pi: [0.84.1, 0.85.1]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Linux metadata test tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y attr acl libcap2-bin build-essential
+      - name: Install and check without credentials
+        shell: bash
+        env:
+          PI_VERSION: ${{ matrix.pi }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/check-home"
+          touch "$RUNNER_TEMP/user.npmrc" "$RUNNER_TEMP/global.npmrc"
+          clean=(env -i HOME="$RUNNER_TEMP/check-home" PATH="$PATH" TMPDIR="$RUNNER_TEMP" CI=1 PI_OFFLINE=1
+            NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/user.npmrc" NPM_CONFIG_GLOBALCONFIG="$RUNNER_TEMP/global.npmrc"
+            NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
+          "${clean[@]}" npm ci --ignore-scripts --no-audit --no-fund
+          if [[ "$PI_VERSION" != 0.84.1 ]]; then
+            "${clean[@]}" npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund \
+              "@earendil-works/pi-ai@$PI_VERSION" "@earendil-works/pi-coding-agent@$PI_VERSION" "@earendil-works/pi-tui@$PI_VERSION"
+          fi
+          "${clean[@]}" npm run check
