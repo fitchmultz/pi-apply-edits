@@ -85,7 +85,7 @@ test("native loader keeps retry targets and policy intact across previews and cw
       });
       if (event.type === "tool_execution_update") updates.push(contentText(event.partialResult.content, "\n"));
     });
-    const call = (id: string, args: Record<string, unknown>): ToolCall => ({ type: "toolCall", id, name: "apply_edits", arguments: args });
+    const call = (id: string, args: ToolCall["arguments"]): ToolCall => ({ type: "toolCall", id, name: "apply_edits", arguments: args });
     const createBody = "\uFEFFcreated\r\nmixed\n";
     const steps = [
       [call("failed-create", { file_path: "created.txt", content: createBody, preserve_formatting: false })],
