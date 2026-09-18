@@ -256,7 +256,15 @@ export function applyTargetedEdits(
       );
     }
 
-    const selected = edit.all ? match.replacements : match.replacements.slice(0, 1);
+    const selected = (edit.all ? match.replacements : match.replacements.slice(0, 1)).map((item) => {
+      // Preserve the unmatched half of a CRLF unless an inserted/replacement newline
+      // supplies it. Literal CR/LF deletions must not consume adjacent bytes.
+      const start = current[item.matchStart] === "\n" && current[item.matchStart - 1] === "\r" &&
+        (edit.insert || /^[\r\n]/.test(item.text)) ? item.matchStart - 1 : item.matchStart;
+      const end = current[item.matchEnd - 1] === "\r" && current[item.matchEnd] === "\n" &&
+        (edit.insert || hasFinalLineEnding(item.text)) ? item.matchEnd + 1 : item.matchEnd;
+      return toReplacement(start, end, item.text, item.line, edit.insert);
+    });
     if (hasOverlaps(selected)) {
       throw new Error(
         `edits[${index}] has overlapping matches in ${displayPath}. ` +
@@ -1029,17 +1037,11 @@ function findMatch(
     maximumReplacementLength,
     maxResultLength,
   );
-  // LF-normalized anchors can match only half a CRLF at either boundary. Treat that
-  // pair as one newline for replacements, ranges and preserved insertion anchors.
-  const exactStarts = exactOffsets.map((start) =>
-    content[start] === "\n" && content[start - 1] === "\r" ? start - 1 : start);
-  const exactLines = lineNumbersAt(content, exactStarts);
-  const exactEndings = lineEndingsAt(content, exactStarts);
+  const exactLines = lineNumbersAt(content, exactOffsets);
+  const exactEndings = lineEndingsAt(content, exactOffsets);
   const replacementsByEnding = new Map<LineEnding, string>();
-  const exact = exactOffsets.map((offset, index) => {
-    const start = exactStarts[index]!;
-    const rawEnd = offset + matchedOldText.length;
-    const end = content[rawEnd - 1] === "\r" && content[rawEnd] === "\n" ? rawEnd + 1 : rawEnd;
+  const exact = exactOffsets.map((start, index) => {
+    const end = start + matchedOldText.length;
     const replacement = convertedReplacement(
       newText,
       exactEndings[index] ?? "\n",
@@ -1640,6 +1642,10 @@ function lineEndingsAt(content: string, offsets: number[]): LineEnding[] {
   const fallback = detectLineEnding(content);
   let cursor = 0;
   for (const offset of offsets) {
+    if (content[offset] === "\n" && content[offset - 1] === "\r") {
+      endings.push("\r\n");
+      continue;
+    }
     if (cursor < offset) cursor = offset;
     while (cursor < content.length && content[cursor] !== "\r" && content[cursor] !== "\n") cursor++;
     if (cursor >= content.length) {

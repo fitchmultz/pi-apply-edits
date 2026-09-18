@@ -814,14 +814,17 @@ test("targeted edits preserve CRLF and BOM", async () => {
   });
 });
 
-test("LF-normalized anchors never split CRLF pairs", async () => {
+test("CRLF anchors preserve supplied newlines and literal deletion boundaries", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "windows.txt");
     for (const [edits, expected] of [
       [[{ oldText: "\nsecond", newText: "\ninserted\nSECOND" }], "first\r\ninserted\r\nSECOND\r\n"],
       [[{ oldText: "\n", newText: "inserted\n", insert: "after", all: true }], "first\r\ninserted\r\nsecond\r\ninserted\r\n"],
       [[{ oldText: "\nsecond", newText: "\ninserted", insert: "before" }], "first\r\ninserted\r\nsecond\r\n"],
-      [[{ oldText: "\nsecond", newText: "" }], "first\r\n"],
+      [[{ oldText: "\r\nsecond", newText: "" }], "first\r\n"],
+      [[{ oldText: "\r", newText: "", all: true }], "first\nsecond\n"],
+      [[{ oldText: "second\r", newText: "second" }], "first\r\nsecond\n"],
+      [[{ oldText: "\nsecond", newText: "" }], "first\r\r\n"],
       [[{ oldText: "second\r", newText: "SECOND\n" }], "first\r\nSECOND\r\n"],
       [[{ oldText: "second\r", newText: "inserted\n", insert: "after" }], "first\r\nsecond\r\ninserted\r\n"],
     ] satisfies Array<[TargetedEdit[], string]>) {
@@ -833,6 +836,9 @@ test("LF-normalized anchors never split CRLF pairs", async () => {
     await writeFile(path, "first\r\nsecond\r\nEND\r\n");
     await applyEditsToFile({ path, edits: [{ oldText: "\nsecond", endText: "END\r", newText: "\nDONE\n" }] }, directory);
     assert.equal(await readFile(path, "utf8"), "first\r\nDONE\r\n");
+    await writeFile(path, "a\r\nb\r\nc\r\nd\r\n");
+    await applyEditsToFile({ path, edits: [{ oldText: "\nb", endText: "c\r", newText: "X" }] }, directory);
+    assert.equal(await readFile(path, "utf8"), "a\rX\nd\r\n");
   });
 });
 
@@ -1049,6 +1055,18 @@ test(
   },
 );
 
+test("macOS replacement support requires the native ACL command", { skip: process.platform !== "darwin" }, async () => {
+  await withRacingFileSystem((promises) => {
+    const originalAccess = promises.access;
+    promises.access = async (path, mode) => {
+      if (path === "/usr/bin/osascript") throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return originalAccess(path, mode);
+    };
+  }, async (module) => {
+    assert.equal(await module.supportsExistingFileReplacement(), false);
+  });
+});
+
 test("macOS creates inherit the final parent's ACL at the native depth", { skip: process.platform !== "darwin" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const acl = async (path: string) => (await execFile("/bin/ls", ["-ldben", path])).stdout.split("\n").slice(1).join("\n");
@@ -1075,6 +1093,24 @@ test("macOS creates inherit the final parent's ACL at the native depth", { skip:
         assert.equal((await stat(actual)).mode, (await stat(native)).mode);
       }
     }
+  });
+});
+
+test("macOS replacements preserve source ACLs instead of inheriting current parent rules", { skip: process.platform !== "darwin" }, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const acl = async (path: string) => (await execFile("/bin/ls", ["-ldben", path])).stdout.split("\n").slice(1).join("\n");
+    const plain = join(directory, "plain.txt");
+    const inherited = join(directory, "inherited.txt");
+    await writeFile(plain, "before\n");
+    await execFile("/bin/chmod", ["+a", "user:_www deny read,file_inherit,directory_inherit,only_inherit", directory]);
+    await writeFile(inherited, "before\n");
+    const inheritedAcl = await acl(inherited);
+    assert.match(inheritedAcl, /inherited deny read/);
+    await applyEditsToFile({ path: plain, rewrite: "after\n" }, directory);
+    assert.equal(await acl(plain), "");
+    await execFile("/bin/chmod", ["-N", directory]);
+    await applyEditsToFile({ path: inherited, rewrite: "after\n" }, directory);
+    assert.equal(await acl(inherited), inheritedAcl);
   });
 });
 

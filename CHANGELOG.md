@@ -3,8 +3,8 @@
 ## 0.7.1 — 2026-09-18
 
 - Preserve invocation order across overlapping single-file and batch calls, including later batch keys, while unrelated files remain parallel and mutations still use Pi's native queues.
-- Keep CRLF pairs intact when normalized anchors start at LF or end at CR. Replacements, ranges, deletions, and inserts preserve local line endings.
-- Preserve native macOS ACL inheritance for direct and nested creates. Forward parent ACLs through private staging with the system ACL API, retaining principal UUIDs and direct-child inheritance limits; refuse inherited permissions that prevent content verification.
+- Preserve local CRLF for supplied newlines and insertion anchors without expanding literal CR/LF deletions into adjacent bytes.
+- Preserve native macOS ACL inheritance for direct and nested creates, and retain complete source ACLs on replacement. Use the system ACL API through private staging, retaining principal UUIDs and direct-child inheritance limits; refuse inherited permissions that prevent content verification.
 
 ## 0.7.0 — 2026-09-06
 
