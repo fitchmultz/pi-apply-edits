@@ -31,6 +31,8 @@ test("native loader keeps retry targets and policy intact across previews and cw
     await mkdir(other);
     await writeFile(join(cwd, "same.txt"), "shared\nA\n");
     await writeFile(join(other, "same.txt"), "shared\nB\n");
+    await writeFile(join(cwd, "ordered-a.txt"), "initial\n");
+    await writeFile(join(cwd, "ordered-b.txt"), "initial\n");
     const runtime = await ModelRuntime.create({
       authPath: join(root, "auth.json"), modelsPath: null, modelsStorePath: join(root, "models.json"),
       refreshOnCreate: false, allowModelNetwork: false,
@@ -100,6 +102,13 @@ test("native loader keeps retry targets and policy intact across previews and cw
         { path: join(cwd, "same.txt"), edits: [{ oldText: "CHANGED", newText: "DONE" }] },
         { path: "batch.txt", rewrite: "batch\n", onMissing: "create" },
       ] })],
+      [
+        call("ordered-batch", { files: [
+          { path: join(cwd, "ordered-a.txt"), rewrite: "first\n" },
+          { path: join(cwd, "ordered-b.txt"), rewrite: "first\n" },
+        ] }),
+        call("ordered-single", { path: join(cwd, "ordered-b.txt"), rewrite: "second\n" }),
+      ],
       [call("unused", { path: "unused.txt", rewrite: "pending" })],
     ];
     let turn = 0;
@@ -132,7 +141,7 @@ test("native loader keeps retry targets and policy intact across previews and cw
     for (const id of ["failed-create", "failed-edit", "denied-create", "duplicate-edit", "invalid-preview", "missing-path", "unused"]) {
       assert.equal(results.get(id)?.isError, true, `${id}: ${results.get(id)?.text}`);
     }
-    for (const id of ["preview-create", "preview-edit", "apply-create", "apply-edit", "policy-preview", "batch"]) {
+    for (const id of ["preview-create", "preview-edit", "apply-create", "apply-edit", "policy-preview", "batch", "ordered-batch", "ordered-single"]) {
       assert.equal(results.get(id)?.isError, false, `${id}: ${results.get(id)?.text}`);
     }
     for (const id of ["preview-create", "preview-edit", "policy-preview"]) {
@@ -150,6 +159,8 @@ test("native loader keeps retry targets and policy intact across previews and cw
     assert.equal(await readFile(join(cwd, "same.txt"), "utf8"), "DONE\nA\n");
     assert.equal(await readFile(join(other, "same.txt"), "utf8"), "shared\nB\n");
     assert.equal(await readFile(join(other, "batch.txt"), "utf8"), "batch\n");
+    assert.equal(await readFile(join(cwd, "ordered-a.txt"), "utf8"), "first\n");
+    assert.equal(await readFile(join(cwd, "ordered-b.txt"), "utf8"), "second\n");
     const tool = session.getToolDefinition("apply_edits");
     assert(tool?.prepareArguments);
     assert.throws(() => tool.prepareArguments!({ retry: { from: "unused" } }), /unavailable/);

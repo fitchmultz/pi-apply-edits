@@ -256,7 +256,15 @@ export function applyTargetedEdits(
       );
     }
 
-    const selected = edit.all ? match.replacements : match.replacements.slice(0, 1);
+    const selected = (edit.all ? match.replacements : match.replacements.slice(0, 1)).map((item) => {
+      // Preserve the unmatched half of a CRLF unless an inserted/replacement newline
+      // supplies it. Literal CR/LF deletions must not consume adjacent bytes.
+      const start = current[item.matchStart] === "\n" && current[item.matchStart - 1] === "\r" &&
+        (edit.insert || /^[\r\n]/.test(item.text)) ? item.matchStart - 1 : item.matchStart;
+      const end = current[item.matchEnd - 1] === "\r" && current[item.matchEnd] === "\n" &&
+        (edit.insert || hasFinalLineEnding(item.text)) ? item.matchEnd + 1 : item.matchEnd;
+      return toReplacement(start, end, item.text, item.line, edit.insert);
+    });
     if (hasOverlaps(selected)) {
       throw new Error(
         `edits[${index}] has overlapping matches in ${displayPath}. ` +
@@ -297,7 +305,10 @@ export async function applyEditsToFile(
 ): Promise<ApplyEditsExecution> {
   validateRequest(input);
   throwIfAborted(signal);
-  if (input.files) return applyEditsBatch(input.files, cwd, signal, input.preview === true, onProgress);
+  if (input.files) {
+    const files = input.files;
+    return registerMutation(() => registerEditsBatch(files, cwd, signal, input.preview === true, onProgress));
+  }
 
   const single = input as ApplyEditsInput;
   const inputPath = resolveInputPath(single.path, cwd);
@@ -317,17 +328,18 @@ export async function applyEditsToFile(
 
 let canonicalLockRegistration = Promise.resolve();
 
-function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Promise<T> {
-  // Resolve aliases in invocation order, then let Pi's queue serialize only matching keys.
-  // Wrapping the operation prevents Promise assimilation from serializing unrelated files.
-  const registration = canonicalLockRegistration.then(async () => {
-    const keys = await mutationQueueKeys(inputPath);
-    return {
-      operation: withMutationLocks(keys.needsCreateLock, keys.queueKeys, fn),
-    };
-  });
+function registerMutation<T>(discover: () => Promise<{ operation: Promise<T> }>): Promise<T> {
+  // Resolve and reserve every call's keys in invocation order, without waiting for its writes.
+  const registration = canonicalLockRegistration.then(discover);
   canonicalLockRegistration = registration.then(() => undefined, () => undefined);
   return registration.then(({ operation }) => operation);
+}
+
+function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Promise<T> {
+  return registerMutation(async () => {
+    const keys = await mutationQueueKeys(inputPath);
+    return { operation: withMutationLocks(keys.needsCreateLock, keys.queueKeys, fn) };
+  });
 }
 
 function retryablePlanningError(
@@ -371,13 +383,13 @@ interface PlannedMutation {
   lockKey?: string;
 }
 
-async function applyEditsBatch(
+async function registerEditsBatch(
   files: ApplyEditsInput[],
   cwd: string,
   signal: AbortSignal | undefined,
   preview: boolean,
   onProgress?: (summary: string) => void,
-): Promise<ApplyEditsExecution> {
+): Promise<{ operation: Promise<ApplyEditsExecution> }> {
   if (files.length === 0) throw new Error("files must contain at least one entry");
   for (const [index, file] of files.entries()) {
     try {
@@ -411,7 +423,7 @@ async function applyEditsBatch(
 
   const lockPaths = [...new Set(resolved.flatMap((item) => item.queueKeys))].sort();
   const needsCreateLock = resolved.some((item) => item.needsCreateLock);
-  return withMutationLocks(needsCreateLock, lockPaths, async () => {
+  return { operation: withMutationLocks(needsCreateLock, lockPaths, async () => {
     const planned: PlannedMutation[] = [];
     const allRewrites = files.every(
       (input) => typeof input.rewrite === "string" && input.edits === undefined,
@@ -555,7 +567,7 @@ async function applyEditsBatch(
         throw new Error(`${failure === undefined ? "" : `${String(failure)} `}${cleanup}`);
       }
     }
-  });
+  }) };
 }
 
 function describeBatch(files: ApplyEditsDetails[], preview = false): ApplyEditsExecution {
@@ -622,34 +634,25 @@ function rejectAncestorPathConflicts(
   }
 }
 
-// Missing-path discoveries cannot use a second Pi lock: Pi realpaths each key at acquisition,
-// so keys can collapse and make an operation wait on itself. One package-local create queue is
-// stable because it has no path identity at all. It deliberately serializes all operations that
-// discovered a missing target; existing-file operations remain parallel. Always acquire it
-// outside Pi's queue, never inside, so the two orderings cannot form a cycle.
-let createMutationQueue = Promise.resolve();
+// Pi acquires one key at a time. Reserve a batch's entire key set before acquiring any Pi lock,
+// so a later call cannot overtake it at a second key. Unrelated files remain parallel.
+// Missing discoveries also share a path-independent key that survives ancestor publication.
+const createMutationKey = Symbol("create");
+const pendingMutations = new Map<string | symbol, Promise<void>>();
 
 function withMutationLocks<T>(needsCreateLock: boolean, pi: string[], fn: () => Promise<T>): Promise<T> {
-  return withCreateLock(needsCreateLock, () => withOrderedFileLocks(pi, fn));
-}
-
-async function withCreateLock<T>(needed: boolean, fn: () => Promise<T>): Promise<T> {
-  if (!needed) return fn();
-  // Registration is synchronous, so every missing-path operation gets one stable queue slot.
-  const previous = createMutationQueue;
-  let release = () => {};
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
+  const keys: Array<string | symbol> = [...new Set(pi)];
+  if (needsCreateLock) keys.push(createMutationKey);
+  const previous = keys.flatMap((key) => pendingMutations.get(key) ?? []);
+  const operation = Promise.all(previous).then(() => withOrderedFileLocks(pi, fn));
+  const settled = operation.then(() => undefined, () => undefined);
+  for (const key of keys) pendingMutations.set(key, settled);
+  void settled.then(() => {
+    for (const key of keys) {
+      if (pendingMutations.get(key) === settled) pendingMutations.delete(key);
+    }
   });
-  const chained = previous.then(() => held);
-  createMutationQueue = chained;
-  await previous;
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (createMutationQueue === chained) createMutationQueue = Promise.resolve();
-  }
+  return operation;
 }
 
 async function withOrderedFileLocks<T>(unordered: string[], fn: () => Promise<T>): Promise<T> {
@@ -1639,6 +1642,10 @@ function lineEndingsAt(content: string, offsets: number[]): LineEnding[] {
   const fallback = detectLineEnding(content);
   let cursor = 0;
   for (const offset of offsets) {
+    if (content[offset] === "\n" && content[offset - 1] === "\r") {
+      endings.push("\r\n");
+      continue;
+    }
     if (cursor < offset) cursor = offset;
     while (cursor < content.length && content[cursor] !== "\r" && content[cursor] !== "\n") cursor++;
     if (cursor >= content.length) {

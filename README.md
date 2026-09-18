@@ -12,7 +12,7 @@ entries, so they remain active on unsupported platforms or when requested.
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v0.7.0
+pi install git:github.com/fitchmultz/pi-apply-edits@v0.7.1
 ```
 
 Restart Pi after installing or updating extension code. `/reload` does not replace
@@ -221,7 +221,9 @@ validation and `tool_call` policy hooks. Other failures require a normal request
 
 ## Matching and failure behavior
 
-1. Exact text is tried first for every anchor.
+1. Exact text is tried first for every anchor. Supplied newlines use the matched
+   area's style even when an anchor starts inside a CRLF pair. Inserts keep pairs
+   intact; literal CR/LF deletions leave bytes outside their anchors unchanged.
 2. If exact text is absent, complete-line matching may correct typography,
    Unicode compatibility, trailing whitespace, or one uniform indentation
    shift. Corrections report their matching strategy and starting lines. Tab
@@ -245,8 +247,8 @@ are rejected rather than guessed.
   `..` and absolute paths can address files outside that directory; this tool is
   not a filesystem sandbox. All other path characters are literal: `~`,
   `file://`, Unicode spaces, and leading `@` segments are never expanded or rewritten.
-- Calls on the same file share Pi's mutation queue; calls on different files
-  remain parallel.
+- Overlapping single-file and batch calls retain invocation order and share Pi's
+  mutation queue. Calls on unrelated files remain parallel.
 - Existing files are published by same-directory atomic replacement from a
   metadata-preserving native clone. Android/Termux uses GNU `mv --exchange` so the
   displaced inode becomes the recovery file atomically.
@@ -259,7 +261,8 @@ are rejected rather than guessed.
   is left untouched and a named recovery path retains the earlier version for inspection.
 - Symbolic links are followed without replacing the link itself.
 - Existing ownership, ordinary permissions, ACLs, and extended attributes are
-  preserved using native copying on macOS and Linux. Text formatting is preserved
+  preserved using native copying on macOS and Linux. macOS also uses the system
+  `osascript` command to retain inherited ACL entries exactly. Text formatting is preserved
   by default as described above. Setuid and setgid files are rejected without
   mutation. Linux also requires `getcap` and
   rejects capability-bearing files because the kernel can clear capabilities
@@ -274,6 +277,10 @@ are rejected rather than guessed.
   required command or atomic operation is unavailable.
 - Existing-file replacement fails closed on other platforms. Explicit create
   remains available.
+- Creates preserve native macOS ACL inheritance, including direct-child-only
+  rules. The system `osascript` command calls the native ACL API for private
+  staging; no compiler or additional package is required. Inherited rights that
+  prevent staging or content verification cause an explicit failure.
 - Missing parent directories are created only for an explicit create. Creates are
   fully staged before publication, and the missing root and every file name are
   then claimed with exclusive no-clobber operations. Concurrent creates under one

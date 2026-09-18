@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1 — 2026-09-18
+
+- Preserve invocation order across overlapping single-file and batch calls, including later batch keys, while unrelated files remain parallel and mutations still use Pi's native queues.
+- Preserve local CRLF for supplied newlines and insertion anchors without expanding literal CR/LF deletions into adjacent bytes.
+- Preserve native macOS ACL inheritance for direct and nested creates, and retain complete source ACLs on replacement. Use the system ACL API through private staging, retaining principal UUIDs and direct-child inheritance limits; refuse inherited permissions that prevent content verification.
+
 ## 0.7.0 — 2026-09-06
 
 - Add `preview: true` for read-only single-file, batch, and compact-retry previews using the same ordered editing and formatting rules. Return bounded model-visible diffs and complete generated patches in the TUI/SDK/RPC, without staging files, probing publication capabilities, or consuming retries.

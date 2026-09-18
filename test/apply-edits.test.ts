@@ -25,6 +25,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { applyPatch } from "diff";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
   applyEditsToFile,
   applyTargetedEdits,
@@ -32,6 +33,7 @@ import {
   RetryableApplyEditsError,
   type ApplyEditsDetails,
   type ApplyEditsRequest,
+  type TargetedEdit,
 } from "../src/apply-edits.ts";
 
 function singleDetails(details: { files?: ApplyEditsDetails[] } | ApplyEditsDetails): ApplyEditsDetails {
@@ -812,6 +814,34 @@ test("targeted edits preserve CRLF and BOM", async () => {
   });
 });
 
+test("CRLF anchors preserve supplied newlines and literal deletion boundaries", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "windows.txt");
+    for (const [edits, expected] of [
+      [[{ oldText: "\nsecond", newText: "\ninserted\nSECOND" }], "first\r\ninserted\r\nSECOND\r\n"],
+      [[{ oldText: "\n", newText: "inserted\n", insert: "after", all: true }], "first\r\ninserted\r\nsecond\r\ninserted\r\n"],
+      [[{ oldText: "\nsecond", newText: "\ninserted", insert: "before" }], "first\r\ninserted\r\nsecond\r\n"],
+      [[{ oldText: "\r\nsecond", newText: "" }], "first\r\n"],
+      [[{ oldText: "\r", newText: "", all: true }], "first\nsecond\n"],
+      [[{ oldText: "second\r", newText: "second" }], "first\r\nsecond\n"],
+      [[{ oldText: "\nsecond", newText: "" }], "first\r\r\n"],
+      [[{ oldText: "second\r", newText: "SECOND\n" }], "first\r\nSECOND\r\n"],
+      [[{ oldText: "second\r", newText: "inserted\n", insert: "after" }], "first\r\nsecond\r\ninserted\r\n"],
+    ] satisfies Array<[TargetedEdit[], string]>) {
+      const original = "first\r\nsecond\r\n";
+      await writeFile(path, original);
+      await applyEditsToFile({ path, edits }, directory);
+      assert.equal(await readFile(path, "utf8"), expected);
+    }
+    await writeFile(path, "first\r\nsecond\r\nEND\r\n");
+    await applyEditsToFile({ path, edits: [{ oldText: "\nsecond", endText: "END\r", newText: "\nDONE\n" }] }, directory);
+    assert.equal(await readFile(path, "utf8"), "first\r\nDONE\r\n");
+    await writeFile(path, "a\r\nb\r\nc\r\nd\r\n");
+    await applyEditsToFile({ path, edits: [{ oldText: "\nb", endText: "c\r", newText: "X" }] }, directory);
+    assert.equal(await readFile(path, "utf8"), "a\rX\nd\r\n");
+  });
+});
+
 test("targeted edits reject newly leading U+FEFF without changing bytes", async () => {
   await inTemporaryDirectory(async (directory) => {
     const withBom = join(directory, "with-bom.txt");
@@ -1025,6 +1055,75 @@ test(
   },
 );
 
+test("macOS replacement support requires the native ACL command", { skip: process.platform !== "darwin" }, async () => {
+  await withRacingFileSystem((promises) => {
+    const originalAccess = promises.access;
+    promises.access = async (path, mode) => {
+      if (path === "/usr/bin/osascript") throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return originalAccess(path, mode);
+    };
+  }, async (module) => {
+    assert.equal(await module.supportsExistingFileReplacement(), false);
+  });
+});
+
+test("macOS creates inherit the final parent's ACL at the native depth", { skip: process.platform !== "darwin" }, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const acl = async (path: string) => (await execFile("/bin/ls", ["-ldben", path])).stdout.split("\n").slice(1).join("\n");
+    for (const [index, entry] of [
+      "user:_www allow read,file_inherit",
+      "user:_www allow read,file_inherit,limit_inherit",
+      "group:staff deny writeattr,file_inherit,directory_inherit,limit_inherit,only_inherit",
+      "group:staff deny writeattr,file_inherit,directory_inherit,only_inherit",
+    ].entries()) {
+      const parent = join(directory, String(index));
+      await mkdir(parent);
+      await execFile("/bin/chmod", ["+a", entry, parent]);
+      await writeFile(join(parent, "native.txt"), "native\n");
+      await mkdir(join(parent, "native", "child"), { recursive: true });
+      await writeFile(join(parent, "native", "child", "file.txt"), "native\n");
+      await applyEditsToFile({ files: [
+        { path: join(parent, "tool.txt"), rewrite: "tool\n", onMissing: "create" },
+        { path: join(parent, "tool", "child", "file.txt"), rewrite: "tool\n", onMissing: "create" },
+      ] }, directory);
+      for (const suffix of [".txt", "", "/child", "/child/file.txt"]) {
+        const native = join(parent, `native${suffix}`);
+        const actual = join(parent, `tool${suffix}`);
+        assert.equal(await acl(actual), await acl(native), `${entry}: ${suffix}`);
+        assert.equal((await stat(actual)).mode, (await stat(native)).mode);
+      }
+    }
+  });
+});
+
+test("macOS replacements preserve source ACLs instead of inheriting current parent rules", { skip: process.platform !== "darwin" }, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const acl = async (path: string) => (await execFile("/bin/ls", ["-ldben", path])).stdout.split("\n").slice(1).join("\n");
+    const plain = join(directory, "plain.txt");
+    const inherited = join(directory, "inherited.txt");
+    await writeFile(plain, "before\n");
+    await execFile("/bin/chmod", ["+a", "user:_www deny read,file_inherit,directory_inherit,only_inherit", directory]);
+    await writeFile(inherited, "before\n");
+    const inheritedAcl = await acl(inherited);
+    assert.match(inheritedAcl, /inherited deny read/);
+    await applyEditsToFile({ path: plain, rewrite: "after\n" }, directory);
+    assert.equal(await acl(plain), "");
+    await execFile("/bin/chmod", ["-N", directory]);
+    await applyEditsToFile({ path: inherited, rewrite: "after\n" }, directory);
+    assert.equal(await acl(inherited), inheritedAcl);
+  });
+});
+
+test("macOS creates refuse inherited ACLs that prevent content verification", { skip: process.platform !== "darwin" }, async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await execFile("/bin/chmod", ["+a", `user:${userInfo().username} deny read,file_inherit,limit_inherit,only_inherit`, directory]);
+    await writeFile(join(directory, "native.txt"), "private");
+    await assert.rejects(readFile(join(directory, "native.txt")), { code: "EACCES" });
+    await assert.rejects(applyEditsToFile({ path: "tool.txt", rewrite: "private", onMissing: "create" }, directory), /EACCES/);
+    assert.deepEqual(await readdir(directory), ["native.txt"]);
+  });
+});
+
 test("Linux native copy preserves ACLs/xattrs and rejects xattr failures before publishing", { skip: process.platform !== "linux" }, async (t) => {
   const setfattr = await firstExistingFile(["/usr/bin/setfattr", "/bin/setfattr"]);
   const getfattr = await firstExistingFile(["/usr/bin/getfattr", "/bin/getfattr"]);
@@ -1171,6 +1270,79 @@ test("concurrent calls on one path serialize through Pi's mutation queue", async
     ]);
 
     assert.equal(await readFile(path, "utf8"), "three\n");
+  });
+});
+
+test("single and batch mutations register in invocation order despite delayed key discovery", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "file.txt");
+    for (const [firstBatch, secondBatch] of [[false, true], [true, false], [true, true]]) {
+      await writeFile(path, "one\n");
+      const canonical = await realpath(path);
+      const discovered = deferred();
+      const release = deferred();
+      let held = false;
+      await withRacingFileSystem((promises) => {
+        const originalRealpath = promises.realpath;
+        promises.realpath = (async (...args: Parameters<typeof realpath>) => {
+          if (String(args[0]) === path || String(args[0]) === canonical) {
+            if (!held) {
+              held = true;
+              discovered.resolve();
+              await release.promise;
+            }
+            return canonical;
+          }
+          return originalRealpath(...args);
+        }) as typeof realpath;
+      }, async () => {
+        const first = { path, edits: [{ oldText: "one", newText: "two" }] };
+        const second = { path, edits: [{ oldText: "two", newText: "three" }] };
+        const firstCall = applyEditsToFile(firstBatch ? { files: [first] } : first, directory);
+        await discovered.promise;
+        const secondCall = applyEditsToFile(secondBatch ? { files: [second] } : second, directory);
+        // Drain the second call's ready key lookups while the first lookup remains held.
+        const finished = Promise.allSettled([firstCall, secondCall]);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        release.resolve();
+        const results = await withTimeout(finished, "ordered single/batch calls");
+        assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+        assert.equal(await readFile(path, "utf8"), "three\n");
+      });
+    }
+  });
+});
+
+test("a blocked batch reserves its later keys without blocking unrelated files", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const a = join(directory, "a.txt");
+    const b = join(directory, "b.txt");
+    const c = join(directory, "c.txt");
+    await Promise.all([a, b, c].map((path) => writeFile(path, "one\n")));
+    const acquired = deferred();
+    const release = deferred();
+    const blocker = withFileMutationQueue(a, async () => {
+      acquired.resolve();
+      await release.promise;
+    });
+    await acquired.promise;
+    const batch = applyEditsToFile({ files: [a, b].map((path) => ({
+      path, edits: [{ oldText: "one", newText: "two" }],
+    })) }, directory);
+    const later = applyEditsToFile({ path: b, edits: [{ oldText: "two", newText: "three" }] }, directory);
+    const finished = Promise.allSettled([batch, later]);
+    try {
+      await withTimeout(applyEditsToFile({ path: c, rewrite: "unrelated\n" }, directory), "unrelated file stays parallel");
+      assert.equal(await readFile(c, "utf8"), "unrelated\n");
+      assert.equal(await readFile(b, "utf8"), "one\n");
+    } finally {
+      release.resolve();
+      await blocker;
+    }
+    const results = await withTimeout(finished, "batch and later-key edit");
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+    assert.equal(await readFile(a, "utf8"), "two\n");
+    assert.equal(await readFile(b, "utf8"), "three\n");
   });
 });
 
@@ -3633,15 +3805,11 @@ test(
       const upperTarget = join(root, "b.txt");
       const originalMkdir = nodeFs.promises.mkdir;
       const originalRealpath = nodeFs.promises.realpath;
-      const originalLink = nodeFs.promises.link;
       const rootReached = deferred();
       const releaseRoot = deferred();
       const releaseUpperDiscovery = deferred();
-      const targetLinkReached = deferred();
-      const releaseTargetLink = deferred();
       let heldRoot = false;
       let heldUpperDiscovery = false;
-      let heldTargetLink = false;
 
       await withRacingFileSystem<typeof import("../src/apply-edits.ts")>(
         (promises) => {
@@ -3660,19 +3828,10 @@ test(
             }
             return (originalRealpath as Function).call(this, path, ...args);
           }) as typeof promises.realpath;
-          promises.link = (async function (this: unknown, from: string, to: string, ...args: unknown[]) {
-            if (String(to) === upperTarget && !heldTargetLink) {
-              heldTargetLink = true;
-              targetLinkReached.resolve();
-              await releaseTargetLink.promise;
-            }
-            return (originalLink as Function).call(this, from, to, ...args);
-          }) as typeof promises.link;
         },
         async (module) => {
           let rootCreate: Promise<unknown> | undefined;
           let batchOutcome: Promise<string> | undefined;
-          let targetCreate: Promise<unknown> | undefined;
           try {
             rootCreate = module.applyEditsToFile(
               { path: "R/x/a.txt", rewrite: "A\n", onMissing: "create" },
@@ -3701,25 +3860,13 @@ test(
             releaseRoot.resolve();
             await withTimeout(rootCreate, "root create finishing");
 
-            targetCreate = module.applyEditsToFile(
-              { path: "R/b.txt", rewrite: "outside\n", onMissing: "create" },
-              canonicalDirectory,
-            );
-            await withTimeout(targetLinkReached.promise, "target create reaching link");
             releaseUpperDiscovery.resolve();
             const outcome = await withTimeout(batchOutcome, "batch duplicate rejection", 1000);
             assert.match(outcome, /^rejected: .*refers to the same file/);
-            releaseTargetLink.resolve();
-            await withTimeout(targetCreate, "target create finishing");
           } finally {
             releaseRoot.resolve();
             releaseUpperDiscovery.resolve();
-            releaseTargetLink.resolve();
-            // Do not await batchOutcome here: on the control tree it is the intentionally
-            // deadlocked promise this regression must detect. Its queue keys are temp-scoped.
-            await Promise.allSettled(
-              [rootCreate, targetCreate].filter((item) => item !== undefined),
-            );
+            await Promise.allSettled([rootCreate, batchOutcome]);
           }
         },
         "../src/apply-edits.ts",
@@ -3767,10 +3914,8 @@ test("batch dedupe stays stable when a missing target appears between discoverie
               (error: unknown) => `rejected: ${String(error)}`,
             );
           await withTimeout(secondDiscoveryReached.promise, "second target discovery");
-          await module.applyEditsToFile(
-            { path: "R/B.txt", rewrite: "outside\n", onMissing: "create" },
-            canonicalDirectory,
-          );
+          // An external writer can publish while this call's discovery is held.
+          await writeFile(target, "outside\n");
           releaseSecondDiscovery.resolve();
           const outcome = await withTimeout(batch, "batch duplicate rejection");
           assert.match(outcome, /^rejected: .*refers to the same file/);

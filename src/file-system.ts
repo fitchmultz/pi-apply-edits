@@ -20,6 +20,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface FileSnapshot {
   inputPath: string;
@@ -546,6 +547,7 @@ export async function preparePlannedNestedFiles(
     const containerStats = await lstat(prepared.container, { bigint: true });
     assertCreatedDirectoryOwner(containerStats, prepared.container);
     prepared.containerStats = containerStats;
+    await transferMacosAcl(firstPlan.ancestorPath, prepared.container, "inherit", signal);
     // An unowned entry inside our container also blocks moving the container itself: renaming
     // the recorded parent would relocate the rejected entry, which must stay untouched.
     await mkdir(prepared.quarantine, { mode: 0o700 });
@@ -1079,6 +1081,7 @@ export async function publishNewFile(
       throw error;
     }
     temporaryDirectoryStats = createdDirectoryStats;
+    await transferMacosAcl(directory, temporaryDirectory, "inherit", signal);
     handle = await open(temporary, "wx", 0o666);
     temporaryIdentity = await handle.stat({ bigint: true });
     await handle.writeFile(bytes, { signal });
@@ -1813,6 +1816,18 @@ async function syncDirectory(directory: string): Promise<string | undefined> {
   }
 }
 
+async function transferMacosAcl(
+  source: string,
+  target: string,
+  mode: "inherit" | "copy",
+  signal?: AbortSignal,
+): Promise<void> {
+  if (process.platform !== "darwin") return;
+  await execText("/usr/bin/osascript", [
+    "-l", "JavaScript", fileURLToPath(new URL("./macos-acl.js", import.meta.url)), mode, source, target,
+  ], signal);
+}
+
 function stagingContainerPath(parent: string): string {
   return join(parent, `.pi-apply-edits-${randomUUID()}.tmpdir`);
 }
@@ -1858,6 +1873,7 @@ async function cloneWithMetadata(
     // `all` makes xattrs/context best-effort. Explicit xattr routes Linux labels through strict native copying too.
     : [process.platform === "linux" ? "--preserve=mode,ownership,timestamps,links,xattr" : "--preserve=all", "--", source, target];
   await execText(support.cp, args, signal);
+  await transferMacosAcl(source, target, "copy", signal);
   if (support.strategy === "exchange") {
     const sourceMetadata = expectedAndroidMetadata ??
       await readPreservableAndroidMetadata(source, support, signal);
@@ -1893,6 +1909,11 @@ async function detectReplacementSupport(): Promise<ReplacementSupport> {
     return { supported: false, reason: "Atomic replacement requires executable /bin/cp" };
   }
   if (process.platform === "darwin") {
+    try {
+      await access("/usr/bin/osascript", constants.X_OK);
+    } catch {
+      return { supported: false, reason: "ACL-preserving replacement requires executable /usr/bin/osascript" };
+    }
     return { supported: true, strategy: "hard-link", cp: "/bin/cp" };
   }
 
