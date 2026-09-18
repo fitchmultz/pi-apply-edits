@@ -20,6 +20,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface FileSnapshot {
   inputPath: string;
@@ -546,6 +547,7 @@ export async function preparePlannedNestedFiles(
     const containerStats = await lstat(prepared.container, { bigint: true });
     assertCreatedDirectoryOwner(containerStats, prepared.container);
     prepared.containerStats = containerStats;
+    await inheritCreateAcl(firstPlan.ancestorPath, prepared.container, signal);
     // An unowned entry inside our container also blocks moving the container itself: renaming
     // the recorded parent would relocate the rejected entry, which must stay untouched.
     await mkdir(prepared.quarantine, { mode: 0o700 });
@@ -1079,6 +1081,7 @@ export async function publishNewFile(
       throw error;
     }
     temporaryDirectoryStats = createdDirectoryStats;
+    await inheritCreateAcl(directory, temporaryDirectory, signal);
     handle = await open(temporary, "wx", 0o666);
     temporaryIdentity = await handle.stat({ bigint: true });
     await handle.writeFile(bytes, { signal });
@@ -1811,6 +1814,13 @@ async function syncDirectory(directory: string): Promise<string | undefined> {
   } catch (error) {
     return `The edit was committed, but the parent directory could not be synced: ${errorMessage(error)}`;
   }
+}
+
+async function inheritCreateAcl(parent: string, staging: string, signal?: AbortSignal): Promise<void> {
+  if (process.platform !== "darwin") return;
+  await execText("/usr/bin/osascript", [
+    "-l", "JavaScript", fileURLToPath(new URL("./macos-create-acl.js", import.meta.url)), parent, staging,
+  ], signal);
 }
 
 function stagingContainerPath(parent: string): string {
