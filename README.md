@@ -335,6 +335,8 @@ are rejected rather than guessed.
 ```sh
 npm ci
 npm run check
+# Optional: actual native checkpoint/reload/restore regression (no model calls)
+PI_HOST_INDEX=/path/to/checkpoint-capable-pi/dist/index.js npm test
 ```
 
 The package uses public Pi and TypeBox peer APIs, with jsdiff as its only direct

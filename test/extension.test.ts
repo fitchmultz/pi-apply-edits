@@ -29,6 +29,7 @@ interface ExtensionHarness {
   registryTool?: ToolDefinition;
   sessionStart?: () => void | Promise<void>;
   agentSettled?: () => void;
+  sessionTree?: () => void;
 }
 
 function prepare(
@@ -49,6 +50,7 @@ function createHarness(active: string[], flag = false): { api: ExtensionAPI; sta
     on: (event: string, handler: () => void) => {
       if (event === "session_start") state.sessionStart = handler;
       if (event === "agent_settled") state.agentSettled = handler;
+      if (event === "session_tree") state.sessionTree = handler;
     },
     getActiveTools: () => state.active,
     getAllTools: () => {
@@ -261,6 +263,13 @@ test("factory clears unused compact retries when the agent settles", async () =>
       () => prepare(tool, { retry: { from: "call-settled" } }),
       /Compact retry is unavailable/,
     );
+    // These are the live-instance reset boundaries, independent of teardown.
+    for (const reset of [state.sessionStart, state.sessionTree]) {
+      await assert.rejects(tool.execute("unused", original, undefined, undefined, { cwd: directory } as never), /Compact retry/);
+      assert(prepare(tool, { retry: { from: "unused" } }));
+      await reset?.();
+      assert.throws(() => prepare(tool, { retry: { from: "unused" } }), /unavailable/);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

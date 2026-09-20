@@ -425,7 +425,6 @@ export default function applyEditsExtension(pi: ExtensionAPI): void {
   });
   pi.on("agent_settled", clearRetries);
   pi.on("session_tree", clearRetries);
-  pi.on("session_shutdown", clearRetries);
 }
 
 function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
