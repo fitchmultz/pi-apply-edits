@@ -4,11 +4,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-// Opt in with a checkpoint-capable native host; never substitute a mock guard.
+const hostIndex = process.env.PI_HOST_INDEX ?? fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const host = await import(pathToFileURL(hostIndex).href);
+const hasCheckpoint = typeof host.AgentSession.prototype.acquireCheckpoint === "function";
+if (process.env.PI_COMPAT_HOST === "fork" && !hasCheckpoint) {
+  throw new Error("Fork qualification requires AgentSession.acquireCheckpoint; checkpoint tests must not skip");
+}
+
+// Optional on official Pi; mandatory in the fork lane.
 test("native settled checkpoints preserve history and tool selection across reload/restore", {
-  skip: !process.env.PI_HOST_INDEX && "Set PI_HOST_INDEX to a checkpoint-capable host's dist/index.js",
+  skip: !hasCheckpoint && "Selected host does not provide native checkpoints",
 }, () => {
   const home = mkdtempSync(join(tmpdir(), "pi-apply-edits-checkpoint-"));
   try {
@@ -67,7 +74,8 @@ test("native settled checkpoints preserve history and tool selection across relo
       cwd: home, encoding: "utf8", timeout: 20_000,
       env: {
         HOME: home, PATH: process.env.PATH ?? "", PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1",
-        PI_CODING_AGENT_DIR: join(home, "agent"), PI_HOST_INDEX: process.env.PI_HOST_INDEX,
+        PI_CODING_AGENT_DIR: join(home, "agent"), PI_HOST_INDEX: hostIndex,
+        TMPDIR: home, PI_TELEMETRY: "0",
         TEST_EXTENSION: fileURLToPath(new URL("../extensions/apply-edits.ts", import.meta.url)),
       },
     });
