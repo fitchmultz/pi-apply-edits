@@ -8,6 +8,8 @@ By default, the extension removes Pi's built-in `edit` and `write` tools before
 the first model turn when this package owns the active `apply_edits` registration
 and existing-file replacement is supported. It does not override those registry
 entries, so they remain active on unsupported platforms or when requested.
+Native tools wrapped by `pi-change-working-dir` are also suppressed; other custom
+`edit` and `write` implementations remain active.
 
 ## Install
 
@@ -243,10 +245,17 @@ are rejected rather than guessed.
 
 ## Filesystem behavior
 
-- Relative paths use the session working directory. Absolute paths are accepted.
-  `..` and absolute paths can address files outside that directory; this tool is
-  not a filesystem sandbox. All other path characters are literal: `~`,
-  `file://`, Unicode spaces, and leading `@` segments are never expanded or rewritten.
+- When loaded as an extension, relative paths follow the active `pi-change-working-dir`
+  owner, or Pi's native session directory when that extension is absent or disabled.
+  Single-file, batch, and preview targets become absolute before policy approval and
+  queued I/O; a later directory change cannot redirect an admitted request. Older
+  active versions without the directory-query protocol require an update and full Pi
+  restart. The standalone `createApplyEditsTool()` factory continues to use its execution
+  context's `cwd` without lifecycle hooks or a directory-extension dependency.
+- Absolute paths are accepted. `..` and absolute paths can address files outside the
+  working directory; this tool is not a filesystem sandbox. All other path characters
+  are literal: `~`, `file://`, Unicode spaces, and leading `@` segments are never
+  expanded or rewritten.
 - Overlapping single-file and batch calls retain invocation order and share Pi's
   mutation queue. Calls on unrelated files remain parallel.
 - Existing files are published by same-directory atomic replacement from a

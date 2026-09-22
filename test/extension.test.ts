@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SourceInfo, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import applyEditsExtension, {
   type ApplyEditsParameters,
@@ -27,6 +27,8 @@ interface ExtensionHarness {
   flag: boolean;
   tool?: ToolDefinition;
   registryTool?: ToolDefinition;
+  sourceInfo?: SourceInfo;
+  mutationSources?: Partial<Record<"edit" | "write", SourceInfo>>;
   sessionStart?: () => void | Promise<void>;
   agentSettled?: () => void;
   sessionTree?: () => void;
@@ -40,24 +42,30 @@ function prepare(
   return tool.prepareArguments(raw);
 }
 
-function createHarness(active: string[], flag = false): { api: ExtensionAPI; state: ExtensionHarness } {
+function createHarness(active: string[], flag = false, cwd = process.cwd()): { api: ExtensionAPI; state: ExtensionHarness } {
   const state: ExtensionHarness = { active, flag };
   const api = {
     registerFlag: () => undefined,
     registerTool: (tool: ToolDefinition) => {
       state.tool = tool;
     },
-    on: (event: string, handler: () => void) => {
-      if (event === "session_start") state.sessionStart = handler;
+    on: (event: string, handler: (event?: unknown, ctx?: unknown) => void) => {
+      if (event === "session_start") state.sessionStart = () => handler({}, { cwd, sessionManager: {} });
       if (event === "agent_settled") state.agentSettled = handler;
       if (event === "session_tree") state.sessionTree = handler;
     },
+    events: { emit: () => undefined },
+    getCommands: () => [],
     getActiveTools: () => state.active,
     getAllTools: () => {
       const tool = state.registryTool ?? state.tool;
-      return tool
-        ? [{ ...tool, sourceInfo: { path: "test", source: "test", scope: "temporary", origin: "top-level" } }]
-        : [];
+      return [
+        ...(tool ? [{ ...tool, sourceInfo: state.sourceInfo ?? { path: "test", source: "test", scope: "temporary", origin: "top-level" } }] : []),
+        ...(["edit", "write"] as const).map((name) => ({
+          name,
+          sourceInfo: state.mutationSources?.[name] ?? { path: `<builtin:${name}>`, source: "builtin", scope: "temporary", origin: "top-level" },
+        })),
+      ];
     },
     setActiveTools: (tools: string[]) => {
       state.active = tools;
@@ -240,11 +248,26 @@ test("factory respects CLI, environment, registry availability, and tool ownersh
   assert.deepEqual(collision.state.active, ["edit", "write", "apply_edits"]);
 });
 
+test("factory preserves custom mutation tools and suppresses known directory-owned defaults", async () => {
+  const supported = await supportsExistingFileReplacement();
+  for (const custom of ["edit", "write"] as const) {
+    const { api, state } = createHarness(["edit", "write", "apply_edits"]);
+    state.mutationSources = Object.fromEntries(["edit", "write"].map((name) => [name, {
+      path: "unavailable", source: name === custom ? "unrelated-package" : "npm:pi-change-working-dir@0.4.3",
+      scope: "user", origin: "package",
+    }]));
+    applyEditsExtension(api);
+    await state.sessionStart?.();
+    assert.deepEqual(state.active, supported ? [custom, "apply_edits"] : ["edit", "write", "apply_edits"]);
+  }
+});
+
 test("factory clears unused compact retries when the agent settles", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-apply-edits-settled-retry-"));
   try {
-    const { api, state } = createHarness(["apply_edits"]);
+    const { api, state } = createHarness(["apply_edits"], false, directory);
     applyEditsExtension(api);
+    await state.sessionStart?.();
     const tool = state.tool as ReturnType<typeof createApplyEditsTool>;
     const original = prepare(tool, { path: "new.txt", rewrite: "content\n" });
 
@@ -272,6 +295,22 @@ test("factory clears unused compact retries when the agent settles", async () =>
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy owner identity uses exact package provenance when no manifest is available", async () => {
+  const { api, state } = createHarness(["apply_edits"]);
+  applyEditsExtension(api);
+  await state.sessionStart?.();
+  const tool = state.tool as ReturnType<typeof createApplyEditsTool>;
+  for (const source of ["npm:pi-change-working-dir@0.4.3", "git:github.com/fitchmultz/pi-change-working-dir@v0.4.3"]) {
+    state.sourceInfo = { path: "unavailable", source, scope: "user", origin: "package" };
+    state.registryTool = { ...state.tool!, name: "unrelated" };
+    assert.equal(prepare(tool, { path: "file.txt", rewrite: "body" }).path, join(process.cwd(), "file.txt"));
+    state.registryTool = { ...state.tool!, name: "change_dir" };
+    assert.throws(() => prepare(tool, { path: "file.txt", rewrite: "body" }), /Update pi-change-working-dir and restart Pi/);
+    state.sourceInfo.source = source.replace("pi-change-working-dir", "pi-change-working-dir-unrelated");
+    assert.equal(prepare(tool, { path: "file.txt", rewrite: "body" }).path, join(process.cwd(), "file.txt"));
   }
 });
 

@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { truncateHead, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { truncateHead, type ExtensionAPI, type ExtensionContext, type SourceInfo, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import {
@@ -293,6 +295,7 @@ export function createApplyEditsTool(): ToolDefinition<
 
 function createApplyEditsToolWithStore(
   retries: RetryStore,
+  getExecutionCwd?: () => string,
 ): ToolDefinition<typeof applyEditsSchema, ApplyEditsToolDetails | undefined> {
   return {
     name: "apply_edits",
@@ -315,7 +318,16 @@ function createApplyEditsToolWithStore(
         "Reuse compact retries when offered; inspect partial-publication errors before retrying.",
     ],
     parameters: applyEditsSchema,
-    prepareArguments: (raw) => prepareToolArguments(raw, retries),
+    prepareArguments(raw) {
+      const params = prepareToolArguments(raw, retries);
+      if (!getExecutionCwd || !isRecord(params)) return params;
+      const cwd = getExecutionCwd();
+      // Bind before policy hooks can await approval; retries already carry absolute paths.
+      for (const input of params.files ?? [params]) {
+        if (typeof input.path === "string") input.path = resolveInputPath(input.path, cwd);
+      }
+      return params;
+    },
     executionMode: "parallel",
 
     async execute(toolCallId, params, signal, onUpdate, { cwd }) {
@@ -400,6 +412,7 @@ function createApplyEditsToolWithStore(
 
 export default function applyEditsExtension(pi: ExtensionAPI): void {
   const retries: RetryStore = new Map();
+  let nativeContext: ExtensionContext | undefined;
   const clearRetries = () => retries.clear();
 
   pi.registerFlag("apply-edits-with-builtins", {
@@ -407,10 +420,15 @@ export default function applyEditsExtension(pi: ExtensionAPI): void {
     default: false,
     description: "Keep Pi's built-in edit and write tools active alongside apply_edits",
   });
-  const tool = createApplyEditsToolWithStore(retries);
+  const tool = createApplyEditsToolWithStore(retries, () => {
+    if (!nativeContext) throw new Error("apply_edits session context is not initialized. Start a session or prompt first.");
+    return resolveExecutionCwd(pi, nativeContext);
+  });
   pi.registerTool(tool);
 
-  pi.on("session_start", async () => {
+  pi.on("before_agent_start", (_event, ctx) => { nativeContext = ctx; });
+  pi.on("session_start", async (_event, ctx) => {
+    nativeContext = ctx;
     clearRetries();
     const active = pi.getActiveTools();
     const registered = pi.getAllTools().find((item) => item.name === "apply_edits");
@@ -421,10 +439,55 @@ export default function applyEditsExtension(pi: ExtensionAPI): void {
       keepBuiltins(pi) ||
       !(await supportsExistingFileReplacement())
     ) return;
-    pi.setActiveTools(active.filter((name) => name !== "edit" && name !== "write"));
+    const replaceable = pi.getAllTools().filter((item) =>
+      (item.name === "edit" || item.name === "write") &&
+      (item.sourceInfo.source === "builtin" || isDirectoryOwner(item.sourceInfo)),
+    ).map((item) => item.name);
+    pi.setActiveTools(active.filter((name) => !replaceable.includes(name)));
   });
   pi.on("agent_settled", clearRetries);
   pi.on("session_tree", clearRetries);
+}
+
+function resolveExecutionCwd(pi: ExtensionAPI, ctx: ExtensionContext): string {
+  const request: { sessionManager: ExtensionContext["sessionManager"]; result?: unknown } = {
+    sessionManager: ctx.sessionManager,
+  };
+  pi.events.emit("pi-change-working-dir:resolve-execution-cwd", request);
+  const result = request.result;
+  if (result !== undefined) {
+    const invalid = "pi-change-working-dir returned an invalid execution directory. Update the extension and restart Pi.";
+    if (!isRecord(result)) throw new Error(invalid);
+    if (result.error !== undefined) {
+      throw new Error(typeof result.error === "string" && result.error.length > 0 ? result.error : invalid);
+    }
+    if (typeof result.cwd !== "string" || !isAbsolute(result.cwd) || result.cwd.includes("\0")) {
+      throw new Error(invalid);
+    }
+    return result.cwd;
+  }
+  if (
+    pi.getAllTools().some((tool) => tool.name === "change_dir" && isDirectoryOwner(tool.sourceInfo)) ||
+    pi.getCommands().some((command) => /^cwd(?::\d+)?$/.test(command.name) && isDirectoryOwner(command.sourceInfo))
+  ) {
+    throw new Error("Update pi-change-working-dir and restart Pi before using apply_edits; the loaded owner cannot resolve its execution directory.");
+  }
+  return ctx.cwd;
+}
+
+function isDirectoryOwner(source: SourceInfo): boolean {
+  if (/^(?:npm:pi-change-working-dir|git:github\.com\/fitchmultz\/pi-change-working-dir(?:\.git)?)(?:@.+)?$/.test(source.source)) {
+    return true;
+  }
+  const directories = [source.baseDir, isAbsolute(source.path) ? dirname(source.path) : undefined];
+  return directories.some((directory) => {
+    if (!directory || !isAbsolute(directory)) return false;
+    try {
+      return JSON.parse(readFileSync(join(directory, "package.json"), "utf8")).name === "pi-change-working-dir";
+    } catch {
+      return false;
+    }
+  });
 }
 
 function prepareSingleFileArguments(raw: unknown): Record<string, unknown> {
