@@ -42,14 +42,18 @@ export async function prospectiveDirectory(path: string, missing: Set<string> = 
   }
 }
 
-// Queue discovery is deliberately separate from strict publication validation.
-// Unavailable local identities still reserve a key; registration never creates parents.
+// Called after direct lookup failed. Resolve parents before retrying the target;
+// this detects dangling ancestors before any queue acquisition. Never creates parents.
 export async function prospectiveTarget(path: string): Promise<string> {
-  try { return await realpath(path); }
-  catch (error) { await assertNotDanglingSymbolicLink(path, error); }
   const parent = dirname(path);
   if (parent === path) return path;
-  const candidate = join(await prospectiveTarget(parent), basename(path));
+  let canonicalParent: string;
+  try { canonicalParent = await realpath(parent); }
+  catch (error) {
+    await assertNotDanglingSymbolicLink(parent, error);
+    canonicalParent = await prospectiveTarget(parent);
+  }
+  const candidate = join(canonicalParent, basename(path));
   try { return await realpath(candidate); }
   catch (error) { await assertNotDanglingSymbolicLink(candidate, error); }
   return candidate;

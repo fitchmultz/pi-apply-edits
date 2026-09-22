@@ -3649,7 +3649,9 @@ test("successful inserts retain exact separators without warnings", async () => 
 });
 
 test("a batch rejects a dangling ancestor before its lock can collapse onto the target", async () => {
-  await inTemporaryDirectory(async (directory) => {
+  await inTemporaryDirectory(async (unresolved) => {
+    // Exercise identical discovery/queue spellings on macOS too (/tmp is a symlink).
+    const directory = await realpath(unresolved);
     const aliasParent = join(directory, "a");
     const targetParent = join(directory, "b");
     const alias = join(aliasParent, "child.txt");
