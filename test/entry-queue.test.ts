@@ -90,4 +90,3 @@ test("success summaries distinguish create, delete, and move", async (t) => {
   const deleted = await applyPatchToFiles("*** Begin Patch\n*** Delete File: moved\n*** End Patch", cwd);
   assert.match(deleted.summary, /^Deleted 1 file/);
 });
-
