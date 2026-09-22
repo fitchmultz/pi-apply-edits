@@ -10,11 +10,13 @@ import {
   open,
   readFile,
   readdir,
+  readlink,
   realpath,
   rename,
   rm,
   rmdir,
   stat,
+  symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -55,18 +57,32 @@ export interface NewFilePublishHooks {
   beforeRootReserve?: (paths: { staging: string; target: string }) => void | Promise<void>;
   afterRootReserve?: (paths: { staging: string; target: string }) => void | Promise<void>;
   beforeFilePublish?: (paths: { temporary: string; target: string }) => void | Promise<void>;
+  afterFilePublish?: (paths: { target: string }) => void | Promise<void>;
 }
 
 export interface PlannedNewFile {
   plan: NewFilePlan;
   bytes: Buffer;
+  move?: { entry: EntrySnapshot; snapshot?: FileSnapshot; hooks?: EntryPublishHooks };
 }
 
-export class PartialCreatePublishError extends Error {
+export class PublicationError extends Error {
+  readonly modifiedFiles: string[];
+  readonly uncertainFiles: string[];
+
+  constructor(message: string, modifiedFiles: string[] = [], uncertainFiles: string[] = []) {
+    super(message);
+    this.name = "PublicationError";
+    this.modifiedFiles = modifiedFiles;
+    this.uncertainFiles = uncertainFiles;
+  }
+}
+
+export class PartialCreatePublishError extends PublicationError {
   readonly publishedFiles: number;
 
-  constructor(message: string, publishedFiles: number) {
-    super(message);
+  constructor(message: string, publishedFiles: number, modifiedFiles: string[] = [], uncertainFiles: string[] = []) {
+    super(message, modifiedFiles, uncertainFiles);
     this.name = "PartialCreatePublishError";
     this.publishedFiles = publishedFiles;
   }
@@ -88,6 +104,362 @@ export interface PreparedNestedFiles {
   quarantineStats?: BigIntStats;
   cleanupBlocked?: string;
   stagedIdentities?: Map<string, BigIntStats>;
+}
+
+export interface EntrySnapshot {
+  inputPath: string;
+  actualPath: string;
+  stats: BigIntStats;
+  parentPath: string;
+  parentStats: BigIntStats;
+  symbolicLink: boolean;
+  linkTarget?: Buffer;
+}
+
+export interface EntryMovePlan {
+  entry: EntrySnapshot;
+  destination: NewFilePlan;
+}
+
+export interface EntryPublishHooks {
+  beforeCommit?: () => void | Promise<void>;
+  afterCommit?: () => void | Promise<void>;
+  beforeSourceDelete?: () => void | Promise<void>;
+}
+
+/** Bind the parent, leaving the final symlink as an entry rather than following its target. */
+export async function captureEntrySnapshot(inputPath: string, requireWritable = true): Promise<EntrySnapshot | undefined> {
+  inputPath = resolve(inputPath);
+  const inputStats = await lstatIfExists(inputPath);
+  if (!inputStats) return undefined;
+  if (!inputStats.isFile() && !inputStats.isSymbolicLink()) {
+    throw new Error(`Entry is not a regular file or symbolic link: ${inputPath}`);
+  }
+  const parentPath = await realpath(dirname(inputPath));
+  const parentStats = await stat(parentPath, { bigint: true });
+  const actualPath = join(parentPath, basename(inputPath));
+  const stats = await lstat(actualPath, { bigint: true });
+  if (!sameSnapshotStats(inputStats, stats)) throw new Error(`Entry changed while reading ${inputPath}`);
+  if (requireWritable) await assertDirectoryWritableForPublish(parentPath, inputPath);
+  const symbolicLink = stats.isSymbolicLink();
+  const entry: EntrySnapshot = { inputPath, actualPath, stats, parentPath, parentStats, symbolicLink };
+  if (symbolicLink) entry.linkTarget = await readlink(actualPath, { encoding: "buffer" });
+  await assertEntryCurrent(entry);
+  return entry;
+}
+
+export async function planEntryMove(
+  entry: EntrySnapshot,
+  destinationPath: string,
+  signal?: AbortSignal,
+  preview = false,
+): Promise<EntryMovePlan> {
+  throwIfAborted(signal);
+  await assertEntryCurrent(entry);
+  const destination = await planNewFile(destinationPath, !preview);
+  if (await lstatIfExists(destination.targetPath)) {
+    throw new Error(`Move destination already exists: ${destination.inputPath}. No changes were written.`);
+  }
+  if (entry.stats.dev !== destination.ancestorDev) {
+    throw new Error(`Cross-device moves are not supported: ${entry.inputPath} -> ${destination.inputPath}. No changes were written.`);
+  }
+  if (process.platform === "win32" && entry.symbolicLink) {
+    throw new Error("No-clobber symbolic-link moves are unavailable on Windows. No changes were written.");
+  }
+  if (!preview) {
+    await assertDirectoryWritableForPublish(entry.parentPath, entry.inputPath);
+    if (process.platform === "android") {
+      const support = await replacementSupportInfo();
+      if (!support.supported || support.strategy !== "exchange") {
+        throw new Error("No-clobber entry moves require supported Termux coreutils. No changes were written.");
+      }
+    } else {
+      // Probe only private empty files, never the source entry or a requested destination.
+      const probe = temporaryPath(entry.actualPath);
+      const target = temporaryPath(join(destination.ancestorPath, "probe"));
+      if (entry.symbolicLink) await symlink("missing-probe-target", probe);
+      else await writeFile(probe, "", { flag: "wx", mode: 0o600 });
+      const probeStats = await lstat(probe, { bigint: true });
+      try {
+        await linkEntry(probe, target, entry.symbolicLink);
+        const [before, after] = await Promise.all([lstat(probe, { bigint: true }), lstat(target, { bigint: true })]);
+        if (!sameIdentity(before, after)) throw new Error("The filesystem did not preserve the source entry");
+      } catch (error) {
+        throw new Error(`No-clobber moves are unavailable for ${destination.inputPath}: ${errorMessage(error)}. No changes were written.`);
+      } finally {
+        try { await unlinkOwnedPath(target, probeStats, "Move probe link"); }
+        finally { await unlinkOwnedPath(probe, probeStats, "Move probe source"); }
+      }
+    }
+  }
+  throwIfAborted(signal);
+  return { entry, destination };
+}
+
+async function linkEntry(source: string, target: string, symbolicLink: boolean): Promise<void> {
+  if (process.platform !== "darwin" || !symbolicLink) return link(source, target);
+  // macOS link(2) follows symlinks. linkat(2), with flags=0, links the entry itself.
+  let result: string;
+  try {
+    result = await execText("/usr/bin/osascript", ["-l", "JavaScript", "-e", `
+      ObjC.import("Foundation");
+      ObjC.bindFunction("linkat", ["int", ["int", "char *", "int", "char *", "int"]]);
+      ObjC.bindFunction("__error", ["int *", []]);
+      ObjC.bindFunction("strerror", ["char *", ["int"]]);
+      function run(args) {
+        return $.linkat(-2, args[0], -2, args[1], 0) === 0 ? "linked" : $.strerror($.__error()[0]);
+      }
+    `, source, target]);
+  } catch (error) {
+    throw new AtomicMoveUncertainError(`Entry link publication could not be verified: ${errorMessage(error)}`);
+  }
+  if (result.trim() !== "linked") throw new Error(`Could not link entry ${source} to ${target}: ${result.trim()}`);
+}
+
+async function assertEntryParentCurrent(entry: EntrySnapshot): Promise<void> {
+  const parent = await stat(entry.parentPath, { bigint: true });
+  if (!sameIdentity(entry.parentStats, parent) || await realpath(dirname(entry.inputPath)) !== entry.parentPath) {
+    throw new Error(`Entry parent changed before commit: ${entry.inputPath}`);
+  }
+}
+
+async function assertEntryCurrent(entry: EntrySnapshot): Promise<void> {
+  await assertEntryParentCurrent(entry);
+  const current = await lstat(entry.actualPath, { bigint: true });
+  if (!sameSnapshotStats(entry.stats, current) ||
+      (entry.linkTarget && !(await readlink(entry.actualPath, { encoding: "buffer" })).equals(entry.linkTarget))) {
+    throw new Error(`Entry changed before commit: ${entry.inputPath}. No changes were written.`);
+  }
+}
+
+export async function publishEntryDelete(
+  entry: EntrySnapshot,
+  signal?: AbortSignal,
+  hooks?: EntryPublishHooks,
+): Promise<string[]> {
+  const directory = temporaryDirectoryPath(entry.actualPath);
+  const retained = join(directory, "entry");
+  let directoryStats: BigIntStats | undefined;
+  let started = false;
+  let verified = false;
+  let failure: PublicationError | undefined;
+  const warnings: string[] = [];
+  try {
+    throwIfAborted(signal);
+    await assertEntryCurrent(entry);
+    await mkdir(directory, { mode: 0o700 });
+    directoryStats = await lstat(directory, { bigint: true });
+    assertCreatedDirectoryOwner(directoryStats, directory);
+    await hooks?.beforeCommit?.();
+    await assertEntryCurrent(entry);
+    throwIfAborted(signal);
+    await rename(entry.actualPath, retained);
+    started = true;
+    const moved = await lstat(retained, { bigint: true });
+    await assertEntryParentCurrent(entry);
+    if (!samePublishedState(entry.stats, moved) || await lstatIfExists(entry.actualPath)) {
+      throw new Error(`Deletion could not be verified; inspect ${entry.actualPath} and retained entry ${retained}.`);
+    }
+    verified = true;
+    await hooks?.afterCommit?.();
+    await unlink(retained);
+    const warning = await syncDirectory(entry.parentPath);
+    if (warning) warnings.push(warning);
+    return warnings;
+  } catch (error) {
+    failure = new PublicationError(
+      `${errorMessage(error)}${started ? ` The removed entry may remain at ${retained}.` : ""}`,
+      verified ? [entry.actualPath] : [], started && !verified ? [entry.actualPath] : [],
+    );
+    throw failure;
+  } finally {
+    if (directoryStats) {
+      try {
+        await rmdirOwnedPath(directory, directoryStats, "Entry cleanup directory");
+      } catch (error) {
+        const message = `Entry cleanup directory remains at ${directory}: ${errorMessage(error)}`;
+        if (failure) throw new PublicationError(`${failure.message} ${message}`, failure.modifiedFiles, failure.uncertainFiles);
+        warnings.push(message);
+      }
+    }
+  }
+}
+
+async function prepareMoveReplacement(
+  path: string,
+  snapshot: FileSnapshot,
+  bytes: Buffer,
+  signal?: AbortSignal,
+): Promise<BigIntStats> {
+  await assertSafeToReplace(snapshot, signal);
+  await assertSnapshotCurrent(snapshot);
+  await cloneWithMetadata(snapshot.actualPath, path, signal, androidMetadataBySnapshot.get(snapshot));
+  const handle = await open(path, constants.O_RDWR | constants.O_NOFOLLOW);
+  try {
+    const cloned = await handle.stat({ bigint: true });
+    if (!cloned.isFile() || cloned.nlink !== 1n || !samePreservedMetadata(snapshot.stats, cloned)) {
+      throw new Error(`Could not preserve source metadata for move: ${snapshot.inputPath}`);
+    }
+    await handle.truncate(0);
+    await handle.writeFile(bytes, { signal });
+    await handle.sync();
+    const prepared = await handle.stat({ bigint: true });
+    if (!samePreservedMetadata(snapshot.stats, prepared)) throw new Error(`Move metadata changed: ${snapshot.inputPath}`);
+    if (process.platform === "linux") await assertNoLinuxCapabilities(path, signal);
+    return prepared;
+  } finally {
+    await handle.close();
+  }
+}
+
+function assertMoveSnapshot(entry: EntrySnapshot, snapshot?: FileSnapshot): void {
+  if (!snapshot) return;
+  if (entry.symbolicLink) throw new Error(`Cannot edit symbolic-link content while moving its entry: ${entry.inputPath}`);
+  if (snapshot.actualPath !== entry.actualPath || !sameSnapshotStats(entry.stats, snapshot.stats)) {
+    throw new Error(`Move content snapshot does not match the source entry: ${entry.inputPath}`);
+  }
+}
+
+async function publishMoveDestination(
+  plan: EntryMovePlan,
+  candidate: string,
+  candidateStats: BigIntStats,
+  replacement?: { snapshot: FileSnapshot; bytes: Buffer },
+  signal?: AbortSignal,
+  hooks?: EntryPublishHooks,
+): Promise<string[]> {
+  const { entry, destination } = plan;
+  const modified: string[] = [];
+  let started = false;
+  const atomicMove = process.platform === "android";
+  try {
+    await assertEntryCurrent(entry);
+    if (replacement) {
+      assertMoveSnapshot(entry, replacement.snapshot);
+      await assertSnapshotCurrent(replacement.snapshot);
+      await assertPreparedFileCurrent(candidate, candidateStats, replacement.bytes, "Prepared move file");
+    }
+    await assertNewFilePlanCurrent(destination);
+    await hooks?.beforeCommit?.();
+    await assertEntryCurrent(entry);
+    if (replacement) {
+      await assertSnapshotCurrent(replacement.snapshot);
+      await assertPreparedFileCurrent(candidate, candidateStats, replacement.bytes, "Prepared move file");
+    }
+    await assertNewFilePlanCurrent(destination);
+    throwIfAborted(signal);
+    if (atomicMove) {
+      try {
+        if (!await movePreparedFileNoReplace(candidate, destination.targetPath, candidateStats)) {
+          throw new Error(`Move destination appeared before commit: ${destination.inputPath}`);
+        }
+      } catch (error) {
+        if (error instanceof AtomicMoveUncertainError) started = true;
+        throw error;
+      }
+    } else {
+      try {
+        await linkEntry(candidate, destination.targetPath, entry.symbolicLink);
+      } catch (error) {
+        if (error instanceof AtomicMoveUncertainError) started = true;
+        throw error;
+      }
+    }
+    started = true;
+    const published = await lstat(destination.targetPath, { bigint: true });
+    const matches = atomicMove ? samePublishedState(candidateStats, published) : sameLinkedSnapshot(candidateStats, published);
+    if (!matches) throw new Error(`Move destination could not be verified: ${destination.inputPath}`);
+    if (replacement) {
+      const state = await readStableRegularEntry(destination.targetPath);
+      if (!sameSnapshotStats(published, state.stats) || !state.bytes.equals(replacement.bytes)) {
+        throw new Error(`Moved content could not be verified: ${destination.inputPath}`);
+      }
+    } else if (entry.linkTarget && !(await readlink(destination.targetPath, { encoding: "buffer" })).equals(entry.linkTarget)) {
+      throw new Error(`Moved symbolic link could not be verified: ${destination.inputPath}`);
+    }
+    await assertNewFilePlanCurrent(destination);
+    modified.push(destination.targetPath);
+    const warnings: string[] = [];
+    if (atomicMove && !replacement) {
+      await assertEntryParentCurrent(entry);
+      if (await lstatIfExists(entry.actualPath)) throw new Error(`Move source removal could not be verified: ${entry.inputPath}`);
+      modified.push(entry.actualPath);
+      await hooks?.afterCommit?.();
+    } else {
+      await hooks?.afterCommit?.();
+      await hooks?.beforeSourceDelete?.();
+      const sourceStats = await lstat(entry.actualPath, { bigint: true });
+      if (!replacement && !sameLinkedSnapshot(entry.stats, sourceStats)) {
+        throw new Error(`Move source changed before removal: ${entry.inputPath}`);
+      }
+      if (replacement) await assertSnapshotCurrent(replacement.snapshot);
+      // Once the destination is verified, finish removal even if cancellation arrives.
+      warnings.push(...await publishEntryDelete(replacement ? entry : { ...entry, stats: sourceStats }));
+      modified.push(entry.actualPath);
+    }
+    for (const directory of new Set([entry.parentPath, dirname(destination.targetPath)])) {
+      const warning = await syncDirectory(directory);
+      if (warning) warnings.push(warning);
+    }
+    return warnings;
+  } catch (error) {
+    const child = error instanceof PublicationError ? error : undefined;
+    const verified = [...new Set([...modified, ...child?.modifiedFiles ?? []])];
+    const uncertain = [...child?.uncertainFiles ?? []];
+    if (started && !modified.includes(destination.targetPath)) uncertain.push(destination.targetPath);
+    if (started && atomicMove && !replacement && !modified.includes(entry.actualPath)) uncertain.push(entry.actualPath);
+    throw new PublicationError(errorMessage(error), verified, [...new Set(uncertain)].filter((path) => !verified.includes(path)));
+  }
+}
+
+export async function publishEntryMove(
+  plan: EntryMovePlan,
+  replacement?: { snapshot: FileSnapshot; bytes: Buffer },
+  signal?: AbortSignal,
+  hooks?: EntryPublishHooks,
+): Promise<string[]> {
+  assertMoveSnapshot(plan.entry, replacement?.snapshot);
+  if (plan.destination.missingDirectories.length > 0) {
+    return publishPlannedNestedFiles([{
+      plan: plan.destination,
+      bytes: replacement?.bytes ?? Buffer.alloc(0),
+      move: { entry: plan.entry, snapshot: replacement?.snapshot, hooks },
+    }], signal);
+  }
+  if (!replacement) return publishMoveDestination(plan, plan.entry.actualPath, plan.entry.stats, undefined, signal, hooks);
+  const directory = temporaryDirectoryPath(plan.entry.actualPath);
+  const candidate = join(directory, "move");
+  const warnings: string[] = [];
+  let directoryStats: BigIntStats | undefined;
+  let candidateStats: BigIntStats | undefined;
+  let failure: unknown;
+  try {
+    throwIfAborted(signal);
+    await assertSafeToReplace(replacement.snapshot, signal);
+    await mkdir(directory, { mode: 0o700 });
+    directoryStats = await lstat(directory, { bigint: true });
+    assertCreatedDirectoryOwner(directoryStats, directory);
+    candidateStats = await prepareMoveReplacement(candidate, replacement.snapshot, replacement.bytes, signal);
+    warnings.push(...await publishMoveDestination(plan, candidate, candidateStats, replacement, signal, hooks));
+    return warnings;
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    if (directoryStats) {
+      try {
+        if (candidateStats) await unlinkOwnedPath(candidate, candidateStats, "Prepared move file");
+        await rmdirOwnedPath(directory, directoryStats, "Move staging directory");
+      } catch (error) {
+        const message = `Move staging cleanup was incomplete at ${directory}: ${errorMessage(error)}`;
+        if (failure) {
+          const outcome = failure instanceof PublicationError ? failure : undefined;
+          throw new PublicationError(`${errorMessage(failure)} ${message}`, outcome?.modifiedFiles, outcome?.uncertainFiles);
+        }
+        warnings.push(message);
+      }
+    }
+  }
 }
 
 export async function captureSnapshot(inputPath: string, requireWritable = true): Promise<FileSnapshot | undefined> {
@@ -172,7 +544,7 @@ export async function assertSafeToReplace(
 }
 
 /** Bind a missing create target to the canonical parent validated during planning. */
-export async function planNewFile(targetPath: string): Promise<NewFilePlan> {
+export async function planNewFile(targetPath: string, requireWritable = true): Promise<NewFilePlan> {
   const inputPath = resolve(targetPath);
   const targetName = basename(inputPath);
   const missingDirectories: string[] = [];
@@ -219,7 +591,7 @@ export async function planNewFile(targetPath: string): Promise<NewFilePlan> {
         `Cannot create ${targetPath}: a parent path is not a directory. No changes were written.`,
       );
     }
-    await assertDirectoryWritableForPublish(ancestorPath, targetPath);
+    if (requireWritable) await assertDirectoryWritableForPublish(ancestorPath, targetPath);
     return {
       inputPath,
       targetPath: join(ancestorPath, ...missingDirectories, targetName),
@@ -291,6 +663,7 @@ export async function publishReplacement(
   let recoveryLinked = false;
   let temporaryDirectoryStats: BigIntStats | undefined;
   let replacementPublished = false;
+  let replacementVerified = false;
   let published = false;
   let temporaryCleanupFailed = false;
   let failure: unknown;
@@ -398,6 +771,7 @@ export async function publishReplacement(
       temporaryStats !== undefined &&
       samePublishedState(temporaryStats, publishedStats) &&
       publishedBytes.equals(bytes);
+    replacementVerified = targetMatchesPrepared;
     if (!recoveryState.bytes.equals(snapshot.bytes)) {
       try {
         await hooks?.beforeConflictReturn?.({ target: snapshot.actualPath, recovery });
@@ -450,7 +824,8 @@ export async function publishReplacement(
     return warnings;
   } catch (error) {
     failure = error;
-    throw error;
+    throw new PublicationError(errorMessage(error), replacementVerified ? [snapshot.actualPath] : [],
+      replacementPublished && !replacementVerified ? [snapshot.actualPath] : []);
   } finally {
     await handle?.close().catch(() => undefined);
     const cleanupFailures: string[] = [];
@@ -499,8 +874,10 @@ export async function publishReplacement(
       }
     }
     if (cleanupFailures.length > 0) {
-      throw new Error(
+      throw new PublicationError(
         `${failure ? `${errorMessage(failure)} ` : ""}Cleanup was incomplete: ${cleanupFailures.join("; ")}`,
+        replacementVerified ? [snapshot.actualPath] : [],
+        replacementPublished && !replacementVerified ? [snapshot.actualPath] : [],
       );
     }
   }
@@ -542,7 +919,13 @@ export async function preparePlannedNestedFiles(
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     throwIfAborted(signal);
-    for (const { plan } of entries) await assertNewFilePlanCurrent(plan);
+    for (const { plan, move } of entries) {
+      await assertNewFilePlanCurrent(plan);
+      if (move) {
+        await assertEntryCurrent(move.entry);
+        assertMoveSnapshot(move.entry, move.snapshot);
+      }
+    }
     await mkdir(prepared.container, { mode: 0o700 });
     const containerStats = await lstat(prepared.container, { bigint: true });
     assertCreatedDirectoryOwner(containerStats, prepared.container);
@@ -561,12 +944,16 @@ export async function preparePlannedNestedFiles(
     stagedDirectories.add(prepared.container);
     stagedDirectories.add(prepared.staging);
 
-    for (const { plan, bytes } of entries) {
+    for (const { plan, bytes, move } of entries) {
       throwIfAborted(signal);
       const stagedDirectory = join(prepared.staging, ...plan.missingDirectories.slice(1));
       if (stagedDirectory !== prepared.staging) await mkdir(stagedDirectory, { recursive: true });
       addDirectoryAndParents(stagedDirectories, stagedDirectory, prepared.staging);
       const stagedTarget = join(stagedDirectory, basename(plan.targetPath));
+      if (move?.snapshot) {
+        await prepareMoveReplacement(stagedTarget, move.snapshot, bytes, signal);
+        continue;
+      }
       handle = await open(stagedTarget, "wx", 0o666);
       await handle.writeFile(bytes, { signal });
       await handle.sync();
@@ -602,6 +989,8 @@ export async function publishPreparedNestedFiles(
   const publishedDirectories = new Map<string, BigIntStats>();
   const stagedAfterPublish = new Map(prepared.stagedIdentities);
   const publishedFiles: string[] = [];
+  const verifiedFiles: string[] = [];
+  const uncertainFiles: string[] = [];
   const replacementSupport = await replacementSupportInfo();
   let copyHandle: Awaited<ReturnType<typeof open>> | undefined;
   try {
@@ -681,7 +1070,7 @@ export async function publishPreparedNestedFiles(
       publishedDirectories.set(targetDirectory, targetStats);
     }
 
-    for (const { plan, bytes } of entries) {
+    for (const { plan, bytes, move } of entries) {
       throwIfAborted(signal);
       const relativePath = stagedRelativePath(plan);
       const stagedTarget = join(staging, relativePath);
@@ -689,6 +1078,40 @@ export async function publishPreparedNestedFiles(
       const stagedIdentity = stagedIdentities.get(relativePath);
       await assertPreparedFileCurrent(stagedTarget, stagedIdentity, bytes, "Staged create file");
       await assertPublishedDirectoriesCurrent(publishedDirectories);
+      if (move) {
+        let candidate = move.snapshot ? stagedTarget : move.entry.actualPath;
+        let candidateStats = move.snapshot ? stagedIdentity! : move.entry.stats;
+        if (move.snapshot && process.platform === "android") {
+          candidate = join(prepared.container, "move");
+          await cloneWithMetadata(stagedTarget, candidate, signal);
+          candidateStats = await lstat(candidate, { bigint: true });
+        }
+        try {
+          prepared.warnings.push(...await publishMoveDestination(
+            { entry: move.entry, destination: plan },
+            candidate,
+            candidateStats,
+            move.snapshot ? { snapshot: move.snapshot, bytes } : undefined,
+            signal,
+            move.hooks,
+          ));
+          publishedFiles.push(target);
+          verifiedFiles.push(target, move.entry.actualPath);
+        } catch (error) {
+          if (error instanceof PublicationError) {
+            verifiedFiles.push(...error.modifiedFiles);
+            uncertainFiles.push(...error.uncertainFiles);
+            if (error.modifiedFiles.includes(target) || error.uncertainFiles.includes(target)) publishedFiles.push(target);
+          }
+          throw error;
+        }
+        if (move.snapshot) stagedAfterPublish.set(relativePath, (await readStableFile(stagedTarget)).stats);
+        continue;
+      }
+      await prepared.hooks?.beforeFilePublish?.({ temporary: stagedTarget, target });
+      await assertPreparedFileCurrent(stagedTarget, stagedIdentity, bytes, "Staged create file");
+      await assertPublishedDirectoriesCurrent(publishedDirectories);
+      throwIfAborted(signal);
       let publication: "link" | "move" | "copy" = "link";
       let movedIdentity: BigIntStats | undefined;
       if (replacementSupport.supported && replacementSupport.strategy === "exchange") {
@@ -770,6 +1193,7 @@ export async function publishPreparedNestedFiles(
         }
       }
 
+      await prepared.hooks?.afterFilePublish?.({ target });
       const publishedState = await readStableRegularEntry(target);
       if (!publishedState.bytes.equals(bytes)) {
         throw new Error(`Created file changed during publication: ${target}.`);
@@ -806,6 +1230,7 @@ export async function publishPreparedNestedFiles(
         }
         throw error;
       }
+      verifiedFiles.push(target);
     }
 
     await assertPublishedDirectoriesCurrent(publishedDirectories);
@@ -870,6 +1295,8 @@ export async function publishPreparedNestedFiles(
           `${publishedFiles.length === 1 ? "" : "s"} at ${publishedFiles.join(", ")}; ` +
           stagingLocation,
         publishedFiles.length,
+        [...new Set(verifiedFiles)],
+        [...new Set([...uncertainFiles, ...publishedFiles.filter((path) => !verifiedFiles.includes(path))])],
       );
     }
 
@@ -1036,7 +1463,7 @@ export async function publishNewFile(
       return publishPlannedNestedFile(plan, bytes, signal, hooks);
     }
   }
-  const targetPath = plan?.targetPath ?? inputTargetPath;
+  const targetPath = plan?.targetPath ?? resolve(inputTargetPath);
   const directory = dirname(targetPath);
   let firstCreatedDirectory: string | undefined;
   let createdDirectoryIdentities = new Map<string, BigIntStats>();
@@ -1057,6 +1484,8 @@ export async function publishNewFile(
   let temporaryIdentity: BigIntStats | undefined;
   let temporaryDirectoryStats: BigIntStats | undefined;
   let published = false;
+  let publicationStarted = false;
+  let publicationVerified = false;
   let temporaryCleanupFailed = false;
   let directoryCleanupBlocked = false;
   let failure: unknown;
@@ -1108,6 +1537,7 @@ export async function publishNewFile(
           moved = await movePreparedFileNoReplace(candidate, targetPath, candidateStats);
         } catch (error) {
           if (error instanceof AtomicMoveUncertainError) {
+            publicationStarted = true;
             published = true;
             throw error;
           }
@@ -1122,6 +1552,8 @@ export async function publishNewFile(
           await unlinkOwnedPath(candidate, candidateStats, "Atomic create candidate");
           throw new Error(`File appeared before create: ${targetPath}. No changes were written.`);
         }
+        publicationStarted = true;
+        await hooks?.afterFilePublish?.({ target: targetPath });
         let targetState: { stats: BigIntStats; bytes: Buffer };
         try {
           targetState = await readStableRegularEntry(targetPath);
@@ -1142,6 +1574,7 @@ export async function publishNewFile(
           try {
             const removed = await unlinkOwnedPath(targetPath, targetState.stats, "Escaped create file");
             if (!removed) throw new Error(`Created file location changed before cleanup: ${targetPath}.`);
+            publicationStarted = false;
           } catch (cleanupError) {
             throw new Error(
               `${errorMessage(parentError)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
@@ -1150,8 +1583,11 @@ export async function publishNewFile(
           throw parentError;
         }
         published = true;
+        publicationVerified = true;
       } else {
         await link(temporary, targetPath);
+        publicationStarted = true;
+        await hooks?.afterFilePublish?.({ target: targetPath });
         let targetState: { stats: BigIntStats; bytes: Buffer };
         try {
           targetState = await readStableRegularEntry(targetPath);
@@ -1176,6 +1612,7 @@ export async function publishNewFile(
           try {
             const removed = await unlinkOwnedPath(targetPath, targetState.stats, "Escaped create file");
             if (!removed) throw new Error(`Created file location changed before cleanup: ${targetPath}.`);
+            publicationStarted = false;
           } catch (cleanupError) {
             throw new Error(
               `${errorMessage(parentError)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
@@ -1184,8 +1621,10 @@ export async function publishNewFile(
           throw parentError;
         }
         published = true;
+        publicationVerified = true;
       }
     } catch (error) {
+      if (publicationStarted) throw error;
       if (isCode(error, "EEXIST")) {
         throw new Error(`File appeared before create: ${targetPath}. No changes were written.`);
       }
@@ -1200,6 +1639,7 @@ export async function publishNewFile(
         if (plan) await assertNewFilePlanCurrent(plan);
         throwIfAborted(signal);
         target = await open(targetPath, "wx", 0o666);
+        publicationStarted = true;
         targetStats = await target.stat({ bigint: true });
         targetActualPath = targetPath;
         const pathStats = await lstat(targetPath, { bigint: true });
@@ -1229,6 +1669,7 @@ export async function publishNewFile(
             );
           }
         }
+        publicationVerified = true;
       } catch (writeError) {
         await target?.close().catch(() => undefined);
         if (targetStats && !targetWriteCompleted && targetActualPath) {
@@ -1252,6 +1693,7 @@ export async function publishNewFile(
             );
           }
           targetStats = undefined;
+          publicationStarted = false;
         }
         if (targetStats) {
           throw new Error(
@@ -1295,7 +1737,8 @@ export async function publishNewFile(
     return warnings;
   } catch (error) {
     failure = error;
-    throw error;
+    throw new PublicationError(errorMessage(error), publicationVerified ? [targetPath] : [],
+      publicationStarted && !publicationVerified ? [targetPath] : []);
   } finally {
     await handle?.close().catch(() => undefined);
     if (!published) {
@@ -1331,9 +1774,11 @@ export async function publishNewFile(
         }
       }
       if (cleanupFailures.length > 0) {
-        throw new Error(
+        throw new PublicationError(
           `${failure ? `${errorMessage(failure)} ` : "Create failed. "}` +
             `Cleanup was incomplete: ${cleanupFailures.join("; ")}`,
+          publicationVerified ? [targetPath] : [],
+          publicationStarted && !publicationVerified ? [targetPath] : [],
         );
       }
     }
