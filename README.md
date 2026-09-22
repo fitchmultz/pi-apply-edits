@@ -7,7 +7,7 @@ both official Pi and the Fitch fork.
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v1.0.0
+pi install git:github.com/fitchmultz/pi-apply-edits@v1.0.1
 ```
 
 Restart Pi after installing or updating extension code. `/reload` does not replace
