@@ -1,7 +1,7 @@
 {
   "name": "pi-apply-edits",
-  "version": "0.7.2",
-  "description": "A reliable, agent-friendly apply_edits tool for Pi.",
+  "version": "1.0.0",
+  "description": "Focused patch, replacement, write, and preview tools for Pi.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -19,7 +19,8 @@
     "src",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "LICENSE-codex"
   ],
   "pi": {
     "extensions": [

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0 — 2026-09-22
+
+- Replace the executable `apply_edits` interface with `apply_patch`, `replace_text`, `write_files`, and `preview_patch`. Remove compact retries and argument repairs; retain efficient bulk replacements, inclusive ranges, inserts, and full-file formatting controls.
+- Add native Codex-format grammar with JSON fallback, strict unique-context matching, stacked anchors, and BOM/local-line-ending preservation. Attribute the focused parser port to OpenAI Codex under Apache-2.0.
+- Support planned file creation, deletion, and no-clobber moves, including metadata-preserving content moves and separate link-entry semantics. Keep shared-root staging and existing publication protections.
+- Return verified committed paths and per-file outcomes, including partial failures and uncertain publication. Preserve receipts in error results and compaction; previews remain read-only without publication probes.
+- Bind all new tool paths to the active execution directory before policy approval. Preserve explicit tool selections, custom writers, the stable extension entry, and keep-builtins controls. Require Pi 0.87.0 and directory owner 0.5.0 when installed.
+
 ## 0.7.2 — 2026-09-22
 
 - Bind edit, batch, and preview targets to the active `pi-change-working-dir` directory before policy approval or queued I/O. Preserve compact retries' original targets and standalone SDK usage; require an update and restart for active older directory extensions without the public query protocol.
