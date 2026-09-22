@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import nodeFs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -228,6 +228,41 @@ test("a replaced auxiliary directory parent fails before publication", { skip: !
   }), /changed identity/);
   await assert.rejects(lstat(join(cwd, "actual", "inner", "missing")), /ENOENT/);
   await assert.rejects(lstat(join(cwd, "actual", "created")), /ENOENT/);
+});
+
+test("auxiliary directory permissions fail during batch planning", { skip: !posix || process.getuid?.() === 0 }, async (t) => {
+  const cwd = await fixture(t);
+  const readonly = join(cwd, "readonly");
+  await mkdir(readonly, { mode: 0o555 });
+  try {
+    await assert.rejects(mkdir(join(readonly, "missing")), { code: "EACCES" });
+    const preview = await writeFiles({ preview: true, files: [{ path: "readonly/missing/../../out", content: "preview", mode: "create" }] }, cwd);
+    assert.equal(preview.details.error, undefined, preview.summary);
+    assert.deepEqual(preview.details.modifiedFiles, []);
+    const result = await writeFiles({ files: [
+      { path: "target", content: "must not change", mode: "replace" },
+      { path: "readonly/missing/../../out", content: "must not appear", mode: "create" },
+    ] }, cwd);
+    assert(result.details.error, result.summary);
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.equal(await readFile(join(cwd, "target"), "utf8"), "lexical\n");
+    await assert.rejects(lstat(join(cwd, "out")), /ENOENT/);
+  } finally { await chmod(readonly, 0o755); }
+});
+
+test("late traversal permission failure cannot enter the hard-link fallback", { skip: !posix || process.getuid?.() === 0 }, async (t) => {
+  const cwd = await fixture(t);
+  const readonly = join(cwd, "readonly");
+  await mkdir(readonly);
+  const path = `${cwd}/readonly/missing/../../out`;
+  const plan = await planNewFile(path);
+  try {
+    await assert.rejects(publishNewFile(path, Buffer.from("must not appear"), undefined, plan, {
+      beforeFilePublish: () => chmod(readonly, 0o555),
+    }), /EACCES|writable/);
+    await assert.rejects(lstat(join(cwd, "out")), /ENOENT/);
+    await assert.rejects(lstat(join(readonly, "missing")), /ENOENT/);
+  } finally { await chmod(readonly, 0o755); }
 });
 
 test("failed publication cleans only owned prospective traversal directories", { skip: !posix }, async (t) => {

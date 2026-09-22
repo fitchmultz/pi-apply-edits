@@ -510,7 +510,7 @@ async function registerEditsBatch(
     // not claim another group's root or a requested file name before that operation.
     for (const [index, plan] of planned.entries()) {
       for (const path of plan.createPlan?.traversalDirectories ?? []) {
-        const directory = normalizeLockKey(path, []);
+        const directory = normalizeLockKey(path);
         const ownRoot = nestedCreateRootKey(plan);
         const conflict = targets.some((target) => directory === target.targetKey || directory.startsWith(`${target.targetKey}${sep}`)) ||
           planned.some((other) => {
@@ -1220,7 +1220,7 @@ async function entryMutationQueueKeys(filePath: string): Promise<{ targetKey: st
     if (isMissingPathError(error)) return entryPath;
     throw error;
   });
-  return { targetKey: normalizeLockKey(entryPath, []), queueKeys: [key], needsCreateLock: false };
+  return { targetKey: normalizeLockKey(entryPath), queueKeys: [key], needsCreateLock: false };
 }
 
 async function mutationQueueKeys(
@@ -1255,7 +1255,7 @@ async function mutationQueueKeys(
 
 async function contentQueueKeys(key: string, needsCreateLock: boolean) {
   key = sharedQueueKey ? await sharedQueueKey(key) : key;
-  return { targetKey: normalizeLockKey(key, []), queueKeys: [key], needsCreateLock };
+  return { targetKey: normalizeLockKey(key), queueKeys: [key], needsCreateLock };
 }
 
 function isMissingPathError(error: unknown): error is { code: "ENOENT" | "ENOTDIR" } {
@@ -1267,8 +1267,8 @@ function isMissingPathError(error: unknown): error is { code: "ENOENT" | "ENOTDI
   );
 }
 
-function normalizeLockKey(existingPrefix: string, missingParts: string[]): string {
-  const fullPath = join(existingPrefix, ...missingParts);
+function normalizeLockKey(path: string): string {
+  const fullPath = join(path);
   // Prefer over-dedupe on default macOS/Windows volumes over deterministic partial batch writes.
   // Fold the entire logical target, not only its missing suffix: an ancestor can move from
   // missing to existing between two batch discoveries, and realpath then supplies its on-disk

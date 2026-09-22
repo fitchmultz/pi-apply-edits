@@ -577,7 +577,10 @@ export async function planNewFile(targetPath: string, requireWritable = true): P
   const traversalParents = new Map<string, BigIntStats>();
   for (const path of traversalDirectories) {
     const parent = dirname(path);
-    if (!traversedMissing.has(parent)) traversalParents.set(parent, await stat(parent, { bigint: true }));
+    if (!traversedMissing.has(parent)) {
+      if (requireWritable) await assertDirectoryWritableForPublish(parent, targetPath);
+      traversalParents.set(parent, await stat(parent, { bigint: true }));
+    }
   }
   const missingDirectories: string[] = [];
   let current = parent;
@@ -1595,11 +1598,11 @@ export async function publishNewFile(
       throw new Error(`Temporary file changed before create: ${temporary}. No changes were written.`);
     }
 
+    await hooks?.beforeFilePublish?.({ temporary, target: targetPath });
+    await assertPreparedFileCurrent(temporary, temporaryStats, bytes, "Temporary create file");
+    await publishTraversalDirectories([plan], traversalDirectories, signal);
+    throwIfAborted(signal);
     try {
-      await hooks?.beforeFilePublish?.({ temporary, target: targetPath });
-      await assertPreparedFileCurrent(temporary, temporaryStats, bytes, "Temporary create file");
-      await publishTraversalDirectories([plan], traversalDirectories, signal);
-      throwIfAborted(signal);
       if (replacementSupport.supported && replacementSupport.strategy === "exchange") {
         const candidate = join(temporaryDirectory, "publish");
         const candidateStats = await preparePrivatePublicationFile(candidate, bytes, signal);
