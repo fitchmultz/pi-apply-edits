@@ -1962,7 +1962,7 @@ test("multi-file batch publishes sibling creates under one missing root together
       directory,
     );
 
-    assert.match(result.summary, /Updated 3 files/);
+    assert.match(result.summary, /Created 3 files/);
     assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
     assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
     assert.equal(await readFile(join(directory, "shared/nested/c.txt"), "utf8"), "C\n");
@@ -2001,7 +2001,7 @@ test("batch failure lists completed out-of-order nested creates, failed, and una
         { path: "last.txt", rewrite: "new\n" },
       ] }, directory, undefined, (update) => updates.push(update)), (error: unknown) => {
         assert(error instanceof Error);
-        assert.match(error.message, /after 2 verified writes/);
+        assert.match(error.message, /after 2 verified path changes/);
         assert.match(error.message, /Completed: shared\/a\.txt, shared\/b\.txt\n/);
         assert.match(error.message, /Failed or uncertain: failed\.txt\n/);
         assert.match(error.message, /Unattempted: last\.txt\n/);
@@ -2052,7 +2052,7 @@ test("a claimed but unverified nested create is not reported as completed", { sk
         { path: "last.txt", rewrite: "last\n", onMissing: "create" },
       ] }, directory), (error: unknown) => {
         assert(error instanceof Error);
-        assert.match(error.message, /after 1 verified write/);
+        assert.match(error.message, /after 1 verified path change/);
         assert.match(error.message, /Partial create publication retained 1 file/);
         assert.match(error.message, /Completed: first\.txt\n/);
         assert.match(error.message, /Failed or uncertain: shared\/a\.txt, shared\/b\.txt\n/);

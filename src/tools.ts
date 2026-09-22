@@ -12,7 +12,7 @@ import { bindPatchPaths, parsePatch, PATCH_GRAMMAR } from "./patch.ts";
 export const EDITING_TOOL_NAMES = ["apply_patch", "replace_text", "write_files", "preview_patch"] as const;
 const pathSchema = Type.String({ minLength: 1, description: "Literal path, relative to the current working directory or absolute." });
 const previewSchema = Type.Optional(Type.Boolean({ description: "Read-only preview. No writes, staging, or publication probes." }));
-export const patchSchema = Type.Object({ input: Type.String({ description: "Patch between *** Begin Patch and *** End Patch." }) }, { additionalProperties: false });
+export const patchSchema = Type.Object({ input: Type.String({ description: "Patch between *** Begin Patch and *** End Patch. Headers: *** Add File:, *** Update File: (optional *** Move to:), *** Delete File:. Prefix context with one space, removals with -, additions with +; @@ starts a chunk." }) }, { additionalProperties: false });
 export const replaceTextSchema = Type.Object({
   files: Type.Array(Type.Object({
     path: pathSchema,
@@ -82,7 +82,7 @@ export function createEditingTools(getCwd?: () => string) {
     promptSnippet: preview ? "Read-only patch preview." : "Focused multi-file patches, creates, deletes, and moves.",
     promptGuidelines: preview ? undefined : [
       "Use apply_patch for focused edits, replace_text for repeated replacements or large anchored ranges, and write_files for complete files. Preview only when needed.",
-      "Inspect partial or uncertain results before retrying; details.modifiedFiles lists verified committed paths. Never replay a whole partially applied batch.",
+      "Inspect the verified, failed, uncertain, and unattempted paths in an error result before retrying. Never replay a whole partially applied batch.",
     ],
     parameters: patchSchema,
     constrainedSampling: { type: "grammar", variants: { openai_lark: PATCH_GRAMMAR } },

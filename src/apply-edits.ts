@@ -407,7 +407,7 @@ function registerMutation<T>(discover: () => Promise<{ operation: Promise<T> }>)
 function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Promise<T> {
   return registerMutation(async () => {
     const keys = await mutationQueueKeys(inputPath);
-    return { operation: withMutationLocks(keys.needsCreateLock, keys.queueKeys, fn) };
+    return { operation: withMutationLocks(keys.needsCreateLock, keys.queueKeys, fn, [keys.targetKey]) };
   });
 }
 
@@ -447,13 +447,25 @@ async function registerEditsBatch(
   }
   const resolved = await Promise.all(files.map(async (file, index) => {
     const inputPath = resolveInputPath(file.path, cwd);
-    const entryOperation = file.delete || file.patch?.moveTo;
-    const keys = await (entryOperation ? entryMutationQueueKeys(inputPath) : mutationQueueKeys(inputPath));
-    const destination = file.patch?.moveTo
-      ? { inputPath: resolveInputPath(file.patch.moveTo, cwd),
-          ...await mutationQueueKeys(resolveInputPath(file.patch.moveTo, cwd)), index }
-      : undefined;
-    return { file, inputPath, ...keys, index, destination };
+    try {
+      const entryOperation = file.delete || file.patch?.moveTo;
+      const keys = await (entryOperation ? entryMutationQueueKeys(inputPath) : mutationQueueKeys(inputPath));
+      const destination = file.patch?.moveTo
+        ? { inputPath: resolveInputPath(file.patch.moveTo, cwd),
+            ...await mutationQueueKeys(resolveInputPath(file.patch.moveTo, cwd)), index }
+        : undefined;
+      return { file, inputPath, ...keys, index, destination };
+    } catch (error) {
+      const receipts = files.map((input) => emptyReceipt(input, cwd));
+      receipts[index]!.status = "failed";
+      const reason = isMissingPathError(error)
+        ? error.code === "ENOENT" ? `File does not exist: ${displayPathFor(inputPath, cwd)}.`
+          : `A parent path is not a directory: ${displayPathFor(inputPath, cwd)}.`
+        : errorMessage(error);
+      throw batchFailure(`files[${index}]: ${reason} No changes were written.`, {
+        files: receipts, modifiedFiles: [], ...(preview ? { preview: true } : {}),
+      });
+    }
   }));
   const targets = resolved.flatMap((item) => item.destination ? [item, item.destination] : [item]);
   const seen = new Map<string, number>();
@@ -561,11 +573,13 @@ async function registerEditsBatch(
           const failed = group.filter((item) => !completed.has(item));
           const paths = (indices: number[]) => indices.length
             ? indices.map((item) => planned[item]!.displayPath).join(", ") : "none";
-          const written = [...completed].filter((item) => planned[item]!.needsWrite).length;
+          const verifiedPaths = [...new Set(receipt.modifiedFiles)];
           const earlierWarnings = [...new Set([...completed].flatMap((item) => receipt.files[item]!.warnings))];
           throw batchFailure(
             `Multi-file batch failed while publishing files[${index}] (${plan.displayPath}) ` +
-            `after ${written} verified write${written === 1 ? "" : "s"}. ${errorMessage(error)}\n` +
+            `after ${verifiedPaths.length} verified path change${verifiedPaths.length === 1 ? "" : "s"}. ${errorMessage(error)}\n` +
+            `Verified committed paths: ${verifiedPaths.join(", ") || "none"}\n` +
+            `Uncertain paths: ${[...uncertain].join(", ") || "none"}\n` +
             `Completed: ${paths([...completed].sort((a, b) => a - b))}\n` +
             `Failed or uncertain: ${paths(failed)}\n` +
             `Unattempted: ${paths(planned.flatMap((_, item) => completed.has(item) || failed.includes(item) ? [] : [item]))}\n` +
@@ -587,7 +601,7 @@ async function registerEditsBatch(
     }
     if (failure) throw failure;
     return describeBatch(receipt.files, false, receipt.modifiedFiles, cwd);
-  }) };
+  }, targets.map((item) => item.targetKey)) };
 }
 
 function errorMessage(error: unknown): string {
@@ -643,7 +657,11 @@ function describeBatch(
   const added = changed.reduce((sum, item) => sum + (item.addedLines ?? 0), 0);
   const deleted = changed.reduce((sum, item) => sum + (item.deletedLines ?? 0), 0);
   const counts = countsKnown && added + deleted > 0 ? ` (+${added}/-${deleted})` : "";
-  const names = changed.slice(0, 8).map((item) => item.moveTo ? `${item.path} → ${item.moveTo}` : item.path).join(", ") +
+  const verbs = { create: "create", delete: "delete", move: "move", rewrite: "rewrite", edit: "update", patch: "update", no_change: "update" } as const;
+  const operation = changed.every((file) => file.operation === changed[0]!.operation) ? changed[0]!.operation : undefined;
+  const verb = operation ? verbs[operation] : "update";
+  const applied = { create: "Created", delete: "Deleted", move: "Moved", rewrite: "Rewrote", update: "Updated" };
+  const names = changed.slice(0, 8).map((item) => `${operation ? "" : `${verbs[item.operation]} `}${item.moveTo ? `${item.path} → ${item.moveTo}` : item.path}`).join(", ") +
     (changed.length > 8 ? `, … ${changed.length - 8} more` : "");
   const warnings = [...new Set(files.flatMap((item) => item.warnings))];
   const warningText = warnings.length > 0
@@ -652,7 +670,7 @@ function describeBatch(
   const omitted = files.filter((item) => item.diffTruncated).length;
   const diffNote = omitted ? ` ${omitted} diff${omitted === 1 ? "" : "s"} omitted (diff budget).` : "";
   return {
-    summary: `${preview ? "Would update" : "Updated"} ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}${correctionSummary(displayFiles)}.` +
+    summary: `${preview ? `Would ${verb}` : applied[verb]} ${changed.length} file${changed.length === 1 ? "" : "s"}${counts}: ${names}${correctionSummary(displayFiles)}.` +
       `${preview ? " No files written." : ""}${diffNote}${warningText}`,
     details,
   };
@@ -700,8 +718,10 @@ function rejectAncestorPathConflicts(
 const createMutationKey = Symbol("create");
 const pendingMutations = new Map<string | symbol, Promise<void>>();
 
-function withMutationLocks<T>(needsCreateLock: boolean, pi: string[], fn: () => Promise<T>): Promise<T> {
-  const keys: Array<string | symbol> = [...new Set(pi)];
+function withMutationLocks<T>(
+  needsCreateLock: boolean, pi: string[], fn: () => Promise<T>, entries: string[] = [],
+): Promise<T> {
+  const keys: Array<string | symbol> = [...new Set([...pi, ...entries])];
   if (needsCreateLock) keys.push(createMutationKey);
   const previous = keys.flatMap((key) => pendingMutations.get(key) ?? []);
   const operation = Promise.all(previous).then(() => withOrderedFileLocks(pi, fn));
@@ -1160,7 +1180,12 @@ function toReplacement(
 async function entryMutationQueueKeys(filePath: string): Promise<{ targetKey: string; queueKeys: string[]; needsCreateLock: boolean }> {
   const parent = await realpath(dirname(filePath));
   const entryPath = join(parent, basename(filePath));
+  const entry = await lstat(entryPath);
   const key = await realpath(entryPath).catch((error: unknown) => {
+    // ponytail: Pi resolves queue paths, so unresolvable links share their parent
+    // queue. Use entry-key native queues if Pi adds them. The local entry key
+    // stays reserved after deletion so following creates cannot overtake cleanup.
+    if (entry.isSymbolicLink()) return parent;
     if (isMissingPathError(error)) return entryPath;
     throw error;
   });
@@ -1175,7 +1200,12 @@ async function mutationQueueKeys(
     const key = await realpath(resolvedPath);
     return { targetKey: normalizeLockKey(key, []), queueKeys: [key], needsCreateLock: false };
   } catch (error) {
-    if (!isMissingPathError(error)) throw error;
+    if (!isMissingPathError(error)) {
+      // Reserve a final link even when its target cannot resolve, so a later
+      // create can wait for an earlier entry deletion instead of failing early.
+      if ((await lstat(resolvedPath)).isSymbolicLink()) return entryMutationQueueKeys(resolvedPath);
+      throw error;
+    }
   }
 
   // A dangling symbolic link is not a missing path for mutation purposes. More importantly,
@@ -1236,7 +1266,7 @@ async function assertNotDanglingSymbolicLink(path: string): Promise<void> {
   }
 }
 
-function isMissingPathError(error: unknown): boolean {
+function isMissingPathError(error: unknown): error is { code: "ENOENT" | "ENOTDIR" } {
   return (
     typeof error === "object" &&
     error !== null &&

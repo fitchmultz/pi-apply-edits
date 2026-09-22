@@ -81,7 +81,8 @@ to the retained last line.
 The parser is adapted from [OpenAI Codex](https://github.com/openai/codex/tree/4e21628f9ec9ee656650cd2b62ef92225725b5ac/codex-rs/apply-patch),
 pinned to `rust-v0.155.1` (Apache-2.0; see `LICENSE-codex`). Strict envelopes,
 ambiguity rejection, stacked anchors, anchored insertion, and byte-format
-preservation are deliberate differences from the reference implementation.
+preservation are deliberate differences from the reference implementation. Blank
+context lines require their leading space; stripped prefixes are not repaired.
 
 ### Compact replacements and ranges
 
