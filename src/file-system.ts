@@ -11,7 +11,6 @@ import {
   readFile,
   readdir,
   readlink,
-  realpath,
   rename,
   rm,
   rmdir,
@@ -21,9 +20,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertEntryDeletePathBudget, assertEntryMovePathBudget, assertPlannedPathBudget } from "./path-budget.ts";
+import { assertFileAddress, nativeRealpath, operationPath, prospectiveDirectory } from "./native-path.ts";
 
 export interface FileSnapshot {
   inputPath: string;
@@ -50,6 +50,8 @@ export interface NewFilePlan {
   ancestorDev: bigint;
   ancestorIno: bigint;
   missingDirectories: string[];
+  traversalDirectories: string[];
+  traversalParents: Map<string, BigIntStats>;
 }
 
 export interface NewFilePublishHooks {
@@ -130,14 +132,15 @@ export interface EntryPublishHooks {
 
 /** Bind the parent, leaving the final symlink as an entry rather than following its target. */
 export async function captureEntrySnapshot(inputPath: string, requireWritable = true): Promise<EntrySnapshot | undefined> {
-  inputPath = resolve(inputPath);
+  inputPath = operationPath(inputPath);
+  assertFileAddress(inputPath);
   assertPlannedPathBudget(inputPath, [inputPath]);
   const inputStats = await lstatIfExists(inputPath);
   if (!inputStats) return undefined;
   if (!inputStats.isFile() && !inputStats.isSymbolicLink()) {
     throw new Error(`Entry is not a regular file or symbolic link: ${inputPath}`);
   }
-  const parentPath = await realpath(dirname(inputPath));
+  const parentPath = await nativeRealpath(dirname(inputPath));
   const parentStats = await stat(parentPath, { bigint: true });
   const actualPath = join(parentPath, basename(inputPath));
   const stats = await lstat(actualPath, { bigint: true });
@@ -161,7 +164,7 @@ export async function planEntryMove(
 ): Promise<EntryMovePlan> {
   throwIfAborted(signal);
   await assertEntryCurrent(entry);
-  assertPlannedPathBudget(destinationPath, [resolve(destinationPath)]);
+  assertPlannedPathBudget(destinationPath, [operationPath(destinationPath)]);
   const destination = await planNewFile(destinationPath, !preview);
   if (await lstatIfExists(destination.targetPath)) {
     throw new Error(`Move destination already exists: ${destination.inputPath}. No changes were written.`);
@@ -225,7 +228,7 @@ async function linkEntry(source: string, target: string, symbolicLink: boolean):
 
 async function assertEntryParentCurrent(entry: EntrySnapshot): Promise<void> {
   const parent = await stat(entry.parentPath, { bigint: true });
-  if (!sameIdentity(entry.parentStats, parent) || await realpath(dirname(entry.inputPath)) !== entry.parentPath) {
+  if (!sameIdentity(entry.parentStats, parent) || await nativeRealpath(dirname(entry.inputPath)) !== entry.parentPath) {
     throw new Error(`Entry parent changed before commit: ${entry.inputPath}`);
   }
 }
@@ -340,6 +343,7 @@ async function publishMoveDestination(
 ): Promise<string[]> {
   const { entry, destination } = plan;
   const modified: string[] = [];
+  const traversalDirectories = new Map<string, BigIntStats>();
   let started = false;
   const atomicMove = process.platform === "android";
   try {
@@ -356,7 +360,7 @@ async function publishMoveDestination(
       await assertSnapshotCurrent(replacement.snapshot);
       await assertPreparedFileCurrent(candidate, candidateStats, replacement.bytes, "Prepared move file");
     }
-    await assertNewFilePlanCurrent(destination);
+    await publishTraversalDirectories([destination], traversalDirectories, signal);
     throwIfAborted(signal);
     if (atomicMove) {
       try {
@@ -413,6 +417,10 @@ async function publishMoveDestination(
     }
     return warnings;
   } catch (error) {
+    if (!started) {
+      try { await removeTraversalDirectories(traversalDirectories); }
+      catch (cleanupError) { throw new Error(`${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`); }
+    }
     const child = error instanceof PublicationError ? error : undefined;
     const verified = [...new Set([...modified, ...child?.modifiedFiles ?? []])];
     const uncertain = [...child?.uncertainFiles ?? []];
@@ -474,6 +482,7 @@ export async function publishEntryMove(
 }
 
 export async function captureSnapshot(inputPath: string, requireWritable = true): Promise<FileSnapshot | undefined> {
+  assertFileAddress(inputPath);
   let inputStats: BigIntStats;
   try {
     inputStats = await lstat(inputPath, { bigint: true });
@@ -490,7 +499,7 @@ export async function captureSnapshot(inputPath: string, requireWritable = true)
   let actualPath: string;
   try {
     // Bind publication to the canonical parent too, not only a final-component symlink.
-    actualPath = await realpath(inputPath);
+    actualPath = await nativeRealpath(inputPath);
   } catch (error) {
     if (symbolicLink && isCode(error, "ENOENT")) {
       throw new Error(`Refusing to edit dangling symbolic link: ${inputPath}`);
@@ -556,10 +565,22 @@ export async function assertSafeToReplace(
 
 /** Bind a missing create target to the canonical parent validated during planning. */
 export async function planNewFile(targetPath: string, requireWritable = true): Promise<NewFilePlan> {
-  const inputPath = resolve(targetPath);
+  const inputPath = operationPath(targetPath);
+  assertFileAddress(inputPath);
   const targetName = basename(inputPath);
+  const traversedMissing = new Set<string>();
+  const parent = await prospectiveDirectory(dirname(inputPath), traversedMissing);
+  if (traversedMissing.has(join(parent, targetName))) {
+    throw new Error(`Create target is required as a traversal directory: ${inputPath}. No changes were written.`);
+  }
+  const traversalDirectories = [...traversedMissing].filter((path) => parent !== path && !parent.startsWith(`${path}${sep}`));
+  const traversalParents = new Map<string, BigIntStats>();
+  for (const path of traversalDirectories) {
+    const parent = dirname(path);
+    if (!traversedMissing.has(parent)) traversalParents.set(parent, await stat(parent, { bigint: true }));
+  }
   const missingDirectories: string[] = [];
-  let current = dirname(inputPath);
+  let current = parent;
 
   while (true) {
     let currentStats: BigIntStats;
@@ -587,7 +608,7 @@ export async function planNewFile(targetPath: string, requireWritable = true): P
 
     let ancestorPath: string;
     try {
-      ancestorPath = await realpath(current);
+      ancestorPath = await nativeRealpath(current);
     } catch (error) {
       if (currentStats.isSymbolicLink() && isCode(error, "ENOENT")) {
         throw new Error(
@@ -610,6 +631,8 @@ export async function planNewFile(targetPath: string, requireWritable = true): P
       ancestorDev: ancestorStats.dev,
       ancestorIno: ancestorStats.ino,
       missingDirectories,
+      traversalDirectories,
+      traversalParents,
     };
   }
 }
@@ -642,6 +665,50 @@ async function assertNewFilePlanCurrent(plan: NewFilePlan): Promise<void> {
       throw error;
     }
   }
+}
+
+// Directories canceled by later `..` are still required by native traversal. Publish
+// them only after planning/staging, and retain the publisher's identity-checked cleanup.
+async function publishTraversalDirectories(
+  plans: NewFilePlan[], created: Map<string, BigIntStats>, signal?: AbortSignal, stagedRoot?: string,
+): Promise<void> {
+  const parents = new Map(plans.flatMap((plan) => [...plan.traversalParents]));
+  for (const path of new Set(plans.flatMap((plan) => plan.traversalDirectories))) {
+    if (stagedRoot && path.startsWith(`${stagedRoot}${sep}`)) continue;
+    throwIfAborted(signal);
+    await assertPublishedDirectoriesCurrent(parents);
+    await assertPublishedDirectoriesCurrent(created);
+    let owned = true;
+    try { await mkdir(path, { mode: 0o777 }); }
+    catch (error) {
+      if (!isCode(error, "EEXIST")) throw error;
+      owned = false;
+    }
+    const info = await lstat(path, { bigint: true });
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`Create traversal directory changed: ${path}`);
+    if (owned) {
+      assertCreatedDirectoryOwner(info, path);
+      created.set(path, info);
+    }
+  }
+  await assertPublishedDirectoriesCurrent(parents);
+  await assertPublishedDirectoriesCurrent(created);
+  for (const plan of plans) await assertNewFilePlanCurrent(plan);
+}
+
+function stagedTraversalDirectories(plan: NewFilePlan): string[] {
+  if (!plan.missingDirectories.length) return [];
+  const prefix = `${join(plan.ancestorPath, plan.missingDirectories[0]!)}${sep}`;
+  return plan.traversalDirectories.filter((path) => path.startsWith(prefix)).map((path) => path.slice(prefix.length));
+}
+
+async function removeTraversalDirectories(created: Map<string, BigIntStats>): Promise<void> {
+  const failures: string[] = [];
+  for (const [path, stats] of [...created].reverse()) {
+    try { await removeEmptyOwnedDirectory(path, stats, "Create traversal directory"); }
+    catch (error) { failures.push(`${path}: ${errorMessage(error)}`); }
+  }
+  if (failures.length) throw new Error(failures.join("; "));
 }
 
 async function assertDirectoryWritableForPublish(directoryPath: string, labelPath: string): Promise<void> {
@@ -961,6 +1028,11 @@ export async function preparePlannedNestedFiles(
       const stagedDirectory = join(prepared.staging, ...plan.missingDirectories.slice(1));
       if (stagedDirectory !== prepared.staging) await mkdir(stagedDirectory, { recursive: true });
       addDirectoryAndParents(stagedDirectories, stagedDirectory, prepared.staging);
+      for (const relative of stagedTraversalDirectories(plan)) {
+        const directory = join(prepared.staging, relative);
+        await mkdir(directory, { recursive: true });
+        addDirectoryAndParents(stagedDirectories, directory, prepared.staging);
+      }
       const stagedTarget = join(stagedDirectory, basename(plan.targetPath));
       if (move?.snapshot) {
         await prepareMoveReplacement(stagedTarget, move.snapshot, bytes, signal);
@@ -999,6 +1071,7 @@ export async function publishPreparedNestedFiles(
 ): Promise<string[]> {
   const { entries, firstPlan, publishRoot, staging } = prepared;
   const publishedDirectories = new Map<string, BigIntStats>();
+  const traversalDirectories = new Map<string, BigIntStats>();
   const stagedAfterPublish = new Map(prepared.stagedIdentities);
   const publishedFiles: string[] = [];
   const verifiedFiles: string[] = [];
@@ -1017,6 +1090,8 @@ export async function publishPreparedNestedFiles(
     await prepared.hooks?.beforeRootReserve?.({ staging, target: publishRoot });
     throwIfAborted(signal);
     await assertNewFilePlanCurrent(firstPlan);
+    throwIfAborted(signal);
+    await publishTraversalDirectories(entries.map(({ plan }) => plan), traversalDirectories, signal, publishRoot);
     throwIfAborted(signal);
 
     try {
@@ -1313,7 +1388,7 @@ export async function publishPreparedNestedFiles(
     }
 
     const cleanupFailures: string[] = [];
-    for (const [path, stats] of [...publishedDirectories].reverse()) {
+    for (const [path, stats] of [...traversalDirectories, ...publishedDirectories].reverse()) {
       try {
         await removeEmptyOwnedDirectory(path, stats, "Reserved create directory");
       } catch (cleanupError) {
@@ -1388,10 +1463,11 @@ async function inspectPreparedTree(
       throw new Error(`Duplicate staged create target ${plan.inputPath}. No changes were written.`);
     }
     expected.set(relativePath, bytes);
-    let relativeDirectory = dirname(relativePath);
-    while (relativeDirectory !== ".") {
-      expectedDirectories.add(relativeDirectory);
-      relativeDirectory = dirname(relativeDirectory);
+    for (let relativeDirectory of [dirname(relativePath), ...stagedTraversalDirectories(plan)]) {
+      while (relativeDirectory !== ".") {
+        expectedDirectories.add(relativeDirectory);
+        relativeDirectory = dirname(relativeDirectory);
+      }
     }
   }
 
@@ -1469,25 +1545,15 @@ export async function publishNewFile(
   plan?: NewFilePlan,
   hooks?: NewFilePublishHooks,
 ): Promise<string[]> {
-  if (plan) {
-    await assertNewFilePlanCurrent(plan);
-    if (plan.missingDirectories.length > 0) {
-      return publishPlannedNestedFile(plan, bytes, signal, hooks);
-    }
+  throwIfAborted(signal);
+  plan ??= await planNewFile(inputTargetPath);
+  await assertNewFilePlanCurrent(plan);
+  if (plan.missingDirectories.length > 0) {
+    return publishPlannedNestedFile(plan, bytes, signal, hooks);
   }
-  const targetPath = plan?.targetPath ?? resolve(inputTargetPath);
+  const targetPath = plan.targetPath;
+  const traversalDirectories = new Map<string, BigIntStats>();
   const directory = dirname(targetPath);
-  let firstCreatedDirectory: string | undefined;
-  let createdDirectoryIdentities = new Map<string, BigIntStats>();
-  try {
-    firstCreatedDirectory = await mkdir(directory, { recursive: true });
-    createdDirectoryIdentities = await captureCreatedDirectoryIdentities(directory, firstCreatedDirectory);
-  } catch (error) {
-    const reason = isCode(error, "EEXIST") || isCode(error, "ENOTDIR")
-      ? "a parent path is not a directory"
-      : errorMessage(error);
-    throw new Error(`Cannot create ${targetPath}: ${reason}. No changes were written.`);
-  }
   const temporaryDirectory = temporaryDirectoryPath(targetPath);
   const temporary = join(temporaryDirectory, "create");
   const replacementSupport = await replacementSupportInfo();
@@ -1499,7 +1565,6 @@ export async function publishNewFile(
   let publicationStarted = false;
   let publicationVerified = false;
   let temporaryCleanupFailed = false;
-  let directoryCleanupBlocked = false;
   let failure: unknown;
   const warnings: string[] = [];
   try {
@@ -1511,16 +1576,10 @@ export async function publishNewFile(
       if (!isCode(error, "ENOENT")) throw error;
     }
 
-    if (plan) await assertNewFilePlanCurrent(plan);
+    await assertNewFilePlanCurrent(plan);
     await mkdir(temporaryDirectory, { mode: 0o700 });
     const createdDirectoryStats = await lstat(temporaryDirectory, { bigint: true });
-    try {
-      assertCreatedDirectoryOwner(createdDirectoryStats, temporaryDirectory);
-    } catch (error) {
-      // Removing the created parent directories would relocate the rejected entry inside them.
-      directoryCleanupBlocked = true;
-      throw error;
-    }
+    assertCreatedDirectoryOwner(createdDirectoryStats, temporaryDirectory);
     temporaryDirectoryStats = createdDirectoryStats;
     await transferMacosAcl(directory, temporaryDirectory, "inherit", signal);
     handle = await open(temporary, "wx", 0o666);
@@ -1539,7 +1598,7 @@ export async function publishNewFile(
     try {
       await hooks?.beforeFilePublish?.({ temporary, target: targetPath });
       await assertPreparedFileCurrent(temporary, temporaryStats, bytes, "Temporary create file");
-      if (plan) await assertNewFilePlanCurrent(plan);
+      await publishTraversalDirectories([plan], traversalDirectories, signal);
       throwIfAborted(signal);
       if (replacementSupport.supported && replacementSupport.strategy === "exchange") {
         const candidate = join(temporaryDirectory, "publish");
@@ -1581,7 +1640,7 @@ export async function publishNewFile(
           throw new Error(`Created file changed during publication: ${targetPath}.`);
         }
         try {
-          if (plan) await assertNewFilePlanCurrent(plan);
+          await assertNewFilePlanCurrent(plan);
         } catch (parentError) {
           try {
             const removed = await unlinkOwnedPath(targetPath, targetState.stats, "Escaped create file");
@@ -1619,7 +1678,7 @@ export async function publishNewFile(
           throw new Error(`Created file changed during publication: ${targetPath}.`);
         }
         try {
-          if (plan) await assertNewFilePlanCurrent(plan);
+          await assertNewFilePlanCurrent(plan);
         } catch (parentError) {
           try {
             const removed = await unlinkOwnedPath(targetPath, targetState.stats, "Escaped create file");
@@ -1648,7 +1707,7 @@ export async function publishNewFile(
       let targetActualPath: string | undefined;
       let targetWriteCompleted = false;
       try {
-        if (plan) await assertNewFilePlanCurrent(plan);
+        await assertNewFilePlanCurrent(plan);
         throwIfAborted(signal);
         target = await open(targetPath, "wx", 0o666);
         publicationStarted = true;
@@ -1658,7 +1717,7 @@ export async function publishNewFile(
         if (!pathStats.isFile() || pathStats.isSymbolicLink() || !sameIdentity(targetStats, pathStats)) {
           throw new Error(`Created file path changed during publication: ${targetPath}.`);
         }
-        if (plan) await assertNewFilePlanCurrent(plan);
+        await assertNewFilePlanCurrent(plan);
         throwIfAborted(signal);
         await target.writeFile(bytes, { signal });
         await target.sync();
@@ -1671,15 +1730,13 @@ export async function publishNewFile(
         }
         targetWriteCompleted = true;
         published = true;
-        if (plan) {
-          try {
-            await assertNewFilePlanCurrent(plan);
-          } catch (parentError) {
-            throw new Error(
-              `${errorMessage(parentError)} The created file and temporary source were retained at ` +
-                `${targetActualPath} and ${temporary}.`,
-            );
-          }
+        try {
+          await assertNewFilePlanCurrent(plan);
+        } catch (parentError) {
+          throw new Error(
+            `${errorMessage(parentError)} The created file and temporary source were retained at ` +
+              `${targetActualPath} and ${temporary}.`,
+          );
         }
         publicationVerified = true;
       } catch (writeError) {
@@ -1778,13 +1835,8 @@ export async function publishNewFile(
           cleanupFailures.push(`${temporaryDirectory}: ${errorMessage(error)}`);
         }
       }
-      if (!directoryCleanupBlocked) {
-        try {
-          await removeCreatedDirectories(directory, firstCreatedDirectory, createdDirectoryIdentities);
-        } catch (error) {
-          cleanupFailures.push(errorMessage(error));
-        }
-      }
+      try { await removeTraversalDirectories(traversalDirectories); }
+      catch (error) { cleanupFailures.push(errorMessage(error)); }
       if (cleanupFailures.length > 0) {
         throw new PublicationError(
           `${failure ? `${errorMessage(failure)} ` : "Create failed. "}` +
@@ -2088,52 +2140,6 @@ async function rmdirOwnedPath(path: string, expected: BigIntStats, label: string
   await rmdir(path);
 }
 
-async function captureCreatedDirectoryIdentities(
-  directory: string,
-  firstCreated?: string,
-): Promise<Map<string, BigIntStats>> {
-  const identities = new Map<string, BigIntStats>();
-  if (!firstCreated) return identities;
-  let current = directory;
-  while (true) {
-    const stats = await lstat(current, { bigint: true });
-    assertCreatedDirectoryOwner(stats, current);
-    identities.set(current, stats);
-    if (current === firstCreated) return identities;
-    const parent = dirname(current);
-    if (parent === current) return identities;
-    current = parent;
-  }
-}
-
-async function removeCreatedDirectories(
-  directory: string,
-  firstCreated: string | undefined,
-  identities: Map<string, BigIntStats>,
-): Promise<void> {
-  if (!firstCreated) return;
-  let current = directory;
-  while (true) {
-    try {
-      const expected = identities.get(current);
-      if (!expected) throw new Error(`Created directory identity was not recorded: ${current}`);
-      await rmdirOwnedPath(current, expected, "Created directory");
-    } catch (error) {
-      if (isCode(error, "ENOENT")) {
-        // Continue toward the first directory created by this call.
-      } else {
-        throw new Error(
-          `Create failed and newly created directory ${current} could not be removed: ${errorMessage(error)}`,
-        );
-      }
-    }
-    if (current === firstCreated) return;
-    const parent = dirname(current);
-    if (parent === current) return;
-    current = parent;
-  }
-}
-
 export async function assertSnapshotCurrent(snapshot: FileSnapshot): Promise<void> {
   let currentInput: BigIntStats;
   try {
@@ -2144,7 +2150,7 @@ export async function assertSnapshotCurrent(snapshot: FileSnapshot): Promise<voi
   if (!sameIdentity(snapshot.inputStats, currentInput)) {
     throw new Error(`File path changed before commit: ${snapshot.inputPath}. No changes were written.`);
   }
-  if (snapshot.symbolicLink && (await realpath(snapshot.inputPath)) !== snapshot.actualPath) {
+  if (snapshot.symbolicLink && (await nativeRealpath(snapshot.inputPath)) !== snapshot.actualPath) {
     throw new Error(`Symbolic-link target changed before commit: ${snapshot.inputPath}. No changes were written.`);
   }
 
@@ -2179,7 +2185,7 @@ async function assertLinkedInputCurrent(snapshot: FileSnapshot): Promise<void> {
   if (!currentInput || !sameIdentity(snapshot.inputStats, currentInput)) {
     throw new Error(`File path changed before commit: ${snapshot.inputPath}. No changes were written.`);
   }
-  if (snapshot.symbolicLink && (await realpath(snapshot.inputPath)) !== snapshot.actualPath) {
+  if (snapshot.symbolicLink && (await nativeRealpath(snapshot.inputPath)) !== snapshot.actualPath) {
     throw new Error(`Symbolic-link target changed before commit: ${snapshot.inputPath}. No changes were written.`);
   }
 }

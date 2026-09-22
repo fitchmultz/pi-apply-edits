@@ -1867,7 +1867,8 @@ test("literal Unicode spaces and leading @ path segments are never rewritten", a
     const literalTilde = join(directory, "~");
     await mkdir(literalTilde);
     assert.equal(resolveInputPath("~", directory), literalTilde);
-    assert.equal(resolveInputPath("./~", directory), literalTilde);
+    assert.equal(resolveInputPath("./~", directory), process.platform === "win32" ? literalTilde : `${directory}/./~`);
+    assert.equal(await realpath(resolveInputPath("./~", directory)), await realpath(literalTilde));
   });
 });
 
@@ -1878,10 +1879,11 @@ test("file URL-shaped paths are always literal", async () => {
     await mkdir(literalDirectory, { recursive: true });
     await writeFile(literalPath, "literal\n");
 
-    assert.equal(resolveInputPath("file://host/x.txt", directory), literalPath);
+    assert.equal(resolveInputPath("file://host/x.txt", directory), process.platform === "win32" ? literalPath : `${directory}/file://host/x.txt`);
+    assert.equal(await readFile(resolveInputPath("file://host/x.txt", directory), "utf8"), "literal\n");
     assert.equal(
       resolveInputPath("file://missing/y.txt", directory),
-      join(directory, "file:", "missing", "y.txt"),
+      process.platform === "win32" ? join(directory, "file:", "missing", "y.txt") : `${directory}/file://missing/y.txt`,
     );
   });
 });

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Preserve native POSIX symlink/`..` traversal for edits, creates, previews, deletes, and moves, including queue identity for prospective targets. Retain Windows native path normalization and official Pi 0.87 compatibility.
+- Publish directories traversed by creates even when later canceled by `..`, without preflight writes. Reject conflicting auxiliary-directory batches before publication; keep final-symlink entry operations and existing batch reservations unchanged.
+
 ## 1.0.0 — 2026-09-22
 
 - Replace the executable `apply_edits` interface with `apply_patch`, `replace_text`, `write_files`, and `preview_patch`. Remove compact retries and argument repairs; retain efficient bulk replacements, inclusive ranges, inserts, and full-file formatting controls.

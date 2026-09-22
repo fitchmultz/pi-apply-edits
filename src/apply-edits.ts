@@ -1,6 +1,7 @@
 import { lstat, realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { assertNotDanglingSymbolicLink, nativeRealpath, operationPath, prospectiveTarget } from "./native-path.ts";
+import * as pi from "@earendil-works/pi-coding-agent";
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import {
   assertSafeToReplace,
@@ -155,6 +156,11 @@ interface MatchResult {
   replacements: Replacement[];
 }
 
+const { withFileMutationQueue } = pi;
+// Official 0.87 exposes only the queue; newer hosts also expose its content identity.
+const sharedQueueKey = "getFileMutationQueueKey" in pi && typeof pi.getFileMutationQueueKey === "function"
+  ? pi.getFileMutationQueueKey as (path: string) => Promise<string> : undefined;
+
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const DIFF_WORK_LIMIT_BYTES = 1024 * 1024;
 const DIFF_TIMEOUT_MS = 100;
@@ -183,7 +189,7 @@ export function resolveInputPath(input: string, cwd: string): string {
   if (typeof input !== "string" || input.length === 0) {
     throw new Error("path must be a non-empty string");
   }
-  return resolve(cwd, input);
+  return operationPath(input, cwd);
 }
 
 export function applyTargetedEdits(
@@ -489,7 +495,8 @@ async function registerEditsBatch(
       try {
         const plan = preview
           ? await planFileContents(item.file, item.inputPath, cwd, signal, false)
-          : await planFileMutation(item.file, item.inputPath, cwd, signal, item.destination?.targetKey ?? item.targetKey);
+          : await planFileMutation(item.file, item.inputPath, cwd, signal);
+        plan.lockKey = item.destination?.targetKey ?? item.targetKey;
         planned.push(plan);
         receipt.files[item.index] = receiptForPlan(plan, preview);
         onProgress?.(`${preview ? "Previewed" : "Planned"} ${planned.length}/${files.length}: ${plan.displayPath}. ` +
@@ -497,6 +504,24 @@ async function registerEditsBatch(
       } catch (error) {
         receipt.files[item.index]!.status = "failed";
         throw batchFailure(`files[${item.index}]: ${errorMessage(error)}`, receipt);
+      }
+    }
+    // A canceled `..` directory can be staged within its own create root, but must
+    // not claim another group's root or a requested file name before that operation.
+    for (const [index, plan] of planned.entries()) {
+      for (const path of plan.createPlan?.traversalDirectories ?? []) {
+        const directory = normalizeLockKey(path, []);
+        const ownRoot = nestedCreateRootKey(plan);
+        const conflict = targets.some((target) => directory === target.targetKey || directory.startsWith(`${target.targetKey}${sep}`)) ||
+          planned.some((other) => {
+            const root = nestedCreateRootKey(other);
+            return root && root !== ownRoot && (root === directory || root.startsWith(`${directory}${sep}`) || directory.startsWith(`${root}${sep}`));
+          });
+        if (conflict) {
+          receipt.files[index]!.status = "failed";
+          throw batchFailure(`files[${index}] requires a traversal directory (${path}) that overlaps another file or staged create root. ` +
+            "Split these operations into separate calls. No changes were written.", receipt);
+        }
       }
     }
     if (preview) return describeBatch(receipt.files, true, [], cwd);
@@ -838,6 +863,13 @@ async function planFileContents(
     operation = snapshot ? "rewrite" : "create";
   }
 
+  const createPlan = snapshot ? undefined : await planNewFile(inputPath, requireWritable);
+  if (createPlan && await lstat(createPlan.targetPath).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return false;
+  })) {
+    throw new Error(`Create mode refuses to overwrite an existing target: ${displayPath}. No changes were written.`);
+  }
   const nextBytes = Buffer.from(nextText, "utf8");
   const needsWrite = !(snapshot && nextBytes.equals(snapshot.bytes));
   throwIfAborted(signal);
@@ -845,6 +877,7 @@ async function planFileContents(
     inputPath,
     displayPath,
     snapshot,
+    createPlan,
     nextBytes,
     originalText,
     nextText,
@@ -860,10 +893,8 @@ async function planFileMutation(
   inputPath: string,
   cwd: string,
   signal?: AbortSignal,
-  lockKey?: string,
 ): Promise<PlannedMutation> {
   const plan = await planFileContents(input, inputPath, cwd, signal);
-  plan.lockKey = lockKey;
   // Fail closed before any batch publication, without running these probes during previews.
   if (plan.entry) {
     if (plan.snapshot) await assertSafeToReplace(plan.snapshot, signal);
@@ -872,8 +903,7 @@ async function planFileMutation(
       assertReplacementPathBudget(plan.snapshot.actualPath, plan.displayPath);
       await assertSafeToReplace(plan.snapshot, signal);
     } else {
-      plan.createPlan = await planNewFile(inputPath);
-      assertCreatePathBudget(plan.createPlan, plan.displayPath);
+      assertCreatePathBudget(plan.createPlan!, plan.displayPath);
     }
   }
   return plan;
@@ -1178,7 +1208,8 @@ function toReplacement(
 }
 
 async function entryMutationQueueKeys(filePath: string): Promise<{ targetKey: string; queueKeys: string[]; needsCreateLock: boolean }> {
-  const parent = await realpath(dirname(filePath));
+  await lstat(filePath); // Validate the original traversal, including trailing separators.
+  const parent = await nativeRealpath(dirname(filePath));
   const entryPath = join(parent, basename(filePath));
   const entry = await lstat(entryPath);
   const key = await realpath(entryPath).catch((error: unknown) => {
@@ -1195,10 +1226,10 @@ async function entryMutationQueueKeys(filePath: string): Promise<{ targetKey: st
 async function mutationQueueKeys(
   filePath: string,
 ): Promise<{ targetKey: string; queueKeys: string[]; needsCreateLock: boolean }> {
-  const resolvedPath = resolve(filePath);
+  const resolvedPath = operationPath(filePath);
   try {
     const key = await realpath(resolvedPath);
-    return { targetKey: normalizeLockKey(key, []), queueKeys: [key], needsCreateLock: false };
+    return contentQueueKeys(key, false);
   } catch (error) {
     if (!isMissingPathError(error)) {
       // Reserve a final link even when its target cannot resolve, so a later
@@ -1216,54 +1247,15 @@ async function mutationQueueKeys(
   // this lstat; closing that requires an atomic multi-key queue API from Pi.
   await assertNotDanglingSymbolicLink(resolvedPath);
 
-  // Exactly one Pi key per file. Pi canonicalizes each key with realpath at the moment it is
-  // acquired, so any two keys an operation holds can collapse onto one queue and deadlock it
-  // against itself: a deeper path is not safely distinct from its parent, because a symbolic
-  // link can resolve it back up.
-  //
-  // That key must be the exact-case path. Once the create publishes, an edit of the same file
-  // resolves through realpath, which returns the spelling on disk, which is the spelling this
-  // create is about to use. A case-folded key would name a different queue after publication
-  // and let the edit run against a half-published file. targetKey is normalized separately and
-  // feeds only batch duplicate/ancestor detection.
-  const missingReversed: string[] = [];
-  let current = resolvedPath;
-  while (true) {
-    const parent = dirname(current);
-    if (parent === current) {
-      // current is the filesystem root here, so the missing components rebuild the full path.
-      // Passing resolvedPath instead would double-append them and corrupt batch dedupe keys.
-      const missing = [...missingReversed].reverse();
-      const targetKey = normalizeLockKey(current, missing);
-      return { targetKey, queueKeys: [resolvedPath], needsCreateLock: true };
-    }
-    try {
-      const realParent = await realpath(parent);
-      missingReversed.push(basename(current));
-      const missing = [...missingReversed].reverse();
-      const targetKey = normalizeLockKey(realParent, missing);
-      return {
-        targetKey,
-        queueKeys: [join(realParent, ...missing)],
-        needsCreateLock: true,
-      };
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      await assertNotDanglingSymbolicLink(parent);
-      missingReversed.push(basename(current));
-      current = parent;
-    }
-  }
+  // Pass canonical prospective targets even on official Pi, whose public queue still
+  // normalizes its input lexically. One key per target avoids nested alias acquisition.
+  const key = await prospectiveTarget(resolvedPath);
+  return contentQueueKeys(key, true);
 }
 
-async function assertNotDanglingSymbolicLink(path: string): Promise<void> {
-  const entry = await lstat(path, { bigint: true }).catch((error: unknown) => {
-    if (isMissingPathError(error)) return undefined;
-    throw error;
-  });
-  if (entry?.isSymbolicLink()) {
-    throw new Error(`Cannot mutate dangling symbolic link ${path}. No changes were written.`);
-  }
+async function contentQueueKeys(key: string, needsCreateLock: boolean) {
+  key = sharedQueueKey ? await sharedQueueKey(key) : key;
+  return { targetKey: normalizeLockKey(key, []), queueKeys: [key], needsCreateLock };
 }
 
 function isMissingPathError(error: unknown): error is { code: "ENOENT" | "ENOTDIR" } {
@@ -1859,6 +1851,10 @@ function truncateUtf8(value: string, maxBytes: number): { text: string; truncate
 }
 
 function displayPathFor(path: string, cwd: string): string {
+  if (process.platform !== "win32") {
+    const prefix = cwd.endsWith(sep) ? cwd : `${cwd}${sep}`;
+    return path.startsWith(prefix) ? path.slice(prefix.length) || "." : path;
+  }
   const candidate = relative(cwd, path);
   const outside = candidate === ".." || candidate.startsWith(`..${sep}`) || isAbsolute(candidate);
   return (outside ? path : candidate || ".").split(sep).join("/");
