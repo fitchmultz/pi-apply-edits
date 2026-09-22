@@ -30,7 +30,6 @@ import {
   applyEditsToFile,
   applyTargetedEdits,
   resolveInputPath,
-  RetryableApplyEditsError,
   type ApplyEditsDetails,
   type ApplyEditsRequest,
   type TargetedEdit,
@@ -563,7 +562,7 @@ test("rewrite creation is explicit and creates parent directories", async () => 
     const path = join(directory, "nested", "file.txt");
     await assert.rejects(
       applyEditsToFile({ path, rewrite: "hello\n" }, directory),
-      /onMissing: "create"/,
+      /mode: "create"/,
     );
     await assert.rejects(readFile(path), /ENOENT/);
 
@@ -577,7 +576,7 @@ test("rewrite creation is explicit and creates parent directories", async () => 
   });
 });
 
-test("missing rewrite failures expose compact-create eligibility before any write", async () => {
+test("missing rewrite failures identify the file before any write", async () => {
   await inTemporaryDirectory(async (directory) => {
     await assert.rejects(
       applyEditsToFile(
@@ -590,9 +589,8 @@ test("missing rewrite failures expose compact-create eligibility before any writ
         directory,
       ),
       (error: unknown) => {
-        assert(error instanceof RetryableApplyEditsError);
-        assert.deepEqual(error.retry, { kind: "create", files: [0, 1] });
-        assert.match(error.message, /files\[0\].*onMissing: "create"/s);
+        assert(error instanceof Error);
+        assert.match(error.message, /files\[0\].*mode: "create"/s);
         return true;
       },
     );
@@ -601,7 +599,7 @@ test("missing rewrite failures expose compact-create eligibility before any writ
   });
 });
 
-test("explicit onMissing error does not offer compact create", async () => {
+test("explicit onMissing error refuses creation", async () => {
   await inTemporaryDirectory(async (directory) => {
     await assert.rejects(
       applyEditsToFile(
@@ -610,15 +608,14 @@ test("explicit onMissing error does not offer compact create", async () => {
       ),
       (error: unknown) => {
         assert(error instanceof Error);
-        assert.equal(error instanceof RetryableApplyEditsError, false);
-        assert.match(error.message, /onMissing: "create"/);
+        assert.match(error.message, /mode: "create"/);
         return true;
       },
     );
   });
 });
 
-test("requireMissing prevents compact create retries from rewriting a file that appeared", async () => {
+test("requireMissing prevents rewriting a file that appeared", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "appeared.txt");
     await writeFile(path, "external\n");
@@ -1965,7 +1962,7 @@ test("multi-file batch publishes sibling creates under one missing root together
       directory,
     );
 
-    assert.match(result.summary, /Updated 3 files/);
+    assert.match(result.summary, /Created 3 files/);
     assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
     assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
     assert.equal(await readFile(join(directory, "shared/nested/c.txt"), "utf8"), "C\n");
@@ -2003,8 +2000,8 @@ test("batch failure lists completed out-of-order nested creates, failed, and una
         { path: "shared/b.txt", rewrite: "B\n", onMissing: "create" },
         { path: "last.txt", rewrite: "new\n" },
       ] }, directory, undefined, (update) => updates.push(update)), (error: unknown) => {
-        assert(error instanceof Error && !(error instanceof RetryableApplyEditsError));
-        assert.match(error.message, /after 2 verified writes/);
+        assert(error instanceof Error);
+        assert.match(error.message, /after 2 verified path changes/);
         assert.match(error.message, /Completed: shared\/a\.txt, shared\/b\.txt\n/);
         assert.match(error.message, /Failed or uncertain: failed\.txt\n/);
         assert.match(error.message, /Unattempted: last\.txt\n/);
@@ -2055,7 +2052,7 @@ test("a claimed but unverified nested create is not reported as completed", { sk
         { path: "last.txt", rewrite: "last\n", onMissing: "create" },
       ] }, directory), (error: unknown) => {
         assert(error instanceof Error);
-        assert.match(error.message, /after 1 verified write/);
+        assert.match(error.message, /after 1 verified path change/);
         assert.match(error.message, /Partial create publication retained 1 file/);
         assert.match(error.message, /Completed: first\.txt\n/);
         assert.match(error.message, /Failed or uncertain: shared\/a\.txt, shared\/b\.txt\n/);
@@ -2152,7 +2149,7 @@ test("multi-file batch writes nothing when a later file cannot be planned", asyn
   });
 });
 
-test("ambiguous batch anchors expose the exact compact oldText correction", async () => {
+test("ambiguous batch anchors identify the failing file and edit", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "a.txt"), "first\n");
     await writeFile(join(directory, "b.txt"), "target\ntarget\n");
@@ -2168,8 +2165,7 @@ test("ambiguous batch anchors expose the exact compact oldText correction", asyn
         directory,
       ),
       (error: unknown) => {
-        assert(error instanceof RetryableApplyEditsError);
-        assert.deepEqual(error.retry, { kind: "oldText", file: 1, edit: 0 });
+        assert(error instanceof Error);
         assert.match(error.message, /files\[1\].*matched 2 locations/s);
         return true;
       },
