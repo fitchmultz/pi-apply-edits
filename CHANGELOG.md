@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.2 — 2026-09-22
+
+- Bind edit, batch, and preview targets to the active `pi-change-working-dir` directory before policy approval or queued I/O. Preserve compact retries' original targets and standalone SDK usage; require an update and restart for active older directory extensions without the public query protocol.
+- Keep unrelated custom `edit` and `write` tools active while suppressing native defaults and their `pi-change-working-dir` adapters in either extension load order.
+
 ## 0.7.1 — 2026-09-18
 
 - Preserve invocation order across overlapping single-file and batch calls, including later batch keys, while unrelated files remain parallel and mutations still use Pi's native queues.
