@@ -195,6 +195,49 @@ test("BOM, local mixed line endings and missing terminal newline survive updates
   assert.equal(apply("\uFEFFold", "@@\n-old").text, "\uFEFF");
 });
 
+test("verbatim first-line BOM patches preserve exactly one encoding BOM", () => {
+  const original = '\uFEFFexport const value = 1;\r\nexport const label = "stable";\r\n';
+  const result = apply(original, "@@\n-\uFEFFexport const value = 1;\n+\uFEFFexport const value = 2;");
+  assert.deepEqual(result, {
+    text: '\uFEFFexport const value = 2;\r\nexport const label = "stable";\r\n',
+    matches: [{ line: 1, strategy: "exact" }],
+  });
+});
+
+test("BOM-aware anchors and fuzzy context stay at the source boundary", () => {
+  const original = '\uFEFF  “head”  \r\nold\rtail';
+  assert.deepEqual(apply(original, '@@ \uFEFF"head"\n-old\n+new'), {
+    text: '\uFEFF  “head”  \r\nnew\rtail',
+    matches: [{ line: 1, strategy: "typography" }, { line: 2, strategy: "exact" }],
+  });
+  assert.equal(apply(original, ' \uFEFF"head"\n-old\n+new').text, '\uFEFF  “head”  \r\nnew\rtail');
+  assert.throws(() => apply("\uFEFFhead\nold\n", "@@ head\n-\uFEFFold\n+new"), /Could not find/);
+  assert.throws(() => apply("\uFEFFhead\nold\n", "-\uFEFFhead\n+new\n*** End of File"), /at end of file/);
+});
+
+test("double-leading BOM content survives explicit and omitted encoding markers", () => {
+  for (const marker of ["\uFEFF", "\uFEFF\uFEFF"]) {
+    assert.equal(apply("\uFEFF\uFEFFold\r\n", `-${marker}old\n+${marker}new`).text, "\uFEFF\uFEFFnew\r\n");
+  }
+  assert.equal(apply("\uFEFFold", "-\uFEFFold\n+new").text, "\uFEFFnew");
+  assert.equal(apply("\uFEFFold", "-old\n+new").text, "\uFEFFnew");
+  assert.equal(apply("\uFEFFold", "-\uFEFFold\n+\uFEFFnew\n+\uFEFFinterior").text, "\uFEFFnew\n\uFEFFinterior");
+});
+
+test("BOM boundary matches participate in uniqueness without rewriting interior U+FEFF", () => {
+  const original = "\uFEFFold\n\uFEFFold\n";
+  assert.throws(() => apply(original, "-\uFEFFold\n+\uFEFFnew"), /Ambiguous context.*1, 2/);
+  assert.throws(() => apply(original, "@@ \uFEFFold\n+new"), /Ambiguous anchor.*1, 2/);
+  assert.throws(() => apply('\uFEFF“old”\n\uFEFF“old”\n', '-\uFEFF"old"\n+new'), /Ambiguous context.*1, 2/);
+  assert.deepEqual(apply(original, "-\uFEFFold\n+\uFEFFnew\n*** End of File"), {
+    text: "\uFEFFold\n\uFEFFnew\n", matches: [{ line: 2, strategy: "exact" }],
+  });
+  assert.equal(apply(original, "-old\n+new").text, "\uFEFFnew\n\uFEFFold\n");
+  assert.deepEqual(apply("\uFEFF old \n\uFEFFold\n", "-\uFEFFold\n+\uFEFFnew"), {
+    text: "\uFEFF old \n\uFEFFnew\n", matches: [{ line: 2, strategy: "exact" }],
+  });
+});
+
 test("terminal-newline preservation deliberately differs from Codex normalization", () => {
   // Reuse fixture 014's patch, but deliberately remove its input's final LF:
   // despite its name, the official no_newline.txt fixture has a terminal LF.

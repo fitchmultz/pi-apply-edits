@@ -194,8 +194,8 @@ function occurrences(source: string[], pattern: string[], start: number, eof: bo
 }
 
 function findMatch(
-  source: string[], pattern: string[], start: number, eof: boolean, scopedChars: number, label: string,
-): PatchMatch {
+  source: string[], pattern: string[], start: number, eof: boolean, scopedChars: number, label: string, hasBom: boolean,
+): PatchMatch & { includesBom: boolean } {
   const passes: Array<{ normalize: (text: string) => string; strategy: MatchStrategy }> = [
     { normalize: (text) => text, strategy: "exact" },
     { normalize: trimEnd, strategy: "whitespace" },
@@ -211,10 +211,17 @@ function findMatch(
     const candidates = strategy === "exact"
       ? occurrences(source, pattern, start, eof)
       : occurrences(source.slice(start).map(normalize), pattern.map(normalize), 0, eof).map((line) => line + start);
+    // A verbatim first line may include the encoding BOM that was peeled from
+    // the source. Count that boundary match alongside literal interior matches.
+    const includesBom = hasBom && start === 0 && pattern[0]!.startsWith("\uFEFF") &&
+      pattern.length <= source.length && (!eof || pattern.length === source.length) &&
+      !candidates.includes(0) && pattern.every((line, index) =>
+        normalize(index === 0 ? line.slice(1) : line) === normalize(source[index]!));
+    if (includesBom) candidates.unshift(0);
     if (candidates.length > 1) {
       throw new Error(`Ambiguous ${label}: matches at lines ${candidates.map((line) => line + 1).join(", ")}. Add unique anchors or surrounding context.`);
     }
-    if (candidates.length === 1) return { line: candidates[0]! + 1, strategy };
+    if (candidates.length === 1) return { line: candidates[0]! + 1, strategy, includesBom };
   }
   throw new Error(`Could not find ${label}${eof ? " at end of file" : " after the preceding chunk/anchor"}.${fuzzyAllowed ? "" : " Corrected matching exceeded its work budget; use exact context."}`);
 }
@@ -241,8 +248,8 @@ export function applyPatchUpdate(
   let projectedLength = body.length;
   const offsetAt = (line: number) => lines[line]?.start ?? body.length;
   const match = (pattern: string[], eof: boolean, label: string) =>
-    findMatch(source, pattern, cursor, eof, body.length - offsetAt(cursor), label);
-  const replace = (start: number, end: number, added: string[]) => {
+    findMatch(source, pattern, cursor, eof, body.length - offsetAt(cursor), label, bom.length > 0);
+  const replace = (start: number, end: number, added: string[], includesBom: boolean) => {
     if (start === end && added.length === 0) return;
     // Replacements use the removed line's EOL; insertions prefer the preceding
     // line. Only the final source line can lack an ending.
@@ -252,6 +259,8 @@ export function applyPatchUpdate(
     // Appending to an unterminated line needs a separator, never a text concatenation.
     if (start === lines.length && start > 0 && !lines[start - 1]!.ending && added.length &&
       replacements.at(-1)?.end !== body.length) parts.push(ending);
+    // Restore the source encoding BOM once; any further U+FEFF stays content.
+    if (includesBom && start === 0 && added[0]?.startsWith("\uFEFF")) added[0] = added[0].slice(1);
     for (let i = 0; i < added.length; i++) {
       parts.push(added[i]!, i < end - start ? lines[start + i]!.ending || ending : ending);
     }
@@ -266,15 +275,17 @@ export function applyPatchUpdate(
   for (const [index, chunk] of operation.chunks.entries()) {
     for (const anchor of chunk.anchors) {
       const found = match([anchor], false, `anchor in chunk ${index + 1}`);
-      matches.push(found);
+      matches.push({ line: found.line, strategy: found.strategy });
       cursor = found.line;
     }
     const old = chunk.lines.filter((line) => line.kind !== "add").map((line) => line.text);
     let start: number;
+    let includesBom = false;
     if (old.length) {
       const found = match(old, chunk.endOfFile, `context in chunk ${index + 1}`);
-      matches.push(found);
+      matches.push({ line: found.line, strategy: found.strategy });
       start = found.line - 1;
+      includesBom = found.includesBom;
     } else {
       start = chunk.anchors.length > 0 && !chunk.endOfFile ? cursor : lines.length;
       matches.push({ line: start + 1, strategy: "exact" });
@@ -284,7 +295,7 @@ export function applyPatchUpdate(
     let added: string[] = [];
     for (const line of chunk.lines) {
       if (line.kind === "context") {
-        replace(runStart, position, added);
+        replace(runStart, position, added, includesBom);
         position++;
         runStart = position;
         added = [];
@@ -294,7 +305,7 @@ export function applyPatchUpdate(
         added.push(line.text);
       }
     }
-    replace(runStart, position, added);
+    replace(runStart, position, added, includesBom);
     cursor = position;
   }
 
