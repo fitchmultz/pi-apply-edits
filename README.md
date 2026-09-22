@@ -14,7 +14,7 @@ Native tools wrapped by `pi-change-working-dir` are also suppressed; other custo
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v0.7.1
+pi install git:github.com/fitchmultz/pi-apply-edits@v0.7.2
 ```
 
 Restart Pi after installing or updating extension code. `/reload` does not replace
