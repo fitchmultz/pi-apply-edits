@@ -1867,7 +1867,8 @@ test("literal Unicode spaces and leading @ path segments are never rewritten", a
     const literalTilde = join(directory, "~");
     await mkdir(literalTilde);
     assert.equal(resolveInputPath("~", directory), literalTilde);
-    assert.equal(resolveInputPath("./~", directory), literalTilde);
+    assert.equal(resolveInputPath("./~", directory), process.platform === "win32" ? literalTilde : `${directory}/./~`);
+    assert.equal(await realpath(resolveInputPath("./~", directory)), await realpath(literalTilde));
   });
 });
 
@@ -1878,10 +1879,11 @@ test("file URL-shaped paths are always literal", async () => {
     await mkdir(literalDirectory, { recursive: true });
     await writeFile(literalPath, "literal\n");
 
-    assert.equal(resolveInputPath("file://host/x.txt", directory), literalPath);
+    assert.equal(resolveInputPath("file://host/x.txt", directory), process.platform === "win32" ? literalPath : `${directory}/file://host/x.txt`);
+    assert.equal(await readFile(resolveInputPath("file://host/x.txt", directory), "utf8"), "literal\n");
     assert.equal(
       resolveInputPath("file://missing/y.txt", directory),
-      join(directory, "file:", "missing", "y.txt"),
+      process.platform === "win32" ? join(directory, "file:", "missing", "y.txt") : `${directory}/file://missing/y.txt`,
     );
   });
 });
@@ -3647,7 +3649,9 @@ test("successful inserts retain exact separators without warnings", async () => 
 });
 
 test("a batch rejects a dangling ancestor before its lock can collapse onto the target", async () => {
-  await inTemporaryDirectory(async (directory) => {
+  await inTemporaryDirectory(async (unresolved) => {
+    // Exercise identical discovery/queue spellings on macOS too (/tmp is a symlink).
+    const directory = await realpath(unresolved);
     const aliasParent = join(directory, "a");
     const targetParent = join(directory, "b");
     const alias = join(aliasParent, "child.txt");

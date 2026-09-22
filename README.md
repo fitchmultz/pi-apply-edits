@@ -7,7 +7,7 @@ both official Pi and the Fitch fork.
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v1.0.0
+pi install git:github.com/fitchmultz/pi-apply-edits@v1.0.1
 ```
 
 Restart Pi after installing or updating extension code. `/reload` does not replace
@@ -179,7 +179,9 @@ The package name, extension entry path, and keep-builtins switches are unchanged
 - Relative paths use the admitted execution directory. `..` and absolute paths can address files outside the
   working directory; this tool is not a filesystem sandbox. All other path characters
   are literal: `~`, `file://`, Unicode spaces, and leading `@` segments are never
-  expanded or rewritten.
+  expanded or rewritten. POSIX traversal is native: `link/../file` follows the link
+  before visiting its parent, and trailing separators still require directories.
+  Windows keeps native DOS/UNC normalization.
 - Overlapping single-file and batch calls retain invocation order and share Pi's
   mutation queue. Calls on unrelated files remain parallel.
 - Existing files are published by same-directory atomic replacement from a
@@ -226,6 +228,10 @@ The package name, extension entry path, and keep-builtins switches are unchanged
   deliberately serializes all operations that discover a missing target; existing-file
   operations remain parallel. If publication stops after a file name is claimed, the
   partial root and private staging tree are retained at named paths for inspection.
+  A create through `missing/../file` also creates the traversed directory, during
+  publication only. Such directories join their own staged subtree when possible.
+  A batch rejects a traversal directory overlapping another group's missing root
+  or a requested file before writing anything; split those operations into separate calls.
 - Cleanup atomically quarantines temporary and recovery files in private directories.
   Staged publish roots move into a reserved one-character slot inside their private container.
   Empty temporary and staging containers are removed in place, so a concurrent entry is never
@@ -276,7 +282,8 @@ PI_HOST_INDEX=/path/to/checkpoint-capable-pi/dist/index.js node --test test/chec
 
 The package uses public Pi and TypeBox peer APIs, with jsdiff as its only direct
 runtime dependency. `check:compat` runs typechecking, tests, and a pack dry-run
-against the installed host. The suite includes real Pi loader/policy/settlement
+against the installed host; its official development cohort is Pi 0.87.1.
+The suite includes real Pi loader/policy/settlement
 checks with scripted responses and no model calls. Native checkpoints skip on
 unsupported official hosts, but must pass on the fork. CI qualifies the declared
 official Pi version on macOS/Node 22.19 and `fitchmultz/pi@main` on Linux/Node 24;

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1 — 2026-09-22
+
+- Preserve native POSIX symlink/`..` traversal through patch argument binding, edits, creates, previews, deletes, and moves. Retain Windows native path normalization and Pi 0.87 compatibility, with qualification against official Pi 0.87.1 and the Fitch fork.
+- Resolve existing and prospective alias targets consistently for mutation queues, preserving batch ordering and deduplication without changing final-symlink entry semantics.
+- Publish directories traversed by creates even when later canceled by `..`, without preflight writes. Batches whose traversal directories overlap another staged root or requested file fail before writing; split those operations into separate calls.
+- Check traversal-directory write permissions during mutation planning and keep later traversal failures out of the hard-link publication fallback. Read-only previews still require no write permission.
+
 ## 1.0.0 — 2026-09-22
 
 - Replace the executable `apply_edits` interface with `apply_patch`, `replace_text`, `write_files`, and `preview_patch`. Remove compact retries and argument repairs; retain efficient bulk replacements, inclusive ranges, inserts, and full-file formatting controls.
