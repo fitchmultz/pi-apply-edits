@@ -23,6 +23,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertEntryDeletePathBudget, assertEntryMovePathBudget, assertPlannedPathBudget } from "./path-budget.ts";
 
 export interface FileSnapshot {
   inputPath: string;
@@ -130,6 +131,7 @@ export interface EntryPublishHooks {
 /** Bind the parent, leaving the final symlink as an entry rather than following its target. */
 export async function captureEntrySnapshot(inputPath: string, requireWritable = true): Promise<EntrySnapshot | undefined> {
   inputPath = resolve(inputPath);
+  assertPlannedPathBudget(inputPath, [inputPath]);
   const inputStats = await lstatIfExists(inputPath);
   if (!inputStats) return undefined;
   if (!inputStats.isFile() && !inputStats.isSymbolicLink()) {
@@ -140,7 +142,10 @@ export async function captureEntrySnapshot(inputPath: string, requireWritable = 
   const actualPath = join(parentPath, basename(inputPath));
   const stats = await lstat(actualPath, { bigint: true });
   if (!sameSnapshotStats(inputStats, stats)) throw new Error(`Entry changed while reading ${inputPath}`);
-  if (requireWritable) await assertDirectoryWritableForPublish(parentPath, inputPath);
+  if (requireWritable) {
+    assertEntryDeletePathBudget(actualPath, inputPath);
+    await assertDirectoryWritableForPublish(parentPath, inputPath);
+  }
   const symbolicLink = stats.isSymbolicLink();
   const entry: EntrySnapshot = { inputPath, actualPath, stats, parentPath, parentStats, symbolicLink };
   if (symbolicLink) entry.linkTarget = await readlink(actualPath, { encoding: "buffer" });
@@ -156,6 +161,7 @@ export async function planEntryMove(
 ): Promise<EntryMovePlan> {
   throwIfAborted(signal);
   await assertEntryCurrent(entry);
+  assertPlannedPathBudget(destinationPath, [resolve(destinationPath)]);
   const destination = await planNewFile(destinationPath, !preview);
   if (await lstatIfExists(destination.targetPath)) {
     throw new Error(`Move destination already exists: ${destination.inputPath}. No changes were written.`);
@@ -167,6 +173,7 @@ export async function planEntryMove(
     throw new Error("No-clobber symbolic-link moves are unavailable on Windows. No changes were written.");
   }
   if (!preview) {
+    assertEntryMovePathBudget(entry.actualPath, destination, entry.inputPath);
     await assertDirectoryWritableForPublish(entry.parentPath, entry.inputPath);
     if (process.platform === "android") {
       const support = await replacementSupportInfo();
@@ -237,6 +244,7 @@ export async function publishEntryDelete(
   signal?: AbortSignal,
   hooks?: EntryPublishHooks,
 ): Promise<string[]> {
+  assertEntryDeletePathBudget(entry.actualPath, entry.inputPath);
   const directory = temporaryDirectoryPath(entry.actualPath);
   const retained = join(directory, "entry");
   let directoryStats: BigIntStats | undefined;
@@ -262,7 +270,9 @@ export async function publishEntryDelete(
     }
     verified = true;
     await hooks?.afterCommit?.();
-    await unlink(retained);
+    if (!await unlinkOwnedPath(retained, moved, "Deleted entry")) {
+      throw new Error(`Deleted entry is no longer at ${retained}; cleanup could not be verified.`);
+    }
     const warning = await syncDirectory(entry.parentPath);
     if (warning) warnings.push(warning);
     return warnings;
@@ -419,6 +429,7 @@ export async function publishEntryMove(
   hooks?: EntryPublishHooks,
 ): Promise<string[]> {
   assertMoveSnapshot(plan.entry, replacement?.snapshot);
+  assertEntryMovePathBudget(plan.entry.actualPath, plan.destination, plan.entry.inputPath);
   if (plan.destination.missingDirectories.length > 0) {
     return publishPlannedNestedFiles([{
       plan: plan.destination,
@@ -922,6 +933,7 @@ export async function preparePlannedNestedFiles(
     for (const { plan, move } of entries) {
       await assertNewFilePlanCurrent(plan);
       if (move) {
+        assertEntryMovePathBudget(move.entry.actualPath, plan, move.entry.inputPath);
         await assertEntryCurrent(move.entry);
         assertMoveSnapshot(move.entry, move.snapshot);
       }

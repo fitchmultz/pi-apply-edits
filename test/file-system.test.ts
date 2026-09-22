@@ -28,6 +28,20 @@ async function fixture(run: (directory: string) => Promise<void>): Promise<void>
   try { await run(directory); } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
+async function longParent(directory: string, length: number): Promise<string> {
+  let parent = directory;
+  let remaining = length - Buffer.byteLength(parent);
+  while (remaining > 0) {
+    let segmentLength = Math.min(200, remaining - 1);
+    if (remaining - segmentLength - 1 === 1) segmentLength--;
+    assert(segmentLength > 0);
+    parent = join(parent, "p".repeat(segmentLength));
+    remaining -= segmentLength + 1;
+  }
+  await mkdir(parent, { recursive: true });
+  return parent;
+}
+
 function outcome(modifiedFiles: string[], uncertainFiles: string[]) {
   return (error: unknown): boolean => {
     assert.ok(error instanceof PublicationError);
@@ -137,6 +151,26 @@ test("delete cancellation before commit and failure after commit report differen
     await assert.rejects(lstat(path), { code: "ENOENT" });
     const retainedDirectory = (await readdir(directory))[0]!;
     assert.equal(await readFile(join(directory, retainedDirectory, "entry"), "utf8"), "old");
+  });
+});
+
+test("delete keeps its committed receipt when retained-entry cleanup is already complete", async () => {
+  await fixture(async (directory) => {
+    const path = join(directory, "file");
+    await writeFile(path, "old");
+    const entry = await captureEntrySnapshot(path);
+    assert.ok(entry);
+    await assert.rejects(publishEntryDelete(entry, undefined, {
+      afterCommit: async () => {
+        const retainedDirectory = (await readdir(directory))[0]!;
+        await rm(join(directory, retainedDirectory, "entry"));
+      },
+    }), (error: unknown) => {
+      outcome([path], [])(error);
+      assert.match((error as Error).message, /cleanup could not be verified/);
+      return true;
+    });
+    assert.deepEqual(await readdir(directory), []);
   });
 });
 
@@ -346,6 +380,85 @@ test("symlink-content moves reject without altering either entry or target", { s
     await assert.rejects(publishEntryMove(await planEntryMove(entry, target), { snapshot, bytes: Buffer.from("new") }), /Cannot edit symbolic-link content/);
     assert.equal(await readlink(source), "file");
     assert.equal(await readFile(file, "utf8"), "old");
+  });
+});
+
+test("entry source cleanup and content staging budgets fail before mutation", {
+  skip: !["darwin", "linux", "android"].includes(process.platform),
+}, async () => {
+  await fixture(async (directory) => {
+    const supported = (process.platform === "darwin" ? 1024 : 4096) - 33;
+    const parent = await longParent(directory, supported - 90);
+    const source = join(parent, "source");
+    const target = join(directory, "target");
+    await writeFile(source, "old");
+    const entry = await captureEntrySnapshot(source, false);
+    assert.ok(entry);
+    const snapshot = await captureSnapshot(source, false);
+    assert.ok(snapshot);
+    const before = await stat(parent, { bigint: true });
+    const rejected = /planned staging and cleanup.*No changes were written/s;
+    await assert.rejects(captureEntrySnapshot(source), rejected);
+    await assert.rejects(planEntryMove(entry, target), rejected);
+    await assert.rejects(publishEntryDelete(entry), rejected);
+    const preview = await planEntryMove(entry, target, undefined, true);
+    await assert.rejects(publishEntryMove(preview, { snapshot, bytes: Buffer.from("new") }), rejected);
+    const nested = await planEntryMove(entry, join(directory, "new", "target"), undefined, true);
+    await assert.rejects(preparePlannedNestedFiles([
+      { plan: nested.destination, bytes: Buffer.from("new"), move: { entry, snapshot } },
+    ]), rejected);
+    assert.equal(await readFile(source, "utf8"), "old");
+    assert.deepEqual(await readdir(parent), ["source"]);
+    await assert.rejects(lstat(target), { code: "ENOENT" });
+    await assert.rejects(lstat(join(directory, "new")), { code: "ENOENT" });
+    const after = await stat(parent, { bigint: true });
+    assert.equal(after.mtimeNs, before.mtimeNs);
+    assert.equal(after.ctimeNs, before.ctimeNs);
+  });
+});
+
+test("move destination probe and missing-root budgets fail before private probes", {
+  skip: !["darwin", "linux", "android"].includes(process.platform),
+}, async () => {
+  await fixture(async (directory) => {
+    const supported = (process.platform === "darwin" ? 1024 : 4096) - 33;
+    const source = join(directory, "source");
+    await writeFile(source, "old");
+    const entry = await captureEntrySnapshot(source);
+    assert.ok(entry);
+    for (const nested of [false, true]) {
+      const parent = await longParent(directory, supported - (nested ? 90 : 45));
+      const destination = nested ? join(parent, "new", "d".repeat(40), "f") : join(parent, "f");
+      const before = await stat(directory, { bigint: true });
+      const parentBefore = await stat(parent, { bigint: true });
+      await assert.rejects(planEntryMove(entry, destination), /planned staging and cleanup.*No changes were written/s);
+      assert.deepEqual(await readdir(parent), []);
+      const after = await stat(directory, { bigint: true });
+      const parentAfter = await stat(parent, { bigint: true });
+      assert.equal(after.mtimeNs, before.mtimeNs);
+      assert.equal(after.ctimeNs, before.ctimeNs);
+      assert.equal(parentAfter.mtimeNs, parentBefore.mtimeNs);
+      assert.equal(parentAfter.ctimeNs, parentBefore.ctimeNs);
+    }
+    assert.equal(await readFile(source, "utf8"), "old");
+  });
+});
+
+test("direct moves budget their actual destination probes without create-only staging", {
+  skip: !["darwin", "linux"].includes(process.platform),
+}, async () => {
+  await fixture(async (directory) => {
+    const supported = (process.platform === "darwin" ? 1024 : 4096) - 33;
+    const parent = await longParent(directory, supported - 90);
+    const source = join(directory, "source");
+    const target = join(parent, "target");
+    await writeFile(source, "old");
+    const entry = await captureEntrySnapshot(source);
+    assert.ok(entry);
+    await publishEntryMove(await planEntryMove(entry, target));
+    assert.equal(await readFile(target, "utf8"), "old");
+    await assert.rejects(lstat(source), { code: "ENOENT" });
+    assert.deepEqual(await readdir(parent), ["target"]);
   });
 });
 
