@@ -341,7 +341,7 @@ PI_HOST_INDEX=/path/to/checkpoint-capable-pi/dist/index.js node --test test/chec
 
 The package uses public Pi and TypeBox peer APIs, with jsdiff as its only direct
 runtime dependency. `check:compat` runs typechecking, the existing tests, and a pack
-dry-run against the installed host; its official development cohort is Pi 0.86.1.
+dry-run against the installed host; its official development cohort is Pi 0.87.0.
 The suite includes a real Pi loader/policy/settlement smoke with scripted responses
 and no network or provider calls. Native checkpoints skip on unsupported official
 hosts, but must be available when `PI_COMPAT_HOST=fork`. Keep macOS/Linux and Node
