@@ -3,7 +3,8 @@
 // Source: rust-v0.155.1, 4e21628f9ec9ee656650cd2b62ef92225725b5ac.
 // This TypeScript port uses strict envelopes, literal paths, stacked anchors,
 // unique suffix matches, anchored insertion, and byte-preserving reconstruction.
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute } from "node:path";
+import { operationPath } from "./native-path.ts";
 
 export const PATCH_GRAMMAR = String.raw`start: "*** Begin Patch" NL operation+ "*** End Patch" NL?
 operation: add | delete | update
@@ -156,7 +157,7 @@ export function bindPatchPaths(input: string, cwd: string): string {
   for (let index = paths.length - 1; index >= 0; index--) {
     const span = paths[index]!;
     if (!isAbsolute(span.path)) {
-      result = result.slice(0, span.start) + resolve(cwd, span.path) + result.slice(span.end);
+      result = result.slice(0, span.start) + operationPath(span.path, cwd) + result.slice(span.end);
     }
   }
   return result;

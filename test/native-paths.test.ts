@@ -8,6 +8,7 @@ import test from "node:test";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { applyPatchToFiles, replaceTextInFiles, writeFiles } from "../src/apply-edits.ts";
 import { planNewFile, publishNewFile } from "../src/file-system.ts";
+import { createEditingTools } from "../src/tools.ts";
 
 const posix = process.platform !== "win32";
 async function fixture(t: test.TestContext) {
@@ -46,6 +47,22 @@ test("write_files follows native symlink/.. traversal", { skip: !posix }, async 
   assert.equal(await readFile(`${cwd}/link/../target`, "utf8"), "changed\n");
   assert.equal(await readFile(join(cwd, "target"), "utf8"), "lexical\n");
   assert.deepEqual(result.details.modifiedFiles, [join(cwd, "actual", "target")]);
+});
+
+test("patch admission preserves native header addresses through preview and execution", { skip: !posix }, async (t) => {
+  const cwd = await fixture(t);
+  const tools = createEditingTools(() => cwd);
+  const input = "*** Begin Patch\n*** Update File: link/../target\n@@\n-native\n+changed\n*** End Patch";
+  for (const name of ["preview_patch", "apply_patch"]) {
+    const tool = tools.find((tool) => tool.name === name)!;
+    const prepared = await tool.prepareArguments!({ input });
+    assert("input" in prepared && typeof prepared.input === "string");
+    assert(prepared.input.includes(`${cwd}/link/../target`));
+    const result = await applyPatchToFiles(prepared.input, cwd, name === "preview_patch");
+    assert.equal(result.details.error, undefined, result.summary);
+    assert.equal(await readFile(join(cwd, "actual", "target"), "utf8"), name === "preview_patch" ? "native\n" : "changed\n");
+    assert.equal(await readFile(join(cwd, "target"), "utf8"), "lexical\n");
+  }
 });
 
 for (const kind of ["replace", "patch"] as const) {
