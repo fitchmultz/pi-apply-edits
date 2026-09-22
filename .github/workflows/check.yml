@@ -1,4 +1,4 @@
-name: macOS metadata contract
+name: Pi extension checks
 
 on:
   push:
@@ -10,51 +10,92 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-metadata-${{ github.workflow }}-${{ github.ref }}
+  group: pi-apply-edits-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Shared compatibility owns Linux metadata tools and the official/fork matrix.
-# Keep real macOS permission, filesystem and native behavior coverage here.
+env:
+  PI_AUTOMATION_REF: 117b227140265329055bcda5927ac170c6301d75 # v1.0.0
+
 jobs:
-  windows-paths:
-    runs-on: windows-latest
+  official:
+    name: Official Pi / macOS / Node 22.19
+    runs-on: macos-latest
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: extension
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fitchmultz/.github
+          ref: ${{ env.PI_AUTOMATION_REF }}
+          path: automation
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.19.0'
-          cache: npm
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: node --test test/native-paths.test.ts
+          package-manager-cache: false
+      - name: Use the reviewed npm version
+        run: npm install --global "$(node -p 'require("./automation/package.json").packageManager')" --no-audit --no-fund
+      - name: Qualify declared official Pi
+        shell: bash
+        run: |
+          version="$(node -p 'require("./extension/package.json").devDependencies["@earendil-works/pi-coding-agent"]')"
+          GITHUB_STEP_SUMMARY='' node automation/scripts/qualify.mjs --repo pi-apply-edits \
+            --source "$GITHUB_WORKSPACE/extension" --host official --target "$version" \
+            --output "$RUNNER_TEMP/qualification"
+          echo "Official Pi $version: package contracts and Git-consumer CLI probe passed." >> "$GITHUB_STEP_SUMMARY"
 
-  check:
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ['22.19.0']
-    runs-on: macos-latest
+  fork:
+    name: Fitch fork / Linux / Node 24
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: extension
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fitchmultz/.github
+          ref: ${{ env.PI_AUTOMATION_REF }}
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fitchmultz/pi
+          ref: main
+          path: fork
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - name: Install and check the locked official graph without credentials
-        shell: bash
+          node-version: '24'
+          package-manager-cache: false
+      - name: Use the reviewed npm version
+        run: npm install --global "$(node -p 'require("./automation/package.json").packageManager')" --no-audit --no-fund
+      - name: Install Linux metadata tools
         run: |
-          fixture="$(mktemp -d /tmp/pi-apply-edits.XXXXXX)"
-          # setgid assertions require a fixture group belonging to the test user.
-          chgrp "$(id -g)" "$fixture"
-          mkdir -p "$fixture/home" "$fixture/agent" "$fixture/tmp"
-          touch "$fixture/user.npmrc" "$fixture/global.npmrc"
-          clean=(env -i HOME="$fixture/home" USERPROFILE="$fixture/home" PATH="$PATH"
-            TMPDIR="$fixture/tmp" PI_CODING_AGENT_DIR="$fixture/agent" CI=1
-            PI_OFFLINE=1 PI_TELEMETRY=0 PI_COMPAT_HOST=official
-            NPM_CONFIG_USERCONFIG="$fixture/user.npmrc" NPM_CONFIG_GLOBALCONFIG="$fixture/global.npmrc"
-            NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
-          "${clean[@]}" npm ci --ignore-scripts --no-audit --no-fund
-          "${clean[@]}" npm run check:compat
+          sudo apt-get update
+          sudo apt-get install -y attr acl libcap2-bin
+          command -v cc
+      - name: Build the checked-out fork
+        id: fork_build
+        working-directory: fork
+        run: |
+          fork_ref="$(git rev-parse HEAD)"
+          echo "sha=$fork_ref" >> "$GITHUB_OUTPUT"
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run hydrate:model-data
+          git diff --exit-code
+          npm run build:offline
+          node ../automation/scripts/pack-fork.mjs . "$RUNNER_TEMP/fork-package" "$fork_ref"
+          git diff --exit-code
+      - name: Qualify fork and Git consumer
+        env:
+          PI_COMPAT_FORK_REF: ${{ steps.fork_build.outputs.sha }}
+        run: |
+          GITHUB_STEP_SUMMARY='' node automation/scripts/qualify.mjs --repo pi-apply-edits \
+            --source "$GITHUB_WORKSPACE/extension" --host fork \
+            --target "$RUNNER_TEMP/fork-package" --output "$RUNNER_TEMP/qualification"
+          echo "Fork $PI_COMPAT_FORK_REF: package contracts and Git-consumer CLI probe passed." >> "$GITHUB_STEP_SUMMARY"
