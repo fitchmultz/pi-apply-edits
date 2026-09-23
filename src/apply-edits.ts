@@ -1477,7 +1477,6 @@ function reindentReplacement(
   candidateLines: string[],
 ): string {
   const delta = minimumIndentWidth(candidateLines) - minimumIndentWidth(searchLines);
-  if (delta === 0) return replacement;
 
   const targetIndents = new Map<number, string | null>();
   for (const line of candidateLines) {

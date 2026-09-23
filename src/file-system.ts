@@ -832,10 +832,13 @@ export async function publishReplacement(
       replacementPublished = true;
     }
 
+    let recoveryBaseline: BigIntStats;
     let recoveryState: { stats: BigIntStats; bytes: Buffer };
     let publishedStats: BigIntStats;
     let publishedBytes: Buffer;
     try {
+      // Linking and renaming change ctime; subsequent changes belong to external writers.
+      recoveryBaseline = await lstat(recovery, { bigint: true });
       await hooks?.afterRename?.({ target: snapshot.actualPath, recovery });
       recoveryState = await readStableFile(recovery);
       const publishedState = await readStableFile(snapshot.actualPath);
@@ -853,7 +856,8 @@ export async function publishReplacement(
       samePublishedState(temporaryStats, publishedStats) &&
       publishedBytes.equals(bytes);
     replacementVerified = targetMatchesPrepared;
-    if (!samePublishedState(snapshot.stats, recoveryState.stats) || !recoveryState.bytes.equals(snapshot.bytes)) {
+    if (!samePublishedState(snapshot.stats, recoveryState.stats) ||
+        !sameSnapshotStats(recoveryBaseline, recoveryState.stats) || !recoveryState.bytes.equals(snapshot.bytes)) {
       try {
         await hooks?.beforeConflictReturn?.({ target: snapshot.actualPath, recovery });
       } catch (error) {
@@ -2063,6 +2067,7 @@ interface QuarantinedPath {
   path: string;
   directory: string;
   directoryStats: BigIntStats;
+  beforeStats: BigIntStats;
   stats: BigIntStats;
 }
 
@@ -2071,7 +2076,8 @@ async function quarantineOwnedPath(
   expected: BigIntStats | undefined,
   label: string,
 ): Promise<QuarantinedPath | undefined> {
-  if (!(await currentOwnedPath(path, expected, label))) return undefined;
+  const beforeStats = await currentOwnedPath(path, expected, label);
+  if (!beforeStats) return undefined;
   const directory = temporaryDirectoryPath(path);
   await mkdir(directory, { mode: 0o700 });
   const directoryStats = await lstat(directory, { bigint: true });
@@ -2094,7 +2100,7 @@ async function quarantineOwnedPath(
   if (!expected || !sameIdentity(expected, stats)) {
     throw new Error(`${label} changed after validation and was preserved at ${quarantined}`);
   }
-  return { path: quarantined, directory, directoryStats, stats };
+  return { path: quarantined, directory, directoryStats, beforeStats, stats };
 }
 
 async function removeEmptyOwnedDirectory(
@@ -2115,7 +2121,9 @@ async function unlinkOwnedPath(
   if (!quarantined) return false;
   if (expectedFile) {
     const current = await readStableFile(quarantined.path);
-    if (!samePublishedState(expectedFile.stats, current.stats) || !expectedFile.bytes.equals(current.bytes)) {
+    if (!sameSnapshotStats(expectedFile.stats, quarantined.beforeStats) ||
+        !samePublishedState(expectedFile.stats, current.stats) ||
+        !sameSnapshotStats(quarantined.stats, current.stats) || !expectedFile.bytes.equals(current.bytes)) {
       throw new Error(`${label} changed after verification and was preserved at ${quarantined.path}`);
     }
   }

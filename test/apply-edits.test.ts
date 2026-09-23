@@ -455,6 +455,7 @@ test("indent correction preserves recipe tabs for zero, positive, and negative s
     const path = join(directory, "Makefile");
     for (const [actual, anchor, replacement, expected] of [
       ["\t@echo before\n", "    @echo before\n", "\t@echo after\n \t\n", "\t@echo after\n \t\n"],
+      ["\t@echo before\n", "    @echo before\n", "    @echo after\n", "\t@echo after\n"],
       ["\t\t@echo before\n", "    @echo before\n", "    @echo after\n", "\t\t@echo after\n"],
       ["\t@echo before\n", "        @echo before\n", "        @echo after\n", "\t@echo after\n"],
     ]) {
