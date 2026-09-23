@@ -277,13 +277,17 @@ test("exact replacement growth uses the actual local line endings", () => {
 });
 
 test("replace-all growth sums replacements with different local line endings", () => {
-  const newText = "a\n".repeat(1_500_000);
+  const padding = "x".repeat(8 * 1024 * 1024);
   const result = applyTargetedEdits(
-    "old\nold\r\n",
-    [{ oldText: "old", newText, all: true }],
+    "START\nold\r\nold\n",
+    [
+      { oldText: "START", newText: padding, insert: "after" },
+      // At the growth limit, the CRLF match adds one character and the LF match removes one.
+      { oldText: "old", newText: "\n\n", all: true },
+    ],
     "large.txt",
   );
-  assert.equal(result.text, `${newText}\n${"a\r\n".repeat(1_500_000)}\r\n`);
+  assert.equal(result.text, `START${padding}\n\r\n\r\n\r\n\n\n\n`);
 });
 
 test("replace-all amplification is rejected under a bounded heap", () => {

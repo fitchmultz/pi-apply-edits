@@ -1496,8 +1496,8 @@ function applyReplacements(
   let projectedLength = content.length;
   for (const replacement of ordered) {
     projectedLength += replacement.text.length - (replacement.end - replacement.start);
-    if (projectedLength > maxResultLength) throwExpansionError();
   }
+  if (projectedLength > maxResultLength) throwExpansionError();
 
   const parts: string[] = [];
   let cursor = 0;
