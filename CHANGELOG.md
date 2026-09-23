@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2 — 2026-09-22
+
+- Reject batches that remove a symbolic link while another requested path traverses it, before publishing any changes.
+- Keep distinct Unicode identifiers separate during corrected text matching.
+- Count replacement growth using the matched file's line endings, avoiding false size-limit failures.
+
 ## 1.0.1 — 2026-09-22
 
 - Preserve native POSIX symlink/`..` traversal through patch argument binding, edits, creates, previews, deletes, and moves. Retain Windows native path normalization and Pi 0.87 compatibility, with qualification against official Pi 0.87.1 and the Fitch fork.
