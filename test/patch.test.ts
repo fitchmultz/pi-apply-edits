@@ -247,6 +247,14 @@ test("BOM boundary matches participate in uniqueness without rewriting interior 
   });
 });
 
+test("updates cannot promote content to an encoding BOM", () => {
+  assert.throws(() => apply("heading\n\uFEFFpayload\n", "-heading"), /U\+FEFF/);
+  assert.throws(() => apply("old\n", "-old\n+\uFEFFnew"), /U\+FEFF/);
+  const result = apply("\uFEFFheading\n\uFEFFpayload\n", "-heading");
+  assert.equal(result.text, "\uFEFF\uFEFFpayload\n");
+  assert.equal(new TextDecoder().decode(Buffer.from(result.text)), "\uFEFFpayload\n");
+});
+
 test("terminal-newline preservation deliberately differs from Codex normalization", () => {
   // Reuse fixture 014's patch, but deliberately remove its input's final LF:
   // despite its name, the official no_newline.txt fixture has a terminal LF.

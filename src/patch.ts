@@ -323,5 +323,9 @@ export function applyPatchUpdate(
   // Preserve the terminal-newline state, including tail deletion and append.
   // The terminal separator is the only retained line ending this may remove.
   if (body.length > 0 && lines.at(-1)?.ending === "") text = text.replace(/(?:\r\n|\n|\r)$/, "");
+  if (!bom && text.startsWith("\uFEFF")) {
+    throw new Error("Patch would move or add U+FEFF to the start of a file without a BOM. " +
+      "Use write_files with preserveFormatting: false for an exact encoding change. No changes were written.");
+  }
   return { text: bom + text, matches };
 }
