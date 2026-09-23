@@ -1343,7 +1343,9 @@ function findLineBlockMatches(
       : reindentReplacement(localReplacement, searchBodies, bodies);
     if (applyAll || matches.length === 0) {
       projectedLength += text.length - (insert ? 0 : matchEnd - matchStart);
-      if (projectedLength > maxResultLength) throwExpansionError();
+      // Later matches can shrink the remaining source; applyReplacements checks the final size.
+      const remainingShrink = applyAll && !insert ? content.length - matchEnd : 0;
+      if (projectedLength - remainingShrink > maxResultLength) throwExpansionError();
     }
     matches.push(toReplacement(matchStart, matchEnd, text, first.number, insert));
     if (matches.length > MAX_REPLACEMENTS) {
