@@ -1,6 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import { assertNotDanglingSymbolicLink, nativeRealpath, operationPath, prospectiveTarget } from "./native-path.ts";
+import { assertNotDanglingSymbolicLink, nativeRealpath, operationPath, prospectiveDirectory, prospectiveTarget } from "./native-path.ts";
 import * as pi from "@earendil-works/pi-coding-agent";
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import {
@@ -504,6 +504,24 @@ async function registerEditsBatch(
       } catch (error) {
         receipt.files[item.index]!.status = "failed";
         throw batchFailure(`files[${item.index}]: ${errorMessage(error)}`, receipt);
+      }
+    }
+    for (const [sourceIndex, source] of planned.entries()) {
+      if (!source.entry?.symbolicLink) continue;
+      const entryKey = normalizeLockKey(source.entry.actualPath);
+      for (const target of targets) {
+        const input = resolved[target.index]!;
+        if (target.inputPath === input.inputPath && (input.file.delete || input.file.patch?.moveTo)) continue;
+        for (let parent = dirname(target.inputPath); parent !== dirname(parent); parent = dirname(parent)) {
+          const parentEntry = join(await prospectiveDirectory(dirname(parent)), basename(parent));
+          if (normalizeLockKey(parentEntry) !== entryKey) continue;
+          receipt.files[target.index]!.status = "failed";
+          throw batchFailure(
+            `files[${target.index}] (${target.inputPath}) is nested under files[${sourceIndex}] ` +
+              `(${source.inputPath}). A batch cannot target a path and one of its ancestors.`,
+            receipt,
+          );
+        }
       }
     }
     // A canceled `..` directory can be staged within its own create root, but must

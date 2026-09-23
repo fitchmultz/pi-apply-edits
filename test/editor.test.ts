@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdtemp, readFile, readlink, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -47,6 +47,21 @@ test("pure moves and deletes operate on link entries, including dangling links",
   const reject = await applyPatchToFiles(patch("*** Update File: moved\n*** Move to: elsewhere\n@@\n-untouched\n+wrong"), cwd);
   assert.match(reject.summary, /link-target content/);
   assert.deepEqual(reject.details.modifiedFiles, []);
+});
+
+test("batch refuses to delete a link used by another requested path", { skip: process.platform === "win32" }, async (t) => {
+  const cwd = await fixture(t);
+  await mkdir(join(cwd, "real"));
+  await symlink("real", join(cwd, "alias"));
+  const deletion = "*** Delete File: alias";
+  const creation = "*** Add File: alias/child.txt\n+content";
+  for (const operations of [[deletion, creation], [creation, deletion]]) {
+    const result = await applyPatchToFiles(patch(...operations), cwd);
+    assert.match(result.summary, /nested under/);
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.equal(await readlink(join(cwd, "alias")), "real");
+    await assert.rejects(lstat(join(cwd, "real/child.txt")), /ENOENT/);
+  }
 });
 
 test("a planning failure publishes no earlier file and identifies unattempted operations", async (t) => {
