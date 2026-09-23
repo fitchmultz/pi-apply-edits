@@ -1224,7 +1224,12 @@ function toReplacement(
 }
 
 async function entryMutationQueueKeys(filePath: string): Promise<{ targetKey: string; queueKeys: string[]; needsCreateLock: boolean }> {
-  await lstat(filePath); // Validate the original traversal, including trailing separators.
+  try {
+    await lstat(filePath); // Validate the original traversal, including trailing separators.
+  } catch (error) {
+    if (isMissingPathError(error) && error.code === "ENOENT") return mutationQueueKeys(filePath);
+    throw error;
+  }
   const parent = await nativeRealpath(dirname(filePath));
   const entryPath = join(parent, basename(filePath));
   const entry = await lstat(entryPath);

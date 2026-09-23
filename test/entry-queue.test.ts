@@ -37,6 +37,23 @@ test("a later create waits for deletion of an unresolvable link entry", { skip: 
   assert.equal(await readFile(join(cwd, "loop"), "utf8"), "created\n");
 });
 
+for (const operation of ["delete", "move"] as const) {
+  for (const path of ["created", "nested/created"]) {
+    test(`entry ${operation} waits for an earlier create of ${path}`, async (t) => {
+      const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-create-order-")));
+      t.after(() => rm(cwd, { recursive: true, force: true }));
+      const creation = writeFiles({ files: [{ path, content: "created\n", mode: "create" }] }, cwd);
+      const entry = operation === "delete" ? `*** Delete File: ${path}` : `*** Update File: ${path}\n*** Move to: moved`;
+      const mutation = applyPatchToFiles(`*** Begin Patch\n${entry}\n*** End Patch`, cwd);
+      for (const result of await Promise.all([creation, mutation])) {
+        assert.equal(result.details.error, undefined, result.summary);
+      }
+      await assert.rejects(lstat(join(cwd, path)), /ENOENT/);
+      if (operation === "move") assert.equal(await readFile(join(cwd, "moved"), "utf8"), "created\n");
+    });
+  }
+}
+
 test("missing entry errors identify the failed operation and state that nothing was written", async (t) => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-missing-")));
   t.after(() => rm(cwd, { recursive: true, force: true }));

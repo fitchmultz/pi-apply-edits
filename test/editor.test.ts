@@ -34,6 +34,21 @@ test("patch plans and applies create/update/move/delete with verified absolute r
   for (const name of ["source", "obsolete"]) await assert.rejects(lstat(join(cwd, name)), /ENOENT/);
 });
 
+test("patch BOM rejection leaves update and move sources untouched", async (t) => {
+  const cwd = await fixture(t);
+  const original = "heading\n\uFEFFpayload\n";
+  await writeFile(join(cwd, "source"), original);
+  for (const preview of [false, true]) {
+    for (const move of ["", "*** Move to: moved\n"]) {
+      const result = await applyPatchToFiles(patch(`*** Update File: source\n${move}-heading`), cwd, preview);
+      assert.match(result.details.error!, /U\+FEFF/);
+      assert.deepEqual(result.details.modifiedFiles, []);
+      assert.equal(await readFile(join(cwd, "source"), "utf8"), original);
+      assert.deepEqual(await readdir(cwd), ["source"]);
+    }
+  }
+});
+
 test("pure moves and deletes operate on link entries, including dangling links", { skip: process.platform === "win32" }, async (t) => {
   const cwd = await fixture(t);
   await writeFile(join(cwd, "target"), "untouched\n");
