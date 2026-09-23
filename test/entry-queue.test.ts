@@ -107,3 +107,38 @@ test("success summaries distinguish create, delete, and move", async (t) => {
   const deleted = await applyPatchToFiles("*** Begin Patch\n*** Delete File: moved\n*** End Patch", cwd);
   assert.match(deleted.summary, /^Deleted 1 file/);
 });
+
+test("a batch rejects aliases introduced by a queued link move without holding the create queue", {
+  skip: process.platform === "win32", timeout: 10_000,
+}, async (t) => {
+  for (const preview of [true, false]) {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-alias-")));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    await writeFile(join(cwd, "target"), "before\n");
+    await writeFile(join(cwd, "unrelated"), "unchanged\n");
+    await symlink("target", join(cwd, "source-link"));
+    let move!: ReturnType<typeof applyPatchToFiles>;
+    let batch!: ReturnType<typeof writeFiles>;
+    await withFileMutationQueue(join(cwd, "target"), async () => {
+      move = applyPatchToFiles("*** Begin Patch\n*** Update File: source-link\n*** Move to: moved-link\n*** End Patch", cwd);
+      batch = writeFiles({ preview, files: [
+        { path: "moved-link", content: "one\n", mode: "replace" },
+        { path: "target", content: "two\n", mode: "replace" },
+      ] }, cwd);
+      // Registration is ordered; this independent preview settles only after
+      // the blocked move and batch have discovered their initial queue keys.
+      const sentinel = await writeFiles({ preview: true, files: [
+        { path: "unrelated", content: "unchanged\n", mode: "replace" },
+      ] }, cwd);
+      assert.equal(sentinel.details.error, undefined, sentinel.summary);
+    });
+    const moved = await move;
+    assert.equal(moved.details.error, undefined, moved.summary);
+    const rejected = await batch;
+    assert.match(rejected.details.error ?? "", /same file/);
+    assert.deepEqual(rejected.details.modifiedFiles, []);
+    assert.equal(await readFile(join(cwd, "target"), "utf8"), "before\n");
+    const created = await writeFiles({ files: [{ path: "new", content: "created\n", mode: "create" }] }, cwd);
+    assert.equal(created.details.error, undefined, created.summary);
+  }
+});

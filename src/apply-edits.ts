@@ -413,7 +413,8 @@ function registerMutation<T>(discover: () => Promise<{ operation: Promise<T> }>)
 function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Promise<T> {
   return registerMutation(async () => {
     const keys = await mutationQueueKeys(inputPath);
-    return { operation: withMutationLocks(keys.needsCreateLock, keys.queueKeys, fn, [keys.targetKey]) };
+    return { operation: withMutationLocks(keys.needsCreateLock, keys.queueKeys, fn, [keys.targetKey],
+      async () => (await mutationQueueKeys(inputPath)).queueKeys) };
   });
 }
 
@@ -451,39 +452,43 @@ async function registerEditsBatch(
       throw new Error(`files[${index}]: ${errorMessage(error)}`);
     }
   }
-  const resolved = await Promise.all(files.map(async (file, index) => {
-    const inputPath = resolveInputPath(file.path, cwd);
-    try {
-      const entryOperation = file.delete || file.patch?.moveTo;
-      const keys = await (entryOperation ? entryMutationQueueKeys(inputPath) : mutationQueueKeys(inputPath));
-      const destination = file.patch?.moveTo
-        ? { inputPath: resolveInputPath(file.patch.moveTo, cwd),
-            ...await mutationQueueKeys(resolveInputPath(file.patch.moveTo, cwd)), index }
-        : undefined;
-      return { file, inputPath, ...keys, index, destination };
-    } catch (error) {
-      const receipts = files.map((input) => emptyReceipt(input, cwd));
-      receipts[index]!.status = "failed";
-      const reason = isMissingPathError(error)
-        ? error.code === "ENOENT" ? `File does not exist: ${displayPathFor(inputPath, cwd)}.`
-          : `A parent path is not a directory: ${displayPathFor(inputPath, cwd)}.`
-        : errorMessage(error);
-      throw batchFailure(`files[${index}]: ${reason} No changes were written.`, {
-        files: receipts, modifiedFiles: [], ...(preview ? { preview: true } : {}),
-      });
+  const resolveFiles = async () => {
+    const resolved = await Promise.all(files.map(async (file, index) => {
+      const inputPath = resolveInputPath(file.path, cwd);
+      try {
+        const entryOperation = file.delete || file.patch?.moveTo;
+        const keys = await (entryOperation ? entryMutationQueueKeys(inputPath) : mutationQueueKeys(inputPath));
+        const destination = file.patch?.moveTo
+          ? { inputPath: resolveInputPath(file.patch.moveTo, cwd),
+              ...await mutationQueueKeys(resolveInputPath(file.patch.moveTo, cwd)), index }
+          : undefined;
+        return { file, inputPath, ...keys, index, destination };
+      } catch (error) {
+        const receipts = files.map((input) => emptyReceipt(input, cwd));
+        receipts[index]!.status = "failed";
+        const reason = isMissingPathError(error)
+          ? error.code === "ENOENT" ? `File does not exist: ${displayPathFor(inputPath, cwd)}.`
+            : `A parent path is not a directory: ${displayPathFor(inputPath, cwd)}.`
+          : errorMessage(error);
+        throw batchFailure(`files[${index}]: ${reason} No changes were written.`, {
+          files: receipts, modifiedFiles: [], ...(preview ? { preview: true } : {}),
+        });
+      }
+    }));
+    const targets = resolved.flatMap((item) => item.destination ? [item, item.destination] : [item]);
+    const seen = new Map<string, number>();
+    for (const item of targets) {
+      const prior = seen.get(item.targetKey);
+      if (prior !== undefined) {
+        throw new Error(`files[${item.index}] refers to the same file as files[${prior}] ` +
+          `(${item.inputPath}). Combine edits for one path into a single entry.`);
+      }
+      seen.set(item.targetKey, item.index);
     }
-  }));
-  const targets = resolved.flatMap((item) => item.destination ? [item, item.destination] : [item]);
-  const seen = new Map<string, number>();
-  for (const item of targets) {
-    const prior = seen.get(item.targetKey);
-    if (prior !== undefined) {
-      throw new Error(`files[${item.index}] refers to the same file as files[${prior}] ` +
-        `(${item.inputPath}). Combine edits for one path into a single entry.`);
-    }
-    seen.set(item.targetKey, item.index);
-  }
-  rejectAncestorPathConflicts(targets);
+    rejectAncestorPathConflicts(targets);
+    return { resolved, targets };
+  };
+  let { resolved, targets } = await resolveFiles();
   const lockPaths = [...new Set(targets.flatMap((item) => item.queueKeys))].sort();
   return { operation: withMutationLocks(targets.some((item) => item.needsCreateLock), lockPaths, async () => {
     const receipt: ApplyEditsBatchDetails = {
@@ -643,7 +648,10 @@ async function registerEditsBatch(
     }
     if (failure) throw failure;
     return describeBatch(receipt.files, false, receipt.modifiedFiles, cwd);
-  }, targets.map((item) => item.targetKey)) };
+  }, targets.map((item) => item.targetKey), async () => {
+    ({ resolved, targets } = await resolveFiles());
+    return targets.flatMap((item) => item.queueKeys);
+  }) };
 }
 
 function errorMessage(error: unknown): string {
@@ -784,11 +792,15 @@ const pendingMutations = new Map<string | symbol, Promise<void>>();
 
 function withMutationLocks<T>(
   needsCreateLock: boolean, pi: string[], fn: () => Promise<T>, entries: string[] = [],
+  refresh?: () => Promise<string[]>,
 ): Promise<T> {
   const keys: Array<string | symbol> = [...new Set([...pi, ...entries])];
   if (needsCreateLock) keys.push(createMutationKey);
   const previous = keys.flatMap((key) => pendingMutations.get(key) ?? []);
-  const operation = Promise.all(previous).then(() => withOrderedFileLocks(pi, fn));
+  // Earlier entry moves can turn distinct paths into aliases. Refresh before
+  // acquiring Pi's locks, while retaining this call's original reservations.
+  const operation = Promise.all(previous).then(async () =>
+    withOrderedFileLocks(previous.length && refresh ? await refresh() : pi, fn));
   const settled = operation.then(() => undefined, () => undefined);
   for (const key of keys) pendingMutations.set(key, settled);
   void settled.then(() => {
