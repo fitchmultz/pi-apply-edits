@@ -29,6 +29,7 @@ import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
   applyEditsToFile,
   applyTargetedEdits,
+  replaceTextInFiles,
   resolveInputPath,
   type ApplyEditsDetails,
   type ApplyEditsRequest,
@@ -371,6 +372,22 @@ test("benign typography and trailing whitespace drift match only as complete lin
 
   assert.equal(result.text, 'const label = "done";\nnext();\n');
   assert.equal(result.matches[0]?.strategy, "normalized");
+});
+
+test("corrected matching does not fold distinct Unicode identifiers", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "demo.js");
+    const original = 'const file = "public";\nconst ﬁle = "private";\n';
+    await writeFile(path, original);
+
+    const result = await replaceTextInFiles({
+      files: [{ path, edits: [{ oldText: 'const file = "private";', newText: 'const file = "masked";' }] }],
+    }, directory);
+
+    assert.match(result.details.error ?? "", /Could not find edits\[0\]\.oldText/);
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.equal(await readFile(path, "utf8"), original);
+  });
 });
 
 test("uniform indentation drift reindents the replacement", () => {

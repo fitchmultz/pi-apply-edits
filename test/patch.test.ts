@@ -174,7 +174,6 @@ test("matching prioritizes exact, trailing-whitespace, trimmed, then punctuation
   assert.deepEqual(apply("  “old”—value\u00a0here  \n", '@@\n-"old"-value here\n+  literal\t'), {
     text: "  literal\t\n", matches: [{ line: 1, strategy: "typography" }],
   });
-  // Unlike the old targeted-edit normalizer, this Codex port does not NFKC-fold identifiers.
   assert.throws(() => apply("ﬁle\n", "@@\n-file\n+new"), /Could not find/);
   assert.throws(() => apply("prefix old suffix\n", "@@\n-old\n+new"), /Could not find/);
 });

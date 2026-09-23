@@ -1392,7 +1392,6 @@ function normalizeLine(line: string): string {
 
 function normalizeTypography(text: string): string {
   return text
-    .normalize("NFKC")
     .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
     .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
     .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, "-")
