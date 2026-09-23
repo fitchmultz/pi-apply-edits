@@ -262,6 +262,30 @@ test("replacement count is capped before unbounded match arrays can grow", () =>
   );
 });
 
+test("exact replacement growth uses the actual local line endings", () => {
+  const newText = "a\n".repeat(3_000_000);
+  const result = applyTargetedEdits(
+    "old\n",
+    [{ oldText: "old", newText }],
+    "large.txt",
+  );
+  assert.equal(result.text, `${newText}\n`);
+  assert.throws(
+    () => applyTargetedEdits("old\r\n", [{ oldText: "old", newText }], "large.txt"),
+    /expand the result/,
+  );
+});
+
+test("replace-all growth sums replacements with different local line endings", () => {
+  const newText = "a\n".repeat(1_500_000);
+  const result = applyTargetedEdits(
+    "old\nold\r\n",
+    [{ oldText: "old", newText, all: true }],
+    "large.txt",
+  );
+  assert.equal(result.text, `${newText}\n${"a\r\n".repeat(1_500_000)}\r\n`);
+});
+
 test("replace-all amplification is rejected under a bounded heap", () => {
   const moduleUrl = new URL("../src/apply-edits.ts", import.meta.url).href;
   const program = `
