@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -64,6 +64,41 @@ test("replacement errors distinguish no commit, unverified publication and verif
         [phase]: () => { throw new Error("fixture observer failed"); },
       }), outcome(phase === "beforeRecoveryCleanup" ? [path] : [], phase === "afterRename" ? [path] : []));
       assert.equal(await readFile(path, "utf8"), phase === "beforeRename" ? "old" : "new");
+    }
+  });
+});
+
+test("replacement retains concurrent macOS resource-fork writes on the original inode", {
+  skip: process.platform !== "darwin",
+}, async () => {
+  await fixture(async (directory) => {
+    const path = join(directory, "file");
+    const exec = promisify(execFile);
+    await writeFile(path, "old");
+    await exec("/usr/bin/xattr", ["-w", "com.apple.ResourceFork", "original metadata", path]);
+    const writer = await open(`${path}/..namedfork/rsrc`, "r+");
+    try {
+      const snapshot = await captureSnapshot(path);
+      assert.ok(snapshot);
+      let retained = "";
+      await assert.rejects(publishReplacement(snapshot, Buffer.from("new"), undefined, {
+        afterRename: async ({ recovery }) => {
+          retained = recovery;
+          await writer.writeFile("NEW EXTERNAL DATA");
+          await writer.sync();
+        },
+      }), (error: unknown) => {
+        outcome([path], [])(error);
+        assert.match((error as Error).message, /File versions changed during commit/);
+        assert.ok((error as Error).message.includes(retained));
+        return true;
+      });
+      assert.equal(await readFile(path, "utf8"), "new");
+      assert.equal(await readFile(retained, "utf8"), "old");
+      assert.equal((await exec("/usr/bin/xattr", ["-p", "com.apple.ResourceFork", retained])).stdout.trim(), "NEW EXTERNAL DATA");
+      assert.equal((await exec("/usr/bin/xattr", ["-p", "com.apple.ResourceFork", path])).stdout.trim(), "original metadata");
+    } finally {
+      await writer.close();
     }
   });
 });

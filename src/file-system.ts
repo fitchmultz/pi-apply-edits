@@ -853,7 +853,7 @@ export async function publishReplacement(
       samePublishedState(temporaryStats, publishedStats) &&
       publishedBytes.equals(bytes);
     replacementVerified = targetMatchesPrepared;
-    if (!recoveryState.bytes.equals(snapshot.bytes)) {
+    if (!samePublishedState(snapshot.stats, recoveryState.stats) || !recoveryState.bytes.equals(snapshot.bytes)) {
       try {
         await hooks?.beforeConflictReturn?.({ target: snapshot.actualPath, recovery });
       } catch (error) {
