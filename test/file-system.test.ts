@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,6 +102,64 @@ test("replacement retains concurrent macOS resource-fork writes on the original 
     }
   });
 });
+
+for (const phase of ["afterRename", "beforeRecoveryCleanup"] as const) {
+  test(`replacement retains descriptor xattr writes in ${phase}`, { skip: process.platform !== "darwin" }, async () => {
+    await fixture(async (directory) => {
+      const path = join(directory, "file");
+      const attribute = "com.pi-apply-edits.test";
+      const exec = promisify(execFile);
+      await writeFile(path, "old");
+      await exec("/usr/bin/xattr", ["-w", attribute, "original", path]);
+      const writer = await open(path, "r+");
+      try {
+        const snapshot = await captureSnapshot(path);
+        assert.ok(snapshot);
+        let retained = "";
+        const publication = publishReplacement(snapshot, Buffer.from("new"), undefined, {
+          [phase]: async ({ recovery }: { recovery: string }) => {
+            retained = recovery;
+            const before = await writer.stat({ bigint: true });
+            // An ordinary writer holds the original inode, without knowing the recovery path.
+            await new Promise<void>((resolve, reject) => {
+              const child = spawn("python3", ["-c", `
+import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+value = b"external metadata"
+assert libc.fsetxattr(3, b"${attribute}", value, len(value), 0, 0) == 0, ctypes.get_errno()
+`], { stdio: ["ignore", "ignore", "inherit", writer.fd] });
+              child.on("error", reject);
+              child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`xattr writer exited ${code}`)));
+            });
+            const after = await writer.stat({ bigint: true });
+            assert.equal(after.mtimeNs, before.mtimeNs);
+            assert.notEqual(after.ctimeNs, before.ctimeNs);
+          },
+        });
+        if (phase === "afterRename") {
+          await assert.rejects(publication, (error: unknown) => {
+            outcome([path], [])(error);
+            assert.match((error as Error).message, /File versions changed during commit/);
+            assert.ok((error as Error).message.includes(retained));
+            return true;
+          });
+        } else {
+          const warnings = await publication;
+          const preserved = /preserved at (.+)$/.exec(warnings.join(" "))?.[1];
+          assert.ok(preserved, "cleanup must report the retained metadata");
+          retained = preserved;
+        }
+        assert.equal(await readFile(path, "utf8"), "new");
+        assert.equal(await readFile(retained, "utf8"), "old");
+        assert.equal((await writer.stat()).nlink, 1);
+        assert.equal((await exec("/usr/bin/xattr", ["-p", attribute, retained])).stdout.trim(), "external metadata");
+        assert.equal((await exec("/usr/bin/xattr", ["-p", attribute, path])).stdout.trim(), "original");
+      } finally {
+        await writer.close();
+      }
+    });
+  });
+}
 
 test("post-commit cancellation keeps a verified replacement receipt", { skip: replacementUnsupported }, async () => {
   await fixture(async (directory) => {
