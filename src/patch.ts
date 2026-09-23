@@ -157,7 +157,9 @@ export function bindPatchPaths(input: string, cwd: string): string {
   for (let index = paths.length - 1; index >= 0; index--) {
     const span = paths[index]!;
     if (!isAbsolute(span.path)) {
-      result = result.slice(0, span.start) + operationPath(span.path, cwd) + result.slice(span.end);
+      const bound = operationPath(span.path, cwd);
+      if (/[\r\n]/.test(bound)) throw new Error("Patch path contains a line break after working-directory binding");
+      result = result.slice(0, span.start) + bound + result.slice(span.end);
     }
   }
   return result;

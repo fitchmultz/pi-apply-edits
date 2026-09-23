@@ -120,6 +120,16 @@ test("binds original UTF-16 header spans only, with literal path spelling", () =
   assert.throws(() => bindPatchPaths(input, "/bad\0"), /NUL/);
 });
 
+test("binding relative patch paths rejects line breaks in the working directory", () => {
+  const input = wrap("*** Add File: rel\n+content");
+  const absolute = wrap(`*** Delete File: ${resolve("/tmp", "existing")}`);
+  for (const ending of ["\n", "\r"]) {
+    const cwd = `${resolve("/tmp", "safe")}${ending}*** Delete File: ${resolve("/tmp", "important")}`;
+    assert.throws(() => bindPatchPaths(input, cwd), /line break/);
+    assert.equal(bindPatchPaths(absolute, cwd), absolute);
+  }
+});
+
 test("new files preserve literal body bytes and mixed patch line endings", () => {
   const input = "*** Begin Patch\r\n*** Add File: @ literal \r+\uFEFFfirst  \r\n+second\n+third\r*** End Patch";
   assert.deepEqual(parsePatch(input).operations, [{ kind: "add", path: "@ literal ", content: "\uFEFFfirst  \r\nsecond\nthird\r" }]);
