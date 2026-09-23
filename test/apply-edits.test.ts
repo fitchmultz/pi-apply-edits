@@ -262,19 +262,59 @@ test("replacement count is capped before unbounded match arrays can grow", () =>
   );
 });
 
+test("exact replacement growth uses the actual local line endings", () => {
+  const newText = "a\n".repeat(3_000_000);
+  const result = applyTargetedEdits(
+    "old\n",
+    [{ oldText: "old", newText }],
+    "large.txt",
+  );
+  assert.equal(result.text, `${newText}\n`);
+  assert.throws(
+    () => applyTargetedEdits("old\r\n", [{ oldText: "old", newText }], "large.txt"),
+    /expand the result/,
+  );
+});
+
+test("replace-all growth sums replacements with different local line endings", () => {
+  const padding = "x".repeat(8 * 1024 * 1024);
+  const result = applyTargetedEdits(
+    "START\nold\r\nold\n",
+    [
+      { oldText: "START", newText: padding, insert: "after" },
+      // At the growth limit, the CRLF match adds one character and the LF match removes one.
+      { oldText: "old", newText: "\n\n", all: true },
+    ],
+    "large.txt",
+  );
+  assert.equal(result.text, `START${padding}\n\r\n\r\n\r\n\n\n\n`);
+});
+
+test("corrected replace-all allows later matches to shrink the final result", () => {
+  const result = applyTargetedEdits(
+    `${"old\r\n".repeat(42)}old${" ".repeat(150_000)}\n`,
+    [{ oldText: "old\t", newText: "\n".repeat(100_000), all: true }],
+    "large.txt",
+  );
+  assert.equal(result.matches[0]?.strategy, "normalized");
+  assert.equal(result.text, `${"\r\n".repeat(42 * 100_001)}${"\n".repeat(100_001)}`);
+});
+
 test("replace-all amplification is rejected under a bounded heap", () => {
   const moduleUrl = new URL("../src/apply-edits.ts", import.meta.url).href;
   const program = `
     import { applyTargetedEdits } from ${JSON.stringify(moduleUrl)};
     const content = "a\\n".repeat(10_000);
-    try {
-      applyTargetedEdits(
-        content,
-        [{ oldText: "a", newText: "x".repeat(10_000), all: true }],
-        "large.txt",
-      );
-    } catch (error) {
-      process.stdout.write(error.message);
+    for (const oldText of ["a", "a ", " a"]) {
+      try {
+        applyTargetedEdits(
+          content,
+          [{ oldText, newText: "x".repeat(10_000), all: true }],
+          "large.txt",
+        );
+      } catch (error) {
+        process.stdout.write(error.message + "\\n");
+      }
     }
   `;
   const result = spawnSync(
@@ -285,7 +325,7 @@ test("replace-all amplification is rejected under a bounded heap", () => {
   );
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /expand the result/);
+  assert.equal(result.stdout.match(/expand the result/g)?.length, 3, result.stdout);
 });
 
 test("normalized matching fails fast when candidate work exceeds its safety budget", () => {

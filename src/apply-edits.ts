@@ -1053,22 +1053,10 @@ function findMatch(
   maxResultLength: number,
   field: "oldText" | "endText" = "oldText",
 ): MatchResult | undefined {
-  const maximumReplacementLength = convertLineEndings(newText, "\r\n").length;
-  const findExact = (search: string) => {
-    const removedPerMatch = insert ? 0 : search.length;
-    const expansionPerMatch = maximumReplacementLength - removedPerMatch;
-    const maximumExpansionMatches = applyAll && expansionPerMatch > 0
-      ? Math.floor((maxResultLength - content.length) / expansionPerMatch)
-      : Number.POSITIVE_INFINITY;
-    // Stop scanning before even the offsets array can consume the heap for a doomed expansion.
-    const exactLimit = Math.min(MAX_REPLACEMENTS + 1, maximumExpansionMatches + 1);
-    return {
-      search,
-      removedPerMatch,
-      maximumExpansionMatches,
-      offsets: findOccurrences(content, search, exactLimit),
-    };
-  };
+  const findExact = (search: string) => ({
+    search,
+    offsets: findOccurrences(content, search, MAX_REPLACEMENTS + 1),
+  });
   let exactResult = findExact(oldText);
   if (exactResult.offsets.length === 0) {
     const ending = uniformLineEnding(content);
@@ -1077,25 +1065,14 @@ function findMatch(
   }
   const {
     search: matchedOldText,
-    removedPerMatch,
-    maximumExpansionMatches,
     offsets: exactOffsets,
   } = exactResult;
-  if (exactOffsets.length > maximumExpansionMatches) throwExpansionError();
   if (exactOffsets.length > MAX_REPLACEMENTS) {
     throw new Error(
       `${field} matched more than ${MAX_REPLACEMENTS.toLocaleString()} locations. ` +
         `Add surrounding context instead. No changes were written.`,
     );
   }
-  const exactCount = applyAll ? exactOffsets.length : Math.min(exactOffsets.length, 1);
-  assertProjectedExpansion(
-    content.length,
-    exactCount,
-    removedPerMatch,
-    maximumReplacementLength,
-    maxResultLength,
-  );
   const exactLines = lineNumbersAt(content, exactOffsets);
   const exactEndings = lineEndingsAt(content, exactOffsets);
   const replacementsByEnding = new Map<LineEnding, string>();
@@ -1366,7 +1343,9 @@ function findLineBlockMatches(
       : reindentReplacement(localReplacement, searchBodies, bodies);
     if (applyAll || matches.length === 0) {
       projectedLength += text.length - (insert ? 0 : matchEnd - matchStart);
-      if (projectedLength > maxResultLength) throwExpansionError();
+      // Later matches can shrink the remaining source; applyReplacements checks the final size.
+      const remainingShrink = applyAll && !insert ? content.length - matchEnd : 0;
+      if (projectedLength - remainingShrink > maxResultLength) throwExpansionError();
     }
     matches.push(toReplacement(matchStart, matchEnd, text, first.number, insert));
     if (matches.length > MAX_REPLACEMENTS) {
@@ -1503,18 +1482,6 @@ function hasOverlaps(replacements: Replacement[]): boolean {
   return ordered.some((item, index) => index > 0 && item.matchStart < ordered[index - 1]!.matchEnd);
 }
 
-function assertProjectedExpansion(
-  contentLength: number,
-  count: number,
-  removedPerMatch: number,
-  replacementLength: number,
-  maxResultLength: number,
-): void {
-  if (count === 0) return;
-  const projectedLength = contentLength + count * (replacementLength - removedPerMatch);
-  if (projectedLength > maxResultLength) throwExpansionError();
-}
-
 function throwExpansionError(): never {
   throw new Error(
     `Ordered edits would expand the result by more than ${MAX_EDIT_EXPANSION_CHARS.toLocaleString()} ` +
@@ -1531,8 +1498,8 @@ function applyReplacements(
   let projectedLength = content.length;
   for (const replacement of ordered) {
     projectedLength += replacement.text.length - (replacement.end - replacement.start);
-    if (projectedLength > maxResultLength) throwExpansionError();
   }
+  if (projectedLength > maxResultLength) throwExpansionError();
 
   const parts: string[] = [];
   let cursor = 0;
