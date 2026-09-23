@@ -1,6 +1,6 @@
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import { assertNotDanglingSymbolicLink, nativeRealpath, operationPath, prospectiveTarget } from "./native-path.ts";
+import { assertNotDanglingSymbolicLink, nativeRealpath, operationPath, prospectiveDirectory, prospectiveTarget } from "./native-path.ts";
 import * as pi from "@earendil-works/pi-coding-agent";
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import {
@@ -506,6 +506,23 @@ async function registerEditsBatch(
         throw batchFailure(`files[${item.index}]: ${errorMessage(error)}`, receipt);
       }
     }
+    const removedLinks = new Map(planned.flatMap((plan, index) =>
+      plan.entry?.symbolicLink ? [[normalizeLockKey(plan.entry.actualPath), index] as const] : []));
+    for (const target of targets) {
+      if (!removedLinks.size) break;
+      const input = resolved[target.index]!;
+      const entrySource = target.inputPath === input.inputPath && (input.file.delete || input.file.patch?.moveTo);
+      const sourceIndex = await changedLinkInPath(
+        entrySource ? dirname(target.inputPath) : target.inputPath, removedLinks,
+      );
+      if (sourceIndex === undefined) continue;
+      receipt.files[target.index]!.status = "failed";
+      throw batchFailure(
+        `files[${target.index}] (${target.inputPath}) traverses symbolic link ${planned[sourceIndex]!.inputPath} ` +
+          `that files[${sourceIndex}] removes. Split these operations into separate calls. No changes were written.`,
+        receipt,
+      );
+    }
     // A canceled `..` directory can be staged within its own create root, but must
     // not claim another group's root or a requested file name before that operation.
     for (const [index, plan] of planned.entries()) {
@@ -735,6 +752,28 @@ function rejectAncestorPathConflicts(
       );
     }
   }
+}
+
+async function changedLinkInPath(
+  path: string, removedLinks: Map<string, number>, seen = new Set<string>(),
+): Promise<number | undefined> {
+  for (let current = path; current !== dirname(current); current = dirname(current)) {
+    const directory = await prospectiveDirectory(dirname(current));
+    const entry = join(directory, basename(current));
+    const stats = await lstat(entry).catch((error: NodeJS.ErrnoException) => {
+      if (isMissingPathError(error)) return undefined;
+      throw error;
+    });
+    if (!stats?.isSymbolicLink()) continue;
+    const key = normalizeLockKey(entry);
+    const sourceIndex = removedLinks.get(key);
+    if (sourceIndex !== undefined) return sourceIndex;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const linked = await changedLinkInPath(operationPath(await readlink(entry), directory), removedLinks, seen);
+    if (linked !== undefined) return linked;
+  }
+  return undefined;
 }
 
 // Pi acquires one key at a time. Reserve a batch's entire key set before acquiring any Pi lock,

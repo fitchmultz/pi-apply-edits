@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdtemp, readFile, readlink, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -47,6 +47,47 @@ test("pure moves and deletes operate on link entries, including dangling links",
   const reject = await applyPatchToFiles(patch("*** Update File: moved\n*** Move to: elsewhere\n@@\n-untouched\n+wrong"), cwd);
   assert.match(reject.summary, /link-target content/);
   assert.deepEqual(reject.details.modifiedFiles, []);
+});
+
+test("batch refuses to delete a link used by another requested path", { skip: process.platform === "win32" }, async (t) => {
+  const cwd = await fixture(t);
+  await mkdir(join(cwd, "real"));
+  await symlink("real", join(cwd, "alias"));
+  await symlink("alias", join(cwd, "pointer"));
+  const deletion = "*** Delete File: alias";
+  for (const name of ["alias", "pointer"]) {
+    const creation = `*** Add File: ${name}/child.txt\n+content`;
+    for (const operations of [[deletion, creation], [creation, deletion]]) {
+      const result = await applyPatchToFiles(patch(...operations), cwd);
+      assert.match(result.summary, /traverses symbolic link/);
+      assert.deepEqual(result.details.modifiedFiles, []);
+      assert.equal(await readlink(join(cwd, "alias")), "real");
+      await assert.rejects(lstat(join(cwd, "real/child.txt")), /ENOENT/);
+    }
+  }
+});
+
+test("batch refuses to delete a link before deleting an entry through it", { skip: process.platform === "win32" }, async (t) => {
+  const cwd = await fixture(t);
+  await mkdir(join(cwd, "real"));
+  await writeFile(join(cwd, "real/child.txt"), "retained\n");
+  await symlink("real", join(cwd, "alias"));
+  const result = await applyPatchToFiles(patch("*** Delete File: alias", "*** Delete File: alias/child.txt"), cwd);
+  assert.match(result.summary, /traverses symbolic link/);
+  assert.deepEqual(result.details.modifiedFiles, []);
+  assert.equal(await readlink(join(cwd, "alias")), "real");
+  assert.equal(await readFile(join(cwd, "real/child.txt"), "utf8"), "retained\n");
+
+  await symlink("alias/child.txt", join(cwd, "file-link"));
+  const edit = await applyPatchToFiles(patch("*** Delete File: alias", "*** Update File: file-link\n@@\n-retained\n+changed"), cwd);
+  assert.match(edit.summary, /traverses symbolic link/);
+  assert.deepEqual(edit.details.modifiedFiles, []);
+  assert.equal(await readFile(join(cwd, "real/child.txt"), "utf8"), "retained\n");
+
+  const independent = await applyPatchToFiles(patch("*** Delete File: alias", "*** Delete File: file-link"), cwd);
+  assert.equal(independent.details.error, undefined, independent.summary);
+  for (const name of ["alias", "file-link"]) await assert.rejects(lstat(join(cwd, name)), /ENOENT/);
+  assert.equal(await readFile(join(cwd, "real/child.txt"), "utf8"), "retained\n");
 });
 
 test("a planning failure publishes no earlier file and identifies unattempted operations", async (t) => {
