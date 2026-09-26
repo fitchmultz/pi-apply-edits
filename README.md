@@ -1,7 +1,7 @@
 # pi-apply-edits
 
 Focused editing tools for Pi: `apply_patch`, `replace_text`, `write_files`, and
-`preview_patch`. Requires Node 22.19 or later and Pi 0.87.0 or later; works with
+`preview_patch`. Requires Node 24 or later and Pi 0.87.0 or later; works with
 both official Pi and the Fitch fork.
 
 ## Install
@@ -286,7 +286,7 @@ against the installed host; its official development cohort is Pi 0.87.1.
 The suite includes real Pi loader/policy/settlement
 checks with scripted responses and no model calls. Native checkpoints skip on
 unsupported official hosts, but must pass on the fork. CI qualifies the declared
-official Pi version on macOS/Node 22.19 and `fitchmultz/pi@main` on Linux/Node 24;
+official Pi version on macOS/Node 24 and `fitchmultz/pi@main` on Linux/Node 24;
 both lanes verify a fresh Git consumer through the real Pi CLI. Linux metadata
 fault tests require `attr`, `acl`, and a C compiler.
 Temporary directories must allow the current user to set the tested permission

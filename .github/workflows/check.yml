@@ -18,7 +18,7 @@ env:
 
 jobs:
   official:
-    name: Official Pi / macOS / Node 22.19
+    name: Official Pi / macOS / Node 24
     runs-on: macos-latest
     timeout-minutes: 6
     steps:
@@ -34,10 +34,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.19.0'
+          node-version: '24'
           package-manager-cache: false
-      - name: Use the reviewed npm version
-        run: npm install --global "$(node -p 'require("./automation/package.json").packageManager')" --no-audit --no-fund
+      - name: Use the declared npm version
+        run: npm install --global "$(node -p 'require("./extension/package.json").packageManager')" --no-audit --no-fund
       - name: Qualify declared official Pi
         shell: bash
         run: |
@@ -72,8 +72,8 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Use the reviewed npm version
-        run: npm install --global "$(node -p 'require("./automation/package.json").packageManager')" --no-audit --no-fund
+      - name: Use the declared npm version
+        run: npm install --global "$(node -p 'require("./extension/package.json").packageManager')" --no-audit --no-fund
       - name: Install Linux metadata tools
         run: |
           sudo apt-get update
