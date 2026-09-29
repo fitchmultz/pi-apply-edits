@@ -10,8 +10,8 @@ both official Pi and the Fitch fork.
 pi install git:github.com/fitchmultz/pi-apply-edits@v1.0.2
 ```
 
-Restart Pi after installing or updating extension code. `/reload` does not replace
-already-loaded code. A checkout can be loaded with `pi -e /path/to/pi-apply-edits`.
+On current Pi, `/reload` refreshes extension code. Restart after changing dependencies
+or when using older hosts that do not replace loaded code. A checkout can be loaded with `pi -e /path/to/pi-apply-edits`.
 The extension entry remains `extensions/apply-edits.ts` for existing package filters.
 
 On Android/Termux, atomic publication also requires GNU `cp`/`mv`, `getfacl`, and
@@ -273,6 +273,9 @@ new tool names and consume verified receipts before those defaults are hidden.
 
 ## Development checks
 
+Use Node 24.15 or later for the pinned npm 12 development toolchain. The extension's
+runtime floor remains Node 24.0.
+
 ```sh
 npm ci --ignore-scripts
 npm run check:compat
@@ -282,7 +285,7 @@ PI_HOST_INDEX=/path/to/checkpoint-capable-pi/dist/index.js node --test test/chec
 
 The package uses public Pi and TypeBox peer APIs, with jsdiff as its only direct
 runtime dependency. `check:compat` runs typechecking, tests, and a pack dry-run
-against the installed host; its official development cohort is Pi 0.87.1.
+against the installed host; its official development cohort is Pi 0.99.1.
 The suite includes real Pi loader/policy/settlement
 checks with scripted responses and no model calls. Native checkpoints skip on
 unsupported official hosts, but must pass on the fork. CI qualifies the declared
