@@ -1,17 +1,17 @@
 # pi-apply-edits
 
 Focused editing tools for Pi: `apply_patch`, `replace_text`, `write_files`, and
-`preview_patch`. Requires Node 24 or later and Pi 0.87.0 or later; works with
-both official Pi and the Fitch fork.
+`preview_patch`. Requires Node 24 or later and Pi 1.0.0 or later; works with
+both official Pi and the maintained 1.0 Fitch fork. Distribution is Git/GitHub
+only; do not publish the inherited package name to npm.
 
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v1.0.2
+pi install git:github.com/fitchmultz/pi-apply-edits@v1.1.0
 ```
 
-On current Pi, `/reload` refreshes extension code. Restart after changing dependencies
-or when using older hosts that do not replace loaded code. A checkout can be loaded with `pi -e /path/to/pi-apply-edits`.
+On Pi 1.0, `/reload` refreshes extension code. Restart after changing dependencies. A checkout can be loaded with `pi -e /path/to/pi-apply-edits`.
 The extension entry remains `extensions/apply-edits.ts` for existing package filters.
 
 On Android/Termux, atomic publication also requires GNU `cp`/`mv`, `getfacl`, and
@@ -160,7 +160,9 @@ Every executed editing call returns:
   or `uncertain`. Planned preview changes are `unattempted` and marked read-only.
 - `details.preview: true` for read-only calls; `details.error` when the call failed.
 
-Pi receives an error flag without losing the receipt. Compaction retains committed
+Tools return native `isError` and expose the same receipt as `structuredContent`
+with an `outputSchema`, so nested callers retain failure data without depending on
+a result hook. Input validation and approval hooks still run for nested calls. Compaction retains committed
 paths even from partial errors. Consumers should use `modifiedFiles`, never infer
 completed writes from a successful tool name, patch text, or intended file list.
 Syntax/schema/policy failures before execution remain native Pi errors.
@@ -279,16 +281,16 @@ runtime floor remains Node 24.0.
 ```sh
 npm ci --ignore-scripts
 npm run check:compat
-# Optional: actual native checkpoint/reload/restore regression (no model calls)
-PI_HOST_INDEX=/path/to/checkpoint-capable-pi/dist/index.js node --test test/checkpoint.test.ts
 ```
 
 The package uses public Pi and TypeBox peer APIs, with jsdiff as its only direct
 runtime dependency. `check:compat` runs typechecking, tests, and a pack dry-run
-against the installed host; its official development cohort is Pi 0.99.2.
-The suite includes real Pi loader/policy/settlement
-checks with scripted responses and no model calls. Native checkpoints skip on
-unsupported official hosts, but must pass on the fork. CI qualifies the declared
+against the installed host; its official development cohort is Pi 1.0.0 and
+TypeBox 1.3.27. The suite includes real Pi loader/policy/settlement, native nested
+receipts, and journal reload/restore checks with scripted responses and no model
+calls. Both 1.0 targets use the public same-file queue; batch reservations,
+prospective aliases, and publication/recovery safeguards remain package-owned.
+The maintained fork no longer provides checkpoint or mutation-key APIs. CI qualifies the declared
 official Pi version on macOS/Node 24 and `fitchmultz/pi@main` on Linux/Node 24;
 both lanes verify a fresh Git consumer through the real Pi CLI. Linux metadata
 fault tests require `attr`, `acl`, and a C compiler.

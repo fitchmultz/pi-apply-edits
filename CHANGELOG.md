@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 — 2026-10-01
+
+- Qualify Pi 1.0.0 and TypeBox 1.3.27; require Pi 1.0.0 on official and maintained fork hosts.
+- Return native error flags and structured publication receipts for nested callers without a result hook. Keep all transaction, alias, metadata, preview, and partial-failure safeguards.
+- Remove the dropped fork mutation-key dependency; verify native journal reload/restore rather than the retired checkpoint API.
+
 ## 1.0.2 — 2026-09-22
 
 - Reject batches that remove a symbolic link while another requested path traverses it, before publishing any changes.

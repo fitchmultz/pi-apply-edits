@@ -35,12 +35,6 @@ export default function editingExtension(pi: ExtensionAPI): void {
     if (!nativeContext) await start(ctx);
     else nativeContext = ctx;
   });
-  pi.on("tool_result", (event) => {
-    if (ownsTool(event.toolName) && isRecord(event.details) && typeof event.details.error === "string") {
-      return { isError: true };
-    }
-    return undefined;
-  });
   pi.on("session_before_compact", (event) => {
     for (const message of [...event.preparation.messagesToSummarize, ...event.preparation.turnPrefixMessages]) {
       if (message.role !== "toolResult" || !tools.some((tool) => tool.name === message.toolName)) continue;
