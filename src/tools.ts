@@ -41,9 +41,25 @@ export type ReplaceTextParameters = Static<typeof replaceTextSchema>;
 export type WriteFilesParameters = Static<typeof writeFilesSchema>;
 type Details = ApplyEditsBatchDetails | undefined;
 
+// The existing receipt, not a second machine-only outcome. Additional diff/match
+// fields remain available alongside the publication facts required by callers.
+const receiptSchema = Type.Object({
+  modifiedFiles: Type.Array(Type.String()),
+  files: Type.Array(Type.Object({
+    path: Type.String(),
+    operation: StringEnum(["edit", "rewrite", "create", "patch", "delete", "move", "no_change"]),
+    status: StringEnum(["applied", "unchanged", "failed", "unattempted", "uncertain"]),
+    moveTo: Type.Optional(Type.String()),
+    warnings: Type.Array(Type.String()),
+  })),
+  preview: Type.Optional(Type.Literal(true)),
+  error: Type.Optional(Type.String()),
+});
+
 export function createEditingTools(getCwd?: () => string) {
-  const shared: Pick<ToolDefinition<TSchema, Details>, "executionMode" | "renderResult"> = {
+  const shared: Pick<ToolDefinition<TSchema, Details>, "executionMode" | "outputSchema" | "renderResult"> = {
     executionMode: "parallel",
+    outputSchema: receiptSchema,
     renderResult(result, options, theme, context) {
       const message = result.content.find((item) => item.type === "text")?.text ?? "";
       if (options.isPartial) return new Text(theme.fg("muted", message || "Planning changes…"), 0, 0);
@@ -181,7 +197,8 @@ function toolResult(result: EditingExecution) {
         ? "\n[Preview truncated. Full generated diffs remain in tool details and the expanded TUI result.]" : "") });
     }
   }
-  return { content, details: result.details };
+  return { content, details: result.details,
+    structuredContent: JSON.parse(JSON.stringify(result.details)), isError: !!result.details.error };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

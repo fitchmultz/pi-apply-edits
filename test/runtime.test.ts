@@ -12,6 +12,7 @@ import {
   ModelRuntime,
   SessionManager,
   SettingsManager,
+  type ExtensionToolContext,
   type AgentSession,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
@@ -70,12 +71,28 @@ test("native loader executes focused tools with policy, errors, previews, and or
   const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
   const manager = SessionManager.inMemory(cwd);
   const seen = new Map<string, unknown>();
+  const nestedResults: Awaited<ReturnType<ExtensionToolContext["executeTool"]>>[] = [];
   let virtualCwd = cwd;
   const loader = new DefaultResourceLoader({
     cwd, agentDir, settingsManager: settings,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     additionalExtensionPaths: [fileURLToPath(new URL("../extensions/apply-edits.ts", import.meta.url))],
     extensionFactories: [(pi) => {
+      pi.registerTool({
+        name: "compose", label: "compose", description: "Offline nested receipt fixture",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        async execute(_id, _args, _signal, _update, ctx) {
+          for (const input of [
+            { input: patch("same.txt", "missing", "bad") },
+            { input: patch("same.txt", "before", "nested"), preview: true },
+          ]) {
+            const result = await ctx.executeTool(input.preview ? "preview_patch" : "apply_patch", { input: input.input });
+            nestedResults.push(result);
+          }
+          nestedResults.push(await ctx.executeTool("write_files", { files: [{ path: "nested-denied", content: "bad", mode: "create" }] }));
+          return { content: [{ type: "text", text: "Nested calls checked." }], details: undefined };
+        },
+      });
       pi.events.on("pi-change-working-dir:resolve-execution-cwd", (data) => {
         const request = data as { sessionManager: unknown; result?: { cwd: string } };
         if (request.sessionManager === manager) request.result = { cwd: virtualCwd };
@@ -83,7 +100,7 @@ test("native loader executes focused tools with policy, errors, previews, and or
       pi.on("tool_call", (event) => {
         seen.set(event.toolCallId, structuredClone(event.input));
         if (event.toolCallId === "apply-patch") virtualCwd = other;
-        if (event.toolCallId === "denied") return { block: true, reason: "fixture policy denied" };
+        if (event.toolCallId === "denied" || event.toolCallId === "compose/3") return { block: true, reason: "fixture policy denied" };
         return undefined;
       });
     }],
@@ -98,6 +115,7 @@ test("native loader executes focused tools with policy, errors, previews, and or
   session.subscribe((event) => { if (event.type === "tool_execution_update") updates.push(contentText(event.partialResult.content)); });
   const createBody = "\uFEFFcreated\r\nmixed\n";
   scriptCalls(session, [
+    [call("compose", {}, "compose")],
     [call("preview-patch", { input: patch("same.txt", "before", "preview") }, "preview_patch")],
     [call("bad-anchor", { input: patch("same.txt", "missing", "bad") }, "apply_patch")],
     [call("denied", { files: [{ path: "denied", content: "bad", mode: "create" }] })],
@@ -120,6 +138,14 @@ test("native loader executes focused tools with policy, errors, previews, and or
   for (const id of ["preview-patch", "apply-patch", "preview-write", "create", "replace", "batch", "ordered-batch", "ordered-single"]) assert.equal(results.get(id)?.isError, false, `${id}: ${contentText(results.get(id)?.content ?? [])}`);
   assert.partialDeepStrictEqual(results.get("bad-anchor")?.details, { modifiedFiles: [], files: [{ status: "failed" }] });
   assert.partialDeepStrictEqual(results.get("preview-patch")?.details, { preview: true, modifiedFiles: [] });
+  assert.equal(nestedResults.length, 3);
+  assert.equal(nestedResults[0]?.isError, true);
+  assert.partialDeepStrictEqual(nestedResults[0]?.result.structuredContent, { modifiedFiles: [], files: [{ status: "failed" }] });
+  assert.equal(nestedResults[1]?.isError, false);
+  assert.partialDeepStrictEqual(nestedResults[1]?.result.structuredContent, { preview: true, modifiedFiles: [] });
+  assert.equal(nestedResults[2]?.isError, true);
+  assert.match(contentText(nestedResults[2]!.result.content), /fixture policy denied/);
+  await assert.rejects(readFile(join(cwd, "nested-denied")), /ENOENT/);
   assert.deepEqual(seen.get("apply-patch"), { input: patch(join(cwd, "same.txt"), "before", "changed") });
   assert.partialDeepStrictEqual(seen.get("create"), { files: [{ path: join(other, "created"), content: createBody }] });
   for (const id of ["invalid-alias", "unknown-field", "invalid-preview"]) assert.equal(seen.has(id), false, id);

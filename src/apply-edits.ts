@@ -1,7 +1,7 @@
 import { lstat, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { assertNotDanglingSymbolicLink, nativeRealpath, operationPath, prospectiveDirectory, prospectiveTarget } from "./native-path.ts";
-import * as pi from "@earendil-works/pi-coding-agent";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import {
   assertSafeToReplace,
@@ -155,11 +155,6 @@ interface MatchResult {
   strategy: MatchStrategy;
   replacements: Replacement[];
 }
-
-const { withFileMutationQueue } = pi;
-// Official 0.87 exposes only the queue; newer hosts also expose its content identity.
-const sharedQueueKey = "getFileMutationQueueKey" in pi && typeof pi.getFileMutationQueueKey === "function"
-  ? pi.getFileMutationQueueKey as (path: string) => Promise<string> : undefined;
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const DIFF_WORK_LIMIT_BYTES = 1024 * 1024;
@@ -1286,8 +1281,7 @@ async function mutationQueueKeys(
   return contentQueueKeys(key, true);
 }
 
-async function contentQueueKeys(key: string, needsCreateLock: boolean) {
-  key = sharedQueueKey ? await sharedQueueKey(key) : key;
+function contentQueueKeys(key: string, needsCreateLock: boolean) {
   return { targetKey: normalizeLockKey(key), queueKeys: [key], needsCreateLock };
 }
 

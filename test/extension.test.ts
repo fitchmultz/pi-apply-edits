@@ -121,7 +121,6 @@ test("compaction includes partial commits while ignoring previews and uncertain 
     ],
   } });
   assert.deepEqual([...edited], ["/committed"]);
-  assert.deepEqual(await fixture.emit("tool_result", { toolName: "apply_patch", details: { error: "failed", modifiedFiles: ["/committed"] } }), { isError: true });
 });
 
 test("tools return bounded preview text, full expanded diffs, and truthful receipts", async (t) => {
@@ -151,6 +150,8 @@ test("tools return bounded preview text, full expanded diffs, and truthful recei
   assert.equal(result.details?.files[0]?.status, "applied");
   const failed = await apply.execute("fail", { input: patch("file", "missing") }, undefined, undefined, { cwd: directory } as never);
   assert(failed.details?.error);
+  assert.equal(failed.isError, true);
+  assert.deepEqual(failed.structuredContent, JSON.parse(JSON.stringify(failed.details)));
   assert.deepEqual(failed.details.modifiedFiles, []);
   const failureView = apply.renderResult!(failed, { expanded: false, isPartial: false }, theme, { isError: true } as never).render(100).join("\n");
   assert.match(failureView, /✗/);
