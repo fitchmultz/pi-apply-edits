@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-10-01
 
 - Qualify Pi 1.0.0 and TypeBox 1.3.27; require Pi 1.0.0 on official and maintained fork hosts.
 - Return native error flags and structured publication receipts for nested callers without a result hook. Keep all transaction, alias, metadata, preview, and partial-failure safeguards.

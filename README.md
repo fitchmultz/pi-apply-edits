@@ -2,12 +2,13 @@
 
 Focused editing tools for Pi: `apply_patch`, `replace_text`, `write_files`, and
 `preview_patch`. Requires Node 24 or later and Pi 1.0.0 or later; works with
-both official Pi and the Fitch fork.
+both official Pi and the maintained 1.0 Fitch fork. Distribution is Git/GitHub
+only; do not publish the inherited package name to npm.
 
 ## Install
 
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v1.0.2
+pi install git:github.com/fitchmultz/pi-apply-edits@v1.1.0
 ```
 
 On Pi 1.0, `/reload` refreshes extension code. Restart after changing dependencies. A checkout can be loaded with `pi -e /path/to/pi-apply-edits`.

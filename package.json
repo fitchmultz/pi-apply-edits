@@ -1,6 +1,6 @@
 {
   "name": "pi-apply-edits",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Focused patch, replacement, write, and preview tools for Pi.",
   "type": "module",
   "keywords": [
