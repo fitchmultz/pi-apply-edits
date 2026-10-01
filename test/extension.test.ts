@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -156,4 +158,26 @@ test("tools return bounded preview text, full expanded diffs, and truthful recei
   const failureView = apply.renderResult!(failed, { expanded: false, isPartial: false }, theme, { isError: true } as never).render(100).join("\n");
   assert.match(failureView, /✗/);
   assert.doesNotMatch(failureView, /✓/);
+
+  const nativeRealpath = fs.realpath;
+  let resolutions = 0;
+  t.mock.method(fs, "realpath", async (path: Parameters<typeof fs.realpath>[0]) => {
+    if (String(path) === join(directory, "file") && ++resolutions === 2) throw new Error("");
+    return nativeRealpath(path);
+  });
+  syncBuiltinESMExports();
+  try {
+    // Discovery succeeds, but Pi's subsequent queue acquisition rejects with an
+    // empty-message error. Error presence, not message truthiness, owns the flag.
+    const queueFailure = await write.execute("queue-fail", {
+      files: [{ path: join(directory, "file"), content: "must not write", mode: "replace" }],
+    }, undefined, undefined, { cwd: directory } as never);
+    assert.equal(queueFailure.details?.error, "");
+    assert.equal(queueFailure.isError, true);
+    assert.deepEqual(queueFailure.details?.modifiedFiles, []);
+    assert.equal(await readFile(join(directory, "file"), "utf8"), "after\n");
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });

@@ -198,7 +198,7 @@ function toolResult(result: EditingExecution) {
     }
   }
   return { content, details: result.details,
-    structuredContent: JSON.parse(JSON.stringify(result.details)), isError: !!result.details.error };
+    structuredContent: JSON.parse(JSON.stringify(result.details)), isError: result.details.error !== undefined };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
