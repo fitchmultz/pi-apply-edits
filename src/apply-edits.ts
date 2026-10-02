@@ -48,19 +48,6 @@ export interface ApplyEditsInput {
   preserveFormatting?: boolean;
 }
 
-/** Tool args: one file (path + edits|rewrite) or a plan-first multi-file batch. */
-export interface ApplyEditsRequest {
-  path?: string;
-  edits?: TargetedEdit[];
-  rewrite?: string;
-  onMissing?: "error" | "create";
-  requireMissing?: boolean;
-  preserveFormatting?: boolean;
-  files?: ApplyEditsInput[];
-  preview?: boolean;
-}
-
-
 export type MatchStrategy = "exact" | "normalized" | "indent-normalized" | "whitespace" | "typography";
 
 export interface AppliedEditDetail {
@@ -117,13 +104,6 @@ class BatchPublicationError extends Error {
     super(message);
     this.details = details;
   }
-}
-
-export type ApplyEditsToolDetails = ApplyEditsDetails | ApplyEditsBatchDetails;
-
-export interface ApplyEditsExecution {
-  summary: string;
-  details: ApplyEditsToolDetails;
 }
 
 interface TextEditResult {
@@ -373,29 +353,6 @@ function failedExecution(error: unknown, preview: boolean, files?: MutationInput
   return { summary: message, details };
 }
 
-export async function applyEditsToFile(
-  input: ApplyEditsRequest,
-  cwd: string,
-  signal?: AbortSignal,
-  onProgress?: (summary: string) => void,
-): Promise<ApplyEditsExecution> {
-  validateRequest(input);
-  throwIfAborted(signal);
-  if (input.files) {
-    const files = input.files;
-    return registerMutation(() => registerEditsBatch(files, cwd, signal, input.preview === true, onProgress));
-  }
-
-  const single = input as ApplyEditsInput;
-  const inputPath = resolveInputPath(single.path, cwd);
-  return withCanonicalFileLock(inputPath, async () => {
-    const planned = input.preview
-      ? await planFileContents(single, inputPath, cwd, signal, false)
-      : await planFileMutation(single, inputPath, cwd, signal);
-    return input.preview ? describePlan(planned, true) : commitPlannedMutation(planned, signal);
-  });
-}
-
 let canonicalLockRegistration = Promise.resolve();
 
 function registerMutation<T>(discover: () => Promise<{ operation: Promise<T> }>): Promise<T> {
@@ -403,14 +360,6 @@ function registerMutation<T>(discover: () => Promise<{ operation: Promise<T> }>)
   const registration = canonicalLockRegistration.then(discover);
   canonicalLockRegistration = registration.then(() => undefined, () => undefined);
   return registration.then(({ operation }) => operation);
-}
-
-function withCanonicalFileLock<T>(inputPath: string, fn: () => Promise<T>): Promise<T> {
-  return registerMutation(async () => {
-    const keys = await mutationQueueKeys(inputPath);
-    return { operation: withMutationLocks(keys.needsCreateLock, keys.queueKeys, fn, [keys.targetKey],
-      async () => (await mutationQueueKeys(inputPath)).queueKeys) };
-  });
 }
 
 interface PlannedMutation {
@@ -584,8 +533,7 @@ async function registerEditsBatch(
           if (key) {
             receipt.files[group[0]!]!.warnings.push(...await publishPreparedNestedFiles(preparedGroups.get(key)!, signal));
           } else {
-            const result = await commitPlannedMutation(plan, signal);
-            receipt.files[index]!.warnings.push(...result.details.warnings);
+            receipt.files[index]!.warnings.push(...await commitPlannedMutation(plan, signal));
           }
           for (const item of group) {
             completed.add(item);
@@ -667,7 +615,7 @@ function emptyReceipt(input: MutationInput, cwd: string): FileReceipt {
 }
 
 function receiptForPlan(plan: PlannedMutation, preview: boolean): FileReceipt {
-  const details = describePlan(plan, preview).details;
+  const details = detailsForPlan(plan, preview);
   if (plan.entry && !plan.snapshot) {
     details.bytesBefore = Number(plan.entry.stats.size);
     details.bytesAfter = plan.movePlan ? details.bytesBefore : 0;
@@ -964,7 +912,7 @@ function correctionSummary(files: ApplyEditsDetails[]): string {
     (notes.length > 4 ? `; ${notes.length - 4} more corrected edits in details` : "");
 }
 
-function describePlan(plan: PlannedMutation, preview = false): ApplyEditsExecution & { details: ApplyEditsDetails } {
+function detailsForPlan(plan: PlannedMutation, preview = false): ApplyEditsDetails {
   const details = buildDetails(
     plan.displayPath,
     plan.operation,
@@ -976,75 +924,24 @@ function describePlan(plan: PlannedMutation, preview = false): ApplyEditsExecuti
     [],
   );
   if (preview) details.preview = true;
-  if (!plan.needsWrite) {
-    return {
-      summary: `No change: ${plan.displayPath} already matches the requested content.${preview ? " No files written (preview)." : ""}`,
-      details,
-    };
-  }
-  const counts = (details.addedLines ?? 0) + (details.deletedLines ?? 0) > 0
-    ? ` (+${details.addedLines ?? 0}/-${details.deletedLines ?? 0})`
-    : "";
-  const verb = plan.operation === "create"
-    ? preview ? "Would create" : "Created"
-    : plan.operation === "rewrite"
-      ? preview ? "Would rewrite" : "Rewrote"
-      : preview ? "Would edit" : "Edited";
-  const unit = plan.operation === "edit"
-    ? `${plan.editsRequested} ordered edit${plan.editsRequested === 1 ? "" : "s"}`
-    : "full content";
-  return {
-    summary: `${verb} ${plan.displayPath}: ${unit}${counts}${correctionSummary([details])}.` +
-      `${preview ? " No files written." : ""}${details.diffTruncated ? " Diff omitted (diff budget)." : ""}`,
-    details,
-  };
+  return details;
 }
 
 async function commitPlannedMutation(
   plan: PlannedMutation,
   signal?: AbortSignal,
-): Promise<ApplyEditsExecution & { details: ApplyEditsDetails }> {
+): Promise<string[]> {
   throwIfAborted(signal);
-  const result = describePlan(plan);
   if (!plan.needsWrite) {
     if (plan.snapshot) await assertSnapshotCurrent(plan.snapshot);
-    return result;
+    return [];
   }
   throwIfAborted(signal);
-  const warnings = plan.movePlan
+  return plan.movePlan
     ? await publishEntryMove(plan.movePlan, plan.snapshot ? { snapshot: plan.snapshot, bytes: plan.nextBytes } : undefined, signal)
     : plan.entry ? await publishEntryDelete(plan.entry, signal)
     : plan.snapshot ? await publishReplacement(plan.snapshot, plan.nextBytes, signal)
     : await publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan);
-  result.details.warnings.push(...warnings);
-  if (warnings.length > 0) result.summary += ` Warning: ${warnings.join(" ")}`;
-  return result;
-}
-
-function validateRequest(input: ApplyEditsRequest): void {
-  if (!input || typeof input !== "object") throw new Error("File mutation input must be an object");
-  if (input.preview !== undefined && typeof input.preview !== "boolean") {
-    throw new Error("preview must be a boolean");
-  }
-  const hasFiles = Array.isArray(input.files);
-  const hasTopLevel =
-    input.path !== undefined ||
-    input.edits !== undefined ||
-    input.rewrite !== undefined ||
-    input.onMissing !== undefined ||
-    input.requireMissing !== undefined ||
-    input.preserveFormatting !== undefined;
-  if (hasFiles === hasTopLevel) {
-    throw new Error('Provide either files: [...] or a single-file path with edits/rewrite');
-  }
-  if (hasFiles) {
-    if (!input.files || input.files.length === 0) throw new Error("files must contain at least one entry");
-    if (input.files.length > MAX_BATCH_FILES) {
-      throw new Error(`files cannot contain more than ${MAX_BATCH_FILES} entries`);
-    }
-    return;
-  }
-  validateInput(input as ApplyEditsInput);
 }
 
 function validateInput(input: ApplyEditsInput): void {
