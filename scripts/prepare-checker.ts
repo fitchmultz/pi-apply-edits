@@ -17,6 +17,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareOxlint } from "./prepare-oxlint.ts";
 
 const VERSION = "7.0.2003";
 const REVISION = "eb9339115edde6811ca94c3433adf69ea9852880";
@@ -161,6 +162,7 @@ function buildSource(source: string, output: string): void {
     [
       "build",
       "-mod=readonly",
+      "-modcacherw",
       "-buildvcs=false",
       "-ldflags=-s -w",
       "-trimpath",
@@ -209,13 +211,14 @@ function main(): void {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) {
     console.log(
-      "Prepare the declaration-isolated strict checker. Requires Git and Go >=1.26.\n\nUsage: node scripts/prepare-checker.ts\n       npm run quality:prepare\n\nBuilds immutable upstream source plus the repository patch, caches by source, patch,\nplatform and Go version, then atomically installs the native engine used by Oxlint\nand its editor/LSP integration. Run after npm ci --ignore-scripts.\n\nExit: 0 prepared/help; 1 missing prerequisites, incompatible version or build failure.",
+      "Prepare the strict native checkers. Requires Git, Go >=1.26, Rust >=1.97, Cargo and a C compiler.\n\nUsage: node scripts/prepare-checker.ts\n       npm run quality:prepare\n\nBuilds immutable upstream sources plus repository corrections, verifies outside-repository\ncaches, and atomically installs the native Oxlint addon and type-aware engine used by\nraw CLI and editor/LSP invocations. Run after npm ci --ignore-scripts and restart existing\nlanguage servers.\n\nExit: 0 prepared/help; 1 missing prerequisites, incompatible version or build failure.",
     );
     return;
   }
   if (args.length > 0) {
     throw new Error(`Unknown arguments: ${args.join(" ")}. Use --help.`);
   }
+  prepareOxlint();
   if (!hasDevelopmentChecker()) {
     console.log("Skipped development checker preparation: oxlint-tsgolint is not installed.");
     return;
