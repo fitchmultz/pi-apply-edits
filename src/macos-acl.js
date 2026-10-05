@@ -14,15 +14,21 @@ ObjC.bindFunction("strerror", ["char *", ["int"]]);
 
 // sys/acl.h: ACL_TYPE_EXTENDED and ACL_ENTRY_ONLY_INHERIT are both 0x100.
 function check(result, operation) {
-  if (result !== 0) throw new Error(operation + ": " + $.strerror($.__error()[0]));
+  if (result !== 0) {
+    throw new Error(operation + ": " + $.strerror($.__error()[0]));
+  }
 }
 
 function readAcl(path) {
   const acl = $.acl_get_file(path, 0x100);
   const readError = $.__error()[0];
-  if ($.acl_valid(acl) === 0) return acl;
+  if ($.acl_valid(acl) === 0) {
+    return acl;
+  }
   // NULL/ENOENT means no extended ACL, including on non-ACL volumes.
-  if (readError === 2) return undefined;
+  if (readError === 2) {
+    return undefined;
+  }
   throw new Error("Read ACL: " + $.strerror(readError));
 }
 
@@ -30,9 +36,13 @@ function run(args) {
   const [mode, source, target] = args;
   let acl = readAcl(source);
   if (acl === undefined) {
-    if (mode === "inherit") return;
+    if (mode === "inherit") {
+      return;
+    }
     const existing = readAcl(target);
-    if (existing === undefined) return;
+    if (existing === undefined) {
+      return;
+    }
     $.acl_free(existing);
     acl = $.acl_init(0);
     check($.acl_valid(acl), "Initialize empty ACL");
