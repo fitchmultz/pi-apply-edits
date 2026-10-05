@@ -196,7 +196,13 @@ for (const operation of ["delete", "move"] as const) {
       assert.equal(await readlink(join(cwd, "entry")), "target");
       assert.equal(await readFile(join(cwd, "actual", "target"), "utf8"), "native\n");
       if (operation === "move") {
+        // Exhaustive native entry variants preserve the moved symlink or forbid a delete-only destination.
+        // oxlint-disable-next-line node-test/no-conditional-assertions
         assert.equal(await readlink(join(cwd, "actual", "moved")), "target");
+      } else {
+        // Exhaustive native entry variants must not create a destination during deletion.
+        // oxlint-disable-next-line node-test/no-conditional-assertions
+        await assert.rejects(lstat(join(cwd, "actual", "moved")), /ENOENT/);
       }
     },
   );

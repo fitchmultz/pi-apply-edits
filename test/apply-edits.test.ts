@@ -95,8 +95,12 @@ async function assertFailure(
     message ?? "expected an editing error receipt",
   );
   if (expected instanceof RegExp) {
+    // Exhaustive error-validator variants check either the receipt text or the predicate result.
+    // oxlint-disable-next-line node-test/no-conditional-assertions
     assert.match(result.details.error, expected);
   } else {
+    // Exhaustive error-validator variants preserve the predicate's exact true-return contract.
+    // oxlint-disable-next-line node-test/no-conditional-assertions
     assert.equal(
       expected(Object.assign(new Error(result.details.error), { details: result.details })),
       true,
@@ -1001,7 +1005,7 @@ test("preview shares ordered range, normalization, insertion, and create plannin
   });
 });
 
-test("preview is advisory, allows read-only content, and never supplies a stale commit plan", async () => {
+test("preview is advisory, allows read-only content, and never supplies a stale commit plan", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file");
     await writeFile(path, "before\n");
@@ -1010,9 +1014,14 @@ test("preview is advisory, allows read-only content, and never supplies a stale 
     try {
       const preview = await replaceTextInFiles({ ...request, preview: true }, directory);
       assert.equal(preview.details.preview, true);
-      if (process.platform !== "win32" && process.getuid?.() !== 0) {
-        await assertFailure(replaceTextInFiles(request, directory), /readable and writable/);
-      }
+      assert.equal(await readFile(path, "utf8"), "before\n");
+      await t.test(
+        "read-only commit refuses a non-root POSIX write",
+        { skip: process.platform === "win32" || process.getuid?.() === 0 },
+        async () => {
+          await assertFailure(replaceTextInFiles(request, directory), /readable and writable/);
+        },
+      );
     } finally {
       await chmod(path, 0o644);
     }
@@ -2685,7 +2694,7 @@ test("nested create staging failures are detected before earlier batch writes", 
   });
 });
 
-test("sibling creates reject alias-spelled missing roots before publication", async () => {
+test("sibling creates reject alias-spelled missing roots before publication", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     const probe = join(directory, "probe");
     let caseInsensitive = false;
@@ -2698,6 +2707,7 @@ test("sibling creates reject alias-spelled missing roots before publication", as
       await rm(probe, { recursive: true, force: true });
     }
     if (!caseInsensitive) {
+      t.skip("Requires a case-insensitive filesystem");
       return;
     }
 
@@ -2839,7 +2849,7 @@ test("multi-file batch rejects symlink aliases of the same file", async () => {
   });
 });
 
-test("multi-file batch rejects case-alias paths of the same file on case-insensitive volumes", async () => {
+test("multi-file batch rejects case-alias paths of the same file on case-insensitive volumes", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     const lower = join(directory, "a.txt");
     await writeFile(lower, "x\n");
@@ -2853,8 +2863,9 @@ test("multi-file batch rejects case-alias paths of the same file on case-insensi
       sameFile = false;
     }
     if (!sameFile) {
+      t.skip("Requires a case-insensitive filesystem");
       return;
-    } // skip on case-sensitive volumes
+    }
 
     await assertFailure(
       () =>
@@ -2985,7 +2996,7 @@ test("multi-file batch rejects create aliases through symlink parents before any
   });
 });
 
-test("multi-file batch rejects Unicode case-fold aliases of the same missing path", async () => {
+test("multi-file batch rejects Unicode case-fold aliases of the same missing path", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     const plain = join(directory, "s");
     const longS = join(directory, "ſ");
@@ -3003,6 +3014,7 @@ test("multi-file batch rejects Unicode case-fold aliases of the same missing pat
       }
     }
     if (!aliases) {
+      t.skip("Requires a filesystem that aliases these Unicode spellings");
       return;
     }
 
@@ -3045,7 +3057,7 @@ test(
   },
 );
 
-test("multi-file batch rejects uppercase/lowercase sharp-S aliases", async () => {
+test("multi-file batch rejects uppercase/lowercase sharp-S aliases", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     const upper = join(directory, "ẞ.txt");
     const lower = join(directory, "ß.txt");
@@ -3063,6 +3075,7 @@ test("multi-file batch rejects uppercase/lowercase sharp-S aliases", async () =>
       }
     }
     if (!aliases) {
+      t.skip("Requires a filesystem that aliases these Unicode spellings");
       return;
     }
 
@@ -3093,7 +3106,7 @@ test("exact match wins in mixed-line-ending files", () => {
   assert.equal(result.matches[0]?.strategy, "exact");
 });
 
-test("multi-file batch rejects case-alias creates of the same missing path", async () => {
+test("multi-file batch rejects case-alias creates of the same missing path", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     // On case-sensitive volumes this creates two different paths; skip if both can coexist.
     const lower = join(directory, "new.txt");
@@ -3113,6 +3126,7 @@ test("multi-file batch rejects case-alias creates of the same missing path", asy
       }
     }
     if (!caseInsensitive) {
+      t.skip("Requires a case-insensitive filesystem");
       return;
     }
 
@@ -3655,8 +3669,9 @@ test("long valid basenames do not overflow temporary names", async () => {
   });
 });
 
-test("multi-file batch rejects unwritable target directories during plan", async () => {
+test("multi-file batch rejects unwritable target directories during plan", async (t) => {
   if (process.platform === "win32") {
+    t.skip("Requires POSIX directory permissions");
     return;
   }
   await inTemporaryDirectory(async (directory) => {
@@ -5179,7 +5194,11 @@ test(
                 const stats = await originalLstat(...args);
                 if (rejectedPath.length === 0 && basename(filePath(path)) === rejectedName) {
                   rejectedPath = filePath(path);
-                  assert(typeof stats.dev === "bigint" && typeof stats.ino === "bigint");
+                  if (typeof stats.dev !== "bigint" || typeof stats.ino !== "bigint") {
+                    throw new Error(
+                      "Owner-rejection fixture requires bigint filesystem identities",
+                    );
+                  }
                   rejectedIdentity = { dev: stats.dev, ino: stats.ino };
                   return new Proxy(stats, {
                     get(target, property, receiver) {
@@ -5244,7 +5263,9 @@ test(
                 name.endsWith(".tmpdir")
               ) {
                 rejectedPath = filePath(path);
-                assert(typeof stats.dev === "bigint" && typeof stats.ino === "bigint");
+                if (typeof stats.dev !== "bigint" || typeof stats.ino !== "bigint") {
+                  throw new Error("Owner-rejection fixture requires bigint filesystem identities");
+                }
                 rejectedIdentity = { dev: stats.dev, ino: stats.ino };
                 return new Proxy(stats, {
                   get(target, property, receiver) {
@@ -6157,15 +6178,25 @@ for (const linkCode of ["EIO", "EACCES"]) {
               directory,
             );
             if (linkCode === "EIO") {
+              // Exhaustive link-error variants reject EIO without publishing, or verify the EACCES fallback below.
+              // oxlint-disable-next-line node-test/no-conditional-assertions
               await assertFailure(
                 operation,
                 /the temporary create file's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, or only leftover temporary directories may remain/s,
               );
+              // Exhaustive link-error variants must leave no target when EIO prevents publication.
+              // oxlint-disable-next-line node-test/no-conditional-assertions
               await assert.rejects(lstat(join(directory, "file")), /ENOENT/);
             } else {
               const result = await operation;
+              // Exhaustive link-error variants verify the exclusive-write fallback's published bytes.
+              // oxlint-disable-next-line node-test/no-conditional-assertions
               assert.equal(await readFile(join(directory, "file"), "utf8"), "secret\n");
+              // Exhaustive link-error variants must disclose the fallback publication mechanism.
+              // oxlint-disable-next-line node-test/no-conditional-assertions
               assert.match(result.summary, /used exclusive write publication/);
+              // Exhaustive link-error variants must disclose uncertain temporary-link cleanup.
+              // oxlint-disable-next-line node-test/no-conditional-assertions
               assert.match(
                 result.summary,
                 /temporary link's cleanup failed and its final state is unknown/,

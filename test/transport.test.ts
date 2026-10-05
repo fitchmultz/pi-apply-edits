@@ -317,7 +317,11 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
         // Native grammar deltas are normalized to the same argument JSON as function calls.
         assert.equal(streamed.join(""), JSON.stringify({ input }));
         assert.equal(f.requests.length, (index + 1) * 2);
-        for (const request of f.requests.slice(-2)) {
+        const toolRequest = f.requests.at(-2);
+        const completionRequest = f.requests.at(-1);
+        assert(toolRequest);
+        assert(completionRequest);
+        for (const request of [toolRequest, completionRequest]) {
           assert.deepEqual(
             request.tools
               ?.map((tool) => {
@@ -334,12 +338,16 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
             assert(definition);
             assert.equal(definition.type, native ? "custom" : "function");
             if (native) {
+              // Exhaustive transport variants validate native grammar or JSON parameters, never omit a schema.
+              // oxlint-disable-next-line node-test/no-conditional-assertions
               assert.deepEqual(definition.format, {
                 type: "grammar",
                 syntax: "lark",
                 definition: PATCH_GRAMMAR,
               });
             } else {
+              // Exhaustive transport variants validate the function-call schema when native grammar is absent.
+              // oxlint-disable-next-line node-test/no-conditional-assertions
               assert.partialDeepStrictEqual(definition.parameters, {
                 type: "object",
                 required: ["input"],

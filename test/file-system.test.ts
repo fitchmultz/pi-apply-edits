@@ -228,6 +228,8 @@ assert libc.fsetxattr(3, b"${attribute}", value, len(value), 0, 0) == 0, ctypes.
             },
           });
           if (phase === "afterRename") {
+            // Exhaustive replacement phases require a conflict receipt here or retained-metadata warnings below.
+            // oxlint-disable-next-line node-test/no-conditional-assertions
             await assert.rejects(publication, (error: unknown) => {
               assert(outcome([path], [])(error));
               assert.match(error.message, /File versions changed during commit/);
@@ -237,6 +239,8 @@ assert libc.fsetxattr(3, b"${attribute}", value, len(value), 0, 0) == 0, ctypes.
           } else {
             const warnings = await publication;
             const preserved = /preserved at (.+)$/.exec(warnings.join(" "))?.[1];
+            // Exhaustive replacement phases require warnings to identify the retained recovery inode.
+            // oxlint-disable-next-line node-test/no-conditional-assertions
             assert.ok(
               preserved !== undefined && preserved.length > 0,
               "cleanup must report the retained metadata",

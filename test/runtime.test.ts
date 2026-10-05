@@ -231,12 +231,15 @@ test(
     session.subscribe((event) => {
       if (event.type === "tool_execution_update") {
         const result: unknown = event.partialResult;
-        assert(isRecord(result));
-        assert(Array.isArray(result.content));
+        if (!isRecord(result) || !Array.isArray(result.content)) {
+          throw new Error("Tool update fixture requires a result with content");
+        }
         updates.push(
           result.content
             .map((item: unknown) => {
-              assert(isRecord(item) && typeof item.text === "string");
+              if (!isRecord(item) || typeof item.text !== "string") {
+                throw new Error("Tool update fixture requires text content");
+              }
               return item.text;
             })
             .join(""),
@@ -503,8 +506,14 @@ for (const bind of [true, false]) {
             errors.push(error);
           },
         });
+        // Exhaustive session-binding variants resolve the owner's directory or retain the uninitialized guard.
+        // oxlint-disable-next-line node-test/no-conditional-assertions
         assert.partialDeepStrictEqual(prepare(args), { files: [{ path: join(a, "same.txt") }] });
         ownerQueries.length = 0;
+      } else {
+        // Exhaustive session-binding variants must stay uninitialized before the first bare SDK prompt.
+        // oxlint-disable-next-line node-test/no-conditional-assertions
+        assert.throws(() => prepare(args), /not initialized/);
       }
       scriptCalls(session, [
         [call("admitted", args)],
@@ -693,23 +702,29 @@ for (const scenario of [
     assert(prepare);
     const args = { files: [{ path: "fixture.txt", content: "content", mode: "create" }] };
     if (scenario === "disabled" || scenario === "unrelated") {
+      // Exhaustive provenance variants either prepare against the local root or reject a legacy directory owner.
+      // oxlint-disable-next-line node-test/no-conditional-assertions
       assert.partialDeepStrictEqual(prepare(args), {
         files: [{ path: join(root, "fixture.txt") }],
       });
+      // Exhaustive provenance variants distinguish a disabled package from an unrelated command owner.
+      // oxlint-disable-next-line node-test/no-conditional-assertions
       assert.equal(
         api.getCommands().some((command) => command.name === "cwd"),
         scenario === "unrelated",
       );
     } else {
+      // Exhaustive provenance variants reject every loaded legacy directory owner.
+      // oxlint-disable-next-line node-test/no-conditional-assertions
       assert.throws(() => prepare(args), /Update pi-change-working-dir and restart Pi/);
+      // Exhaustive provenance variants retain the legacy command, including collision-qualified names.
+      // oxlint-disable-next-line node-test/no-conditional-assertions
       assert(api.getCommands().some((command) => /^cwd(?::\d+)?$/.test(command.name)));
-      if (scenario.startsWith("excluded")) {
-        assert.equal(
-          api.getAllTools().some((tool) => tool.name === "change_dir"),
-          false,
-        );
-      }
     }
+    assert.equal(
+      api.getAllTools().some((tool) => tool.name === "change_dir"),
+      scenario !== "disabled" && !scenario.startsWith("excluded"),
+    );
     assert.equal(network.mock.callCount(), 0);
   });
 }

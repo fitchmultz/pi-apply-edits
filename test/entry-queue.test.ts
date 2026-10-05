@@ -32,7 +32,13 @@ for (const operation of ["delete", "move"] as const) {
       assert(result.details.modifiedFiles.includes(path));
       await assert.rejects(lstat(path), /ENOENT/);
       if (operation === "move") {
+        // Exhaustive entry variants preserve the moved link or leave no move destination after deletion.
+        // oxlint-disable-next-line node-test/no-conditional-assertions
         assert.equal(await readlink(join(cwd, "moved")), "loop");
+      } else {
+        // Exhaustive entry variants forbid a move destination when only deletion was requested.
+        // oxlint-disable-next-line node-test/no-conditional-assertions
+        await assert.rejects(lstat(join(cwd, "moved")), /ENOENT/);
       }
     },
   );
@@ -78,7 +84,13 @@ for (const operation of ["delete", "move"] as const) {
       }
       await assert.rejects(lstat(join(cwd, path)), /ENOENT/);
       if (operation === "move") {
+        // Exhaustive queued-entry variants verify moved bytes or the absence of a delete-only destination.
+        // oxlint-disable-next-line node-test/no-conditional-assertions
         assert.equal(await readFile(join(cwd, "moved"), "utf8"), "created\n");
+      } else {
+        // Exhaustive queued-entry variants forbid a move destination after a delete-only operation.
+        // oxlint-disable-next-line node-test/no-conditional-assertions
+        await assert.rejects(lstat(join(cwd, "moved")), /ENOENT/);
       }
     });
   }
