@@ -95,9 +95,11 @@ class EntryDeletion {
     }
   }
 
-  private async cleanup(
-    failure?: Readonly<Pick<PublicationError, "message" | "modifiedFiles" | "uncertainFiles">>,
-  ): Promise<void> {
+  private async cleanup(failure?: {
+    readonly message: string;
+    readonly modifiedFiles: readonly string[];
+    readonly uncertainFiles: readonly string[];
+  }): Promise<void> {
     if (!this.directoryStats) {
       return;
     }

@@ -59,8 +59,8 @@ class NestedStaging implements PreparedNestedFiles {
   quarantineStats: BigIntStats | undefined;
   cleanupBlocked: string | undefined;
   stagedIdentities: Map<string, BigIntStats> | undefined;
-  private readonly stagedDirectories = new Set<string>();
-  private handle: Awaited<ReturnType<typeof open>> | undefined;
+  readonly #stagedDirectories = new Set<string>();
+  #handle: Awaited<ReturnType<typeof open>> | undefined;
 
   constructor(entries: readonly PlannedNewFile[], hooks?: NewFilePublishHooks) {
     const first = entries.at(0)?.plan;
@@ -96,7 +96,7 @@ class NestedStaging implements PreparedNestedFiles {
         // oxlint-disable-next-line no-await-in-loop
         await this.stageEntry(entry, signal);
       }
-      for (const directory of [...this.stagedDirectories].sort(
+      for (const directory of [...this.#stagedDirectories].sort(
         (left, right) => right.length - left.length,
       )) {
         throwIfAborted(signal);
@@ -110,7 +110,7 @@ class NestedStaging implements PreparedNestedFiles {
       this.stagedIdentities = await inspectPreparedTree(this);
       return this;
     } catch (error) {
-      await this.handle?.close().catch(() => {
+      await this.#handle?.close().catch(() => {
         // Preserve preparation failure while private staging cleanup runs.
       });
       try {
@@ -153,8 +153,8 @@ class NestedStaging implements PreparedNestedFiles {
     const staging = await lstat(this.staging, { bigint: true });
     this.assertOwnedOrBlockCleanup(staging, this.staging);
     this.stagingStats = staging;
-    this.stagedDirectories.add(this.container);
-    this.stagedDirectories.add(this.staging);
+    this.#stagedDirectories.add(this.container);
+    this.#stagedDirectories.add(this.staging);
   }
 
   private assertOwnedOrBlockCleanup(stats: BigIntStats, path: string): void {
@@ -169,7 +169,7 @@ class NestedStaging implements PreparedNestedFiles {
   private rememberDirectory(directory: string): void {
     let current = directory;
     while (true) {
-      this.stagedDirectories.add(current);
+      this.#stagedDirectories.add(current);
       if (current === this.staging) {
         return;
       }
@@ -196,11 +196,11 @@ class NestedStaging implements PreparedNestedFiles {
       await prepareMoveReplacement(target, entry.move.snapshot, entry.bytes, signal);
       return;
     }
-    this.handle = await open(target, "wx", 0o666);
-    await this.handle.writeFile(entry.bytes, { signal });
-    await this.handle.sync();
-    await this.handle.close();
-    this.handle = undefined;
+    this.#handle = await open(target, "wx", 0o666);
+    await this.#handle.writeFile(entry.bytes, { signal });
+    await this.#handle.sync();
+    await this.#handle.close();
+    this.#handle = undefined;
   }
 
   async discard(): Promise<void> {

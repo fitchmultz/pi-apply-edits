@@ -1,6 +1,6 @@
 export class PublicationError extends Error {
-  readonly modifiedFiles: readonly string[];
-  readonly uncertainFiles: readonly string[];
+  readonly modifiedFiles: string[];
+  readonly uncertainFiles: string[];
 
   constructor(
     message: string,
