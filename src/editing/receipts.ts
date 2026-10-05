@@ -91,7 +91,7 @@ function receiptContent(
     ...counts,
   };
 }
-export function receiptForPlan(plan: PlannedMutation, preview: boolean): FileReceipt {
+function receiptForPlan(plan: PlannedMutation, preview: boolean): FileReceipt {
   const patch = boundedPatch(plan.displayPath, plan.originalText, plan.nextText);
   const counts =
     patch === undefined
@@ -124,7 +124,7 @@ function inputOperation(input: MutationInput): ApplyEditsDetails["operation"] {
   }
   return input.requireMissing === true ? "create" : "rewrite";
 }
-export function emptyReceipt(input: MutationInput, cwd: string): FileReceipt {
+function emptyReceipt(input: MutationInput, cwd: string): FileReceipt {
   return {
     path: resolveInputPath(input.path, cwd),
     operation: inputOperation(input),
@@ -152,7 +152,7 @@ function hasStringPath(value: unknown): boolean {
     typeof value === "object" && value !== null && "path" in value && typeof value.path === "string"
   );
 }
-function mutableDetails(details: ApplyEditsBatchDetails): MutableBatchDetails {
+export function mutableDetails(details: ApplyEditsBatchDetails): MutableBatchDetails {
   return {
     ...details,
     modifiedFiles: [...details.modifiedFiles],
@@ -184,7 +184,7 @@ export function failedExecution(
         };
   return { summary: message, details: mutableDetails(details) };
 }
-export function committedPaths(plan: PlannedMutation): string[] {
+function committedPaths(plan: PlannedMutation): string[] {
   if (plan.movePlan !== undefined) {
     return [plan.movePlan.entry.actualPath, plan.movePlan.destination.targetPath];
   }

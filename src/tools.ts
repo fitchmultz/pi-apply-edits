@@ -14,6 +14,7 @@ import {
 import { bindPatchPaths, parsePatch, PATCH_GRAMMAR } from "./patch.ts";
 import { editingResultRenderer } from "./tool-rendering.ts";
 import type { ReadonlyEditingExecution } from "./editing/contracts.ts";
+import { mutableDetails } from "./editing/receipts.ts";
 
 export const EDITING_TOOL_NAMES = [
   "apply_patch",
@@ -375,16 +376,7 @@ function toolResult(result: ReadonlyEditingExecution): {
     }
   }
   // The adapter consumes a read view and returns independently owned mutable SDK details.
-  const details: ApplyEditsBatchDetails = {
-    ...result.details,
-    modifiedFiles: [...result.details.modifiedFiles],
-    files: result.details.files.map((file) =>
-      Object.assign({}, file, {
-        warnings: [...file.warnings],
-        matches: file.matches.map((match) => Object.assign({}, match, { lines: [...match.lines] })),
-      }),
-    ),
-  };
+  const details = mutableDetails(result.details);
   const structuredContent: unknown = JSON.parse(JSON.stringify(details));
   if (!isJsonValue(structuredContent)) {
     throw new Error("Editing receipt is not JSON-compatible");

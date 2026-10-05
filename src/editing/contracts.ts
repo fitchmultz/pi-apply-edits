@@ -70,42 +70,26 @@ export interface EditingExecution {
 }
 
 /** Read contracts used inside the editing pipeline and SDK rendering boundaries. */
-export interface ReadonlyAppliedEditDetail {
-  readonly index: number;
-  readonly strategy: MatchStrategy;
-  readonly replacements: number;
+export type ReadonlyAppliedEditDetail = Readonly<Omit<AppliedEditDetail, "lines">> & {
   readonly lines: readonly number[];
-  readonly linesTruncated?: boolean;
-}
-export interface ReadonlyApplyEditsDetails {
-  readonly preview?: true;
-  readonly path: string;
-  readonly operation: ApplyEditsDetails["operation"];
-  readonly editsRequested: number;
-  readonly editsApplied: number;
+};
+export type ReadonlyApplyEditsDetails = Readonly<
+  Omit<ApplyEditsDetails, "matches" | "warnings">
+> & {
   readonly matches: readonly ReadonlyAppliedEditDetail[];
-  readonly bytesBefore: number;
-  readonly bytesAfter: number;
-  readonly addedLines?: number;
-  readonly deletedLines?: number;
-  readonly diff: string;
-  readonly diffTruncated: boolean;
   readonly warnings: readonly string[];
-}
-export interface ReadonlyFileReceipt extends ReadonlyApplyEditsDetails {
-  readonly status: FileStatus;
-  readonly moveTo?: string;
-}
-export interface ReadonlyApplyEditsBatchDetails {
-  readonly preview?: true;
+};
+export type ReadonlyFileReceipt = ReadonlyApplyEditsDetails &
+  Readonly<Pick<FileReceipt, "status" | "moveTo">>;
+export type ReadonlyApplyEditsBatchDetails = Readonly<
+  Omit<ApplyEditsBatchDetails, "modifiedFiles" | "files">
+> & {
   readonly modifiedFiles: readonly string[];
   readonly files: readonly ReadonlyFileReceipt[];
-  readonly error?: string;
-}
-export interface ReadonlyEditingExecution {
-  readonly summary: string;
+};
+export type ReadonlyEditingExecution = Readonly<Omit<EditingExecution, "details">> & {
   readonly details: ReadonlyApplyEditsBatchDetails;
-}
+};
 export interface ReplaceTextRequest {
   readonly files: readonly { readonly path: string; readonly edits: readonly TargetedEdit[] }[];
   readonly preview?: boolean;
@@ -169,9 +153,9 @@ export interface ExecutionOptions {
   readonly signal?: AbortSignal;
   readonly onProgress?: (summary: string) => void;
 }
-export function required<T>(value: T | undefined, label = "Internal editing invariant"): T {
+export function required<T>(value: T | undefined): T {
   if (value === undefined) {
-    throw new Error(label);
+    throw new Error("Internal editing invariant");
   }
   return value;
 }
