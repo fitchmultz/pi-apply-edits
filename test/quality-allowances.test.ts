@@ -215,6 +215,58 @@ test("readonly contracts retain mutable-container, mapped-wrapper and nested-val
   );
 });
 
+test("partial native collection views audit every exposed data channel", async () => {
+  const cases = [
+    ['Pick<ReadonlyMap<string, { value: number }>, "values">', true],
+    ['Pick<ReadonlyMap<{ value: number }, number>, "keys">', true],
+    ['Pick<ReadonlyMap<{ value: number }, number>, "entries">', true],
+    ['Pick<ReadonlyMap<string, { value: number }>, "forEach">', true],
+    ['Omit<ReadonlyMap<string, { value: number }>, "get">', true],
+    ['Pick<ReadonlyMap<string, { value: number }>, "get" | "values">', true],
+    ["Pick<ReadonlyMap<string, { value: number }>, typeof Symbol.iterator>", true],
+    ['Pick<ReadonlySet<{ value: number }>, "values">', true],
+    ['Pick<ReadonlySet<{ value: number }>, "entries">', true],
+    ['Pick<ReadonlySet<{ value: number }>, "union">', true],
+    ['Pick<ReadonlyMap<string, [number, number]>, "values">', true],
+    ['Pick<ReadonlyMap<{ value: number }, number>, "forEach">', true],
+    ['Pick<ReadonlyMap<string, { readonly value: number }>, "values">', false],
+    ['Pick<ReadonlyMap<{ readonly value: number }, number>, "keys">', false],
+    ['Pick<ReadonlyMap<string, number>, "entries">', false],
+    ["Pick<ReadonlyMap<string, number>, typeof Symbol.iterator>", false],
+    ['Pick<ReadonlyMap<string, number>, "forEach">', false],
+    ['Pick<ReadonlySet<{ readonly value: number }>, "values">', false],
+    ['Pick<ReadonlySet<number>, "entries" | "union">', false],
+    ['Pick<ReadonlyMap<string, { value: number }>, "size">', false],
+    ['Readonly<Pick<Map<string, number>, "get" | "has" | "size">>', false],
+  ] satisfies readonly (readonly [string, boolean])[];
+  await inProbe(
+    {
+      ".oxlintrc.json": focusedConfig(
+        {
+          "typescript/prefer-readonly-parameter-types": policyRule(
+            "typescript/prefer-readonly-parameter-types",
+          ),
+        },
+        true,
+      ),
+      "probe.ts":
+        '/// <reference lib="esnext.collection" />\n' +
+        cases
+          .map(
+            ([type], index) =>
+              `export function view${index}(input: ${type}): void { console.log(input); }`,
+          )
+          .join("\n"),
+    },
+    async (directory) => {
+      expectDiagnostics(
+        lint(directory, ["probe.ts"]),
+        cases.flatMap(([, mutable], index) => (mutable ? [[readonly, index + 2]] : [])),
+      );
+    },
+  );
+});
+
 test("plain generic callbacks pass while mutable attached state stays detectable", async () => {
   await inProbe(
     {
