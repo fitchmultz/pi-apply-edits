@@ -1,0 +1,11 @@
+# Policy and coverage changes require deliberate owner review.
+/.oxlintrc.json @fitchmultz
+/.oxfmtrc.json @fitchmultz
+/.gitignore @fitchmultz
+/tsconfig.json @fitchmultz
+/package.json @fitchmultz
+/package-lock.json @fitchmultz
+/scripts/ @fitchmultz
+/test/quality*.test.ts @fitchmultz
+/.github/ @fitchmultz
+/AGENTS.md @fitchmultz
