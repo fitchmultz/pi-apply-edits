@@ -4978,15 +4978,21 @@ test("staging quarantine ENOENT reports an uncertain location", async () => {
 test(
   "owner-rejected initial private directories never enter cleanup state",
   { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
-  async () => {
+  async (t) => {
     async function verifyRejectedOwner(
-      flow: "nested" | "replacement" | "direct-create",
+      flow: "nested" | "replacement" | "direct-create" | "entry-delete" | "content-move",
     ): Promise<void> {
       await inTemporaryDirectory(async (directory) => {
         const originalMkdir = nodeFs.promises.mkdir;
         const originalLstat = nodeFs.promises.lstat;
+        const patchFlow = flow === "entry-delete" || flow === "content-move";
+        const usesSource = flow === "replacement" || patchFlow;
         let privateDirectory = "";
         let spoofed = false;
+        let publishing = false;
+        if (usesSource) {
+          await writeFile(join(directory, "f.txt"), "old\n");
+        }
         await withRacingEditing(
           (mock) => {
             mock.method(
@@ -4998,6 +5004,7 @@ test(
                 const name = basename(filePath(path));
                 if (
                   privateDirectory.length === 0 &&
+                  (!patchFlow || publishing) &&
                   name.startsWith(".pi-apply-edits-") &&
                   name.endsWith(".tmpdir")
                 ) {
@@ -5033,38 +5040,77 @@ test(
             );
           },
           async (module) => {
-            if (flow === "replacement") {
-              await writeFile(join(directory, "f.txt"), "old\n");
-            }
             const pathByFlow = {
               nested: "missing/file",
               replacement: "f.txt",
               "direct-create": "new.txt",
+              "entry-delete": "f.txt",
+              "content-move": "f.txt",
             };
             const path = pathByFlow[flow];
-            await assertFailure(
-              module.writeFiles(
-                {
-                  files: [
-                    { path, content: "new\n", mode: flow === "replacement" ? "replace" : "create" },
-                  ],
-                },
-                directory,
-              ),
-              /owner changed.*left untouched/,
+            const patchBody =
+              flow === "entry-delete"
+                ? "*** Delete File: f.txt\n"
+                : "*** Update File: f.txt\n*** Move to: moved.txt\n-old\n+new\n";
+            const result = patchFlow
+              ? await module.applyPatchToFiles(
+                  `*** Begin Patch\n${patchBody}*** End Patch\n`,
+                  directory,
+                  false,
+                  undefined,
+                  (summary) => {
+                    // Move planning has its own private probes; reject only publication staging.
+                    if (summary.startsWith("Publishing ")) {
+                      publishing = true;
+                    }
+                  },
+                )
+              : await module.writeFiles(
+                  {
+                    files: [
+                      {
+                        path,
+                        content: "new\n",
+                        mode: flow === "replacement" ? "replace" : "create",
+                      },
+                    ],
+                  },
+                  directory,
+                );
+            assert.match(result.details.error ?? "", /owner changed.*left untouched/, flow);
+            assert.deepEqual(result.details.modifiedFiles, [], flow);
+            assert.deepEqual(
+              result.details.files.map((file) => file.status),
+              ["failed"],
               flow,
             );
           },
         );
 
         assert(spoofed, flow);
-        await lstat(privateDirectory);
+        assert.equal((await lstat(privateDirectory)).isDirectory(), true, flow);
+        const sourceContents = await Promise.all(
+          usesSource ? [readFile(join(directory, "f.txt"), "utf8")] : [],
+        );
+        assert.deepEqual(sourceContents, usesSource ? ["old\n"] : [], flow);
+        const expectedEntries = usesSource
+          ? [basename(privateDirectory), "f.txt"]
+          : [basename(privateDirectory)];
+        assert.deepEqual((await readdir(directory)).sort(), expectedEntries.sort(), flow);
       });
     }
-    for (const flow of ["nested", "replacement", "direct-create"] as const) {
+    for (const flow of [
+      "nested",
+      "replacement",
+      "direct-create",
+      "entry-delete",
+      "content-move",
+    ] as const) {
       // All flows replace process-wide syscall implementations; finish restoring each before the next flow.
       // oxlint-disable-next-line no-await-in-loop
-      await verifyRejectedOwner(flow);
+      await t.test(flow, async () => {
+        await verifyRejectedOwner(flow);
+      });
     }
   },
 );
@@ -6278,11 +6324,14 @@ test(
           );
         },
         async (module) => {
-          const files: WriteFilesRequest["files"] = Array.from({ length: 4 }, (_, index) => ({
-            path: `existing-${index}`,
-            content: "ab",
-            mode: "replace",
-          }));
+          const files: Array<WriteFilesRequest["files"][number]> = Array.from(
+            { length: 4 },
+            (_, index) => ({
+              path: `existing-${index}`,
+              content: "ab",
+              mode: "replace",
+            }),
+          );
           files.push({ path: "created", content: "secret\n", mode: "create" });
           const result = await module.writeFiles({ files }, directory);
           assert("files" in result.details);
