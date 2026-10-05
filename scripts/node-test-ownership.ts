@@ -80,6 +80,13 @@ function normalizeCatches(
         region.exits.length > 0 ||
         flow.returnSites.some((site) => site.offset >= region.start && site.offset <= region.end)
       );
+    }) ||
+    event.finalizers.some((start) => {
+      const region = flow.regions.find((candidate) => candidate.start === start);
+      return (
+        region === undefined ||
+        flow.returnSites.some((site) => site.offset >= region.start && site.offset <= region.end)
+      );
     });
   return { ...event, caught, conditional: event.conditional || caught };
 }

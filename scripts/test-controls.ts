@@ -20,6 +20,7 @@ export interface ControlView extends ExpressionView {
   readonly alternate?: ControlView | null;
   readonly block?: ControlView;
   readonly handler?: ControlView | null;
+  readonly finalizer?: ExpressionView | null;
   readonly cases?: readonly ControlView[];
   readonly expression?: ControlView | boolean;
   readonly elements?: readonly (ControlView | null)[];
@@ -32,6 +33,7 @@ export interface ControlFacts {
   readonly conditional: boolean;
   readonly caught: boolean;
   readonly catches: readonly number[];
+  readonly finalizers: readonly number[];
 }
 
 export function controlFacts(
@@ -42,6 +44,7 @@ export function controlFacts(
   const controls: ConditionalControl[] = [];
   let conditional = false;
   const catches: number[] = [];
+  const finalizers: number[] = [];
   for (const node of nodes) {
     const control = conditionalControl(node, source, range[0]);
     if (control !== undefined) {
@@ -61,8 +64,22 @@ export function controlFacts(
     if (swallowedByTry(node, range)) {
       catches.push(branchRange(node.handler?.body)?.[0] ?? -1);
     }
+    const finalizer = overridingFinalizer(node, range);
+    if (finalizer !== undefined) {
+      finalizers.push(finalizer);
+    }
   }
-  return { controls, conditional, caught: false, catches };
+  return { controls, conditional, caught: false, catches, finalizers };
+}
+
+function overridingFinalizer(
+  node: ControlView,
+  range: readonly [number, number],
+): number | undefined {
+  const finalizer = node.finalizer?.range;
+  return node.type === "TryStatement" && finalizer !== undefined && !contains(finalizer, range)
+    ? finalizer[0]
+    : undefined;
 }
 
 export function nonemptyLiteral(node: ControlView | undefined): boolean {
@@ -245,6 +262,7 @@ export function exhaustive(
   context: AssertionContext,
 ): boolean {
   return (
+    !event.caught &&
     event.controls.length > 0 &&
     event.controls.every(
       (control) =>

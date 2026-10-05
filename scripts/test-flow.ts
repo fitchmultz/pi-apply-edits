@@ -24,6 +24,7 @@ export interface CallEvent {
   readonly caught: boolean;
   readonly handlers: readonly number[];
   readonly catches: readonly number[];
+  readonly finalizers: readonly number[];
   readonly parallel?: number;
   readonly arguments: readonly string[];
   readonly controls: readonly ConditionalControl[];
@@ -45,7 +46,6 @@ export interface ReturnSite {
 }
 export interface FunctionFlow {
   readonly start: number;
-  readonly parent?: number;
   readonly segments: readonly FlowSegment[];
   readonly returns: readonly string[];
   readonly parameterCount: number;

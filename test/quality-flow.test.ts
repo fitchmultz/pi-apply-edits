@@ -5,6 +5,14 @@ const missing = "node-test(expect-assertions)";
 const conditional = "node-test(no-conditional-assertions)";
 const cases = [
   {
+    name: "finally return swallows rethrown assertion failure",
+    body: 'test("empty", () => { try { assert.equal(1, 2); } catch (error) { console.log(error); throw error; } finally { return; } });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
     name: "nonempty native literal entries iterator",
     body: 'test("table", () => { for (const [index, value] of [1, 1].entries()) { assert.equal(value, 1); assert.equal(index >= 0, true); } });',
     expected: [],
