@@ -5,6 +5,151 @@ const missing = "node-test(expect-assertions)";
 const conditional = "node-test(no-conditional-assertions)";
 const cases = [
   {
+    name: "nonempty native literal entries iterator",
+    body: 'test("table", () => { for (const [index, value] of [1, 1].entries()) { assert.equal(value, 1); assert.equal(index >= 0, true); } });',
+    expected: [],
+  },
+  {
+    name: "empty native literal entries iterator",
+    body: 'test("table", () => { for (const [index, value] of [].entries()) { assert.equal(value, 1); console.log(index); } });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "awaited nonempty native parallel assertions",
+    body: 'test("parallel", async () => { await Promise.all([1, 2].map(async (value) => { await Promise.resolve(); assert.equal(value > 0, true); })); });',
+    expected: [],
+  },
+  {
+    name: "empty native parallel assertions",
+    body: 'test("parallel", async () => { await Promise.all([].map(async (value) => { await Promise.resolve(); assert.equal(value, 1); })); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "unawaited parallel assertions cannot own parent",
+    body: 'test("parallel", () => { Promise.all([1].map(async (value) => { await Promise.resolve(); assert.equal(value, 1); })); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "swallowed parallel assertion failures",
+    body: 'test("parallel", async () => { await Promise.all([1].map(async (value) => { await Promise.resolve(); assert.equal(value, 1); })).catch((error: unknown) => { console.log(error); }); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "shadowed Promise cannot own callbacks",
+    body: 'const Promise = { all: async (_values: readonly unknown[]): Promise<void> => { console.log("not awaited"); } }; test("parallel", async () => { await Promise.all([1].map((value) => { assert.equal(value, 1); })); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "nonempty native parallel optional callback",
+    body: 'test("parallel", async () => { await Promise.all([1].map(async (value) => { await Promise.resolve(); if (process.env.MAYBE !== undefined) { assert.equal(value, 1); } })); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "success-only handler preserves assertion failures",
+    body: 'test("asserted", async () => { await assert.rejects(Promise.reject(new Error("expected"))).then(() => { console.log("success"); }); });',
+    expected: [],
+  },
+  {
+    name: "second handler swallows assertion failures",
+    body: 'test("empty", async () => { await assert.rejects(Promise.resolve()).then(undefined, (error: unknown) => { console.log(error); }); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "conditionally rethrowing handler still swallows",
+    body: 'test("empty", async () => { await assert.rejects(Promise.resolve()).catch((error: unknown) => { if (process.env.MAYBE !== undefined) { throw error; } }); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "destructured native child method alias",
+    body: 'test("parent", async (context) => { const { test: child } = context; await child("child", () => { assert.equal(1, 1); }); });',
+    expected: [],
+  },
+  {
+    name: "promise rejection handler swallows assertion failure",
+    body: 'test("empty", async () => { await assert.rejects(Promise.resolve()).catch((error: unknown) => { console.log(error); }); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "promise rejection handler fails closed",
+    body: 'test("asserted", async () => { await assert.rejects(Promise.reject(new Error("expected"))).catch((error: unknown) => { console.log(error); throw error; }); });',
+    expected: [],
+  },
+  {
+    name: "logged catch unconditionally rethrows",
+    body: 'test("asserted", () => { try { assert.equal(1, 1); } catch (error) { console.log(error); throw error; } });',
+    expected: [],
+  },
+  {
+    name: "nonlexical helper optional payload",
+    body: 'function verify(): void { assert.equal(1, 1); if (process.env.MAYBE !== undefined) { assert.equal(process.env.MAYBE, "expected"); } } test("helper", () => { verify(); });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "loose equality cannot prove strict guard",
+    body: 'import loose from "node:assert"; test("optional", () => { const value = process.env.VALUE ?? 1; loose.equal(value, 1); if (value === 1) { assert.equal(process.env.PAYLOAD, "expected"); } });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "strict equality proves strict guard",
+    body: 'import loose from "node:assert"; test("asserted", () => { const value = process.env.VALUE ?? 1; loose.strictEqual(value, 1); if (value === 1) { assert.equal(process.env.PAYLOAD, "expected"); } });',
+    expected: [],
+  },
+  {
+    name: "nonempty literal helper table",
+    body: 'function verify(value: number): void { assert.equal(value, 1); } test("table", () => { for (const value of [1, 1]) { verify(value); } });',
+    expected: [],
+  },
+  {
+    name: "empty literal helper table",
+    body: 'function verify(value: number): void { assert.equal(value, 1); } test("table", () => { for (const value of []) { verify(value); } });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "optional helper in nonempty table",
+    body: 'function verify(value: number): void { assert.equal(value, 1); } test("table", () => { for (const value of [1, 1]) { if (process.env.MAYBE !== undefined) { verify(value); } } });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "assertion-free native child",
+    body: 'test("parent", async (context) => { assert.equal(1, 1); await context.test("child", () => { console.log("empty"); }); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "awaited asserting native child owns parent assertions",
+    body: 'test("parent", async (context) => { await context.test("child", () => { assert.equal(1, 1); }); });',
+    expected: [],
+  },
+  {
+    name: "aliased native child method",
+    body: 'test("parent", async (context) => { const child = context.test; await child("child", () => { assert.equal(1, 1); }); });',
+    expected: [],
+  },
+  {
+    name: "destructured native context",
+    body: 'test("parent", async ({ test: child }) => { await child("child", () => { assert.equal(1, 1); }); });',
+    expected: [],
+  },
+  {
+    name: "awaited native child table",
+    body: 'test("parent", async (context) => { for (const value of [1, 1]) { await context.test("child", () => { assert.equal(value, 1); }); } });',
+    expected: [],
+  },
+  {
     name: "same-named foreign assertion helper",
     body: 'import { expectDiagnostics } from "./foreign.ts"; test("empty", () => { expectDiagnostics(); });',
     expected: [[missing, 3]],
@@ -161,6 +306,24 @@ for (const probe of cases) {
 
 const exceptionCases = [
   {
+    name: "exhaustive throwing assertions with nested callbacks",
+    body: 'function operation(reason: string): never { throw new Error(reason); } test("variants", () => { if (process.env.MODE === "left") {\n// Exhaustive variants validate each operation refusal through a native throwing assertion.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.throws(() => operation("left"), /left/);\n} else {\n// Exhaustive variants validate each operation refusal through a native throwing assertion.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.throws(() => operation("right"), /right/);\n} });',
+    expected: [],
+  },
+  {
+    name: "optional loop cannot hide behind exhaustive arms",
+    body: 'test("variants", () => { assert.equal(1, 1); for (const item of process.argv.slice(99)) { if (item === "x") {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(item, "x");\n} else {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(item, "y");\n} } });',
+    expected: [
+      ["node-test(valid-exceptions)", 6],
+      ["node-test(valid-exceptions)", 10],
+    ],
+  },
+  {
+    name: "nonempty table exhaustive arms",
+    body: 'test("variants", () => { for (const item of ["x", "y"]) { if (item === "x") {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(item, "x");\n} else {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(item, "y");\n} } });',
+    expected: [],
+  },
+  {
     name: "exhaustive switch variants",
     body: 'test("variants", () => { switch (process.env.MODE) { case "left":\n// Exhaustive variants validate this distinct payload before leaving its arm.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(1, 1); break;\ndefault:\n// Exhaustive variants validate the fallback payload before leaving its arm.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(2, 2); break;\n} });',
     expected: [],
@@ -185,6 +348,94 @@ const exceptionCases = [
   readonly body: string;
   readonly expected: readonly (readonly [string, number])[];
 }[];
+
+const originCases = [
+  {
+    path: "test/probe.test.ts",
+    imported: "./quality-probe-support.ts",
+    name: "expectDiagnostics",
+    invocation: "expectDiagnostics();",
+    expected: [],
+  },
+  {
+    path: "test/nested/probe.test.ts",
+    imported: "../quality-probe-support.ts",
+    name: "expectDiagnostics",
+    invocation: "expectDiagnostics();",
+    expected: [],
+  },
+  {
+    path: "test/nested/probe.test.ts",
+    imported: "./quality-probe-support.ts",
+    name: "expectDiagnostics",
+    invocation: "expectDiagnostics();",
+    expected: [[missing, 3, 1]],
+  },
+  {
+    path: "test/probe.test.ts",
+    imported: "./quality-probe-support.ts",
+    name: "inProbe",
+    invocation: "await inProbe({}, async () => { assert.equal(1, 1); });",
+    expected: [],
+  },
+  {
+    path: "test/nested/probe.test.ts",
+    imported: "./quality-probe-support.ts",
+    name: "inProbe",
+    invocation: "await inProbe({}, async () => { assert.equal(1, 1); });",
+    expected: [[missing, 3, 1]],
+  },
+  {
+    path: "test/probe.test.ts",
+    imported: "./racing.ts",
+    name: "withRacingEditing",
+    invocation: "await withRacingEditing(() => {}, async () => { assert.equal(1, 1); });",
+    expected: [],
+  },
+  {
+    path: "test/probe.test.ts",
+    imported: "./racing.ts",
+    name: "withRacingFileSystem",
+    invocation: "await withRacingFileSystem(() => {}, async () => { assert.equal(1, 1); });",
+    expected: [],
+  },
+  {
+    path: "test/nested/probe.test.ts",
+    imported: "./racing.ts",
+    name: "withRacingEditing",
+    invocation: "await withRacingEditing(() => {}, async () => { assert.equal(1, 1); });",
+    expected: [[missing, 3, 1]],
+  },
+] satisfies readonly {
+  readonly path: string;
+  readonly imported: string;
+  readonly name: string;
+  readonly invocation: string;
+  readonly expected: readonly (readonly [string, number, number?])[];
+}[];
+for (const [index, probe] of originCases.entries()) {
+  test(`configured declarations retain canonical origin isolation ${index}`, async () => {
+    const support =
+      'import assert from "node:assert/strict"; export function expectDiagnostics(): void { assert.equal(1, 1); } export async function inProbe(_files: unknown, run: () => Promise<void>): Promise<void> { await run(); }';
+    const foreign =
+      'export function expectDiagnostics(): void { console.log("no assertions"); } export async function inProbe(_files: unknown, _run: () => Promise<void>): Promise<void> { console.log("not invoked"); }';
+    const racing =
+      "export async function withRacingEditing(_patch: () => void, run: () => Promise<void>): Promise<void> { await run(); } export async function withRacingFileSystem(_patch: () => void, run: () => Promise<void>): Promise<void> { await run(); }";
+    await inProbe(
+      {
+        ".oxlintrc.json": frameworkConfig(),
+        "test/quality-probe-support.ts": support,
+        "test/nested/quality-probe-support.ts": foreign,
+        "test/racing.ts": racing,
+        "test/nested/racing.ts": racing.replaceAll("await run();", "console.log(run);"),
+        [probe.path]: `import test from "node:test";\nimport assert from "node:assert/strict";\nimport { ${probe.name} } from "${probe.imported}"; test("ownership", async () => { ${probe.invocation} });`,
+      },
+      async (directory) => {
+        expectDiagnostics(lint(directory, [probe.path]), probe.expected, probe.path);
+      },
+    );
+  });
+}
 
 for (const probe of exceptionCases) {
   test(`conditional exception proof: ${probe.name}`, async () => {

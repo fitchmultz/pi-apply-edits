@@ -21,11 +21,17 @@ export interface ControlView extends ExpressionView {
   readonly block?: ControlView;
   readonly handler?: ControlView | null;
   readonly cases?: readonly ControlView[];
+  readonly expression?: ControlView | boolean;
+  readonly elements?: readonly (ControlView | null)[];
+  readonly body?: ExpressionView | readonly ExpressionView[];
+  readonly callee?: ControlView;
+  readonly arguments?: readonly ControlView[];
 }
 export interface ControlFacts {
   readonly controls: readonly ConditionalControl[];
   readonly conditional: boolean;
   readonly caught: boolean;
+  readonly catches: readonly number[];
 }
 
 export function controlFacts(
@@ -35,13 +41,11 @@ export function controlFacts(
 ): ControlFacts {
   const controls: ConditionalControl[] = [];
   let conditional = false;
-  let caught = false;
+  const catches: number[] = [];
   for (const node of nodes) {
-    if (node.type === "IfStatement") {
-      controls.push(ifControl(node, source, range[0]));
-    }
-    if (node.type === "SwitchStatement") {
-      controls.push(switchControl(node));
+    const control = conditionalControl(node, source, range[0]);
+    if (control !== undefined) {
+      controls.push(control);
     }
     if (
       [
@@ -55,10 +59,66 @@ export function controlFacts(
       conditional = true;
     }
     if (swallowedByTry(node, range)) {
-      caught = true;
+      catches.push(branchRange(node.handler?.body)?.[0] ?? -1);
     }
   }
-  return { controls, conditional: conditional || caught, caught };
+  return { controls, conditional, caught: false, catches };
+}
+
+export function nonemptyLiteral(node: ControlView | undefined): boolean {
+  if (node === undefined) {
+    return false;
+  }
+  if (["TSAsExpression", "TSSatisfiesExpression"].includes(node.type)) {
+    return typeof node.expression !== "boolean" && nonemptyLiteral(node.expression);
+  }
+  if (nativeArrayIterator(node)) {
+    return nonemptyLiteral(node.callee?.object);
+  }
+  if (node.type !== "ArrayExpression" || node.elements === undefined) {
+    return false;
+  }
+  return node.elements.some((element) => element === null || element.type !== "SpreadElement");
+}
+
+function nativeArrayIterator(node: ControlView): boolean {
+  return (
+    node.type === "CallExpression" &&
+    node.callee?.type === "MemberExpression" &&
+    node.callee.computed !== true &&
+    ["entries", "values"].includes(node.callee.property?.name ?? "") &&
+    node.arguments?.length === 0
+  );
+}
+
+function conditionalControl(
+  node: ControlView,
+  source: string,
+  offset: number,
+): ConditionalControl | undefined {
+  if (node.type === "IfStatement") {
+    return ifControl(node, source, offset);
+  }
+  if (node.type === "SwitchStatement") {
+    return switchControl(node);
+  }
+  if (optionalBoundary(node)) {
+    return { parts: [], exhaustive: false };
+  }
+  return;
+}
+
+function optionalBoundary(node: ControlView): boolean {
+  if (node.type === "ForOfStatement") {
+    return !nonemptyLiteral(node.right);
+  }
+  return [
+    "ForStatement",
+    "ForInStatement",
+    "WhileStatement",
+    "ConditionalExpression",
+    "LogicalExpression",
+  ].includes(node.type);
 }
 
 function swallowedByTry(node: ControlView, range: readonly [number, number]): boolean {
@@ -163,10 +223,18 @@ function hardDiscriminator(
       ? prior.suffix.slice(prior.suffix.lastIndexOf(".") + 1)
       : prior.binding.name;
   return (
-    ["equal", "strictEqual"].includes(method) &&
+    strictEquality(prior, method) &&
     prior.arguments[0] === control.compared[0] &&
     prior.arguments[1] === control.compared[1] &&
     source.slice(prior.end, control.guard).trim() === ";"
+  );
+}
+
+function strictEquality(prior: CallEvent, method: string): boolean {
+  return (
+    method === "strictEqual" ||
+    (method === "equal" &&
+      (prior.binding.source === "node:assert/strict" || prior.suffix.startsWith(".strict.")))
   );
 }
 

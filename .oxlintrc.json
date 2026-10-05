@@ -364,10 +364,12 @@
           "error",
           {
             "assertFunctionNames": [
-              { "source": "./quality-probe-support.ts", "name": "expectDiagnostics" }
+              { "source": "./test/quality-probe-support.ts", "name": "expectDiagnostics" }
             ],
             "wrappers": [
-              { "source": "./quality-probe-support.ts", "name": "inProbe", "callback": 1 }
+              { "source": "./test/quality-probe-support.ts", "name": "inProbe", "callback": 1 },
+              { "source": "./test/racing.ts", "name": "withRacingFileSystem", "callback": 1 },
+              { "source": "./test/racing.ts", "name": "withRacingEditing", "callback": 1 }
             ]
           }
         ],
@@ -375,10 +377,12 @@
           "error",
           {
             "assertFunctionNames": [
-              { "source": "./quality-probe-support.ts", "name": "expectDiagnostics" }
+              { "source": "./test/quality-probe-support.ts", "name": "expectDiagnostics" }
             ],
             "wrappers": [
-              { "source": "./quality-probe-support.ts", "name": "inProbe", "callback": 1 }
+              { "source": "./test/quality-probe-support.ts", "name": "inProbe", "callback": 1 },
+              { "source": "./test/racing.ts", "name": "withRacingFileSystem", "callback": 1 },
+              { "source": "./test/racing.ts", "name": "withRacingEditing", "callback": 1 }
             ]
           }
         ],
@@ -386,10 +390,12 @@
           "error",
           {
             "assertFunctionNames": [
-              { "source": "./quality-probe-support.ts", "name": "expectDiagnostics" }
+              { "source": "./test/quality-probe-support.ts", "name": "expectDiagnostics" }
             ],
             "wrappers": [
-              { "source": "./quality-probe-support.ts", "name": "inProbe", "callback": 1 }
+              { "source": "./test/quality-probe-support.ts", "name": "inProbe", "callback": 1 },
+              { "source": "./test/racing.ts", "name": "withRacingFileSystem", "callback": 1 },
+              { "source": "./test/racing.ts", "name": "withRacingEditing", "callback": 1 }
             ]
           }
         ],

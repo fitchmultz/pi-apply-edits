@@ -1,11 +1,20 @@
-import type { Rule } from "eslint";
+import type { Rule, Scope } from "eslint";
+import { dirname } from "node:path";
+import { canonicalPath, normalizedFlow, ownedFunctions } from "./node-test-ownership.ts";
 import { calleeBinding, callbackTargets } from "./node-test-bindings.ts";
-import { controlFacts, failClosed, exhaustive } from "./test-controls.ts";
+import {
+  controlFacts,
+  failClosed,
+  exhaustive,
+  nonemptyLiteral,
+  type ControlView,
+} from "./test-controls.ts";
 import {
   flowSummaries,
   assertionCall,
   ownsAssertions,
   testCall,
+  subtestCall,
   type CallEvent,
   type FunctionFlow,
   type FlowSummary,
@@ -24,14 +33,15 @@ interface SegmentState {
 interface FrameState {
   readonly id: string;
   readonly start: number;
-  readonly parent?: number;
   readonly parameterCount: number;
   readonly function: boolean;
   readonly segments: Map<string, SegmentState>;
   readonly active: Set<string>;
   returns: string[];
+  throws: string[];
   readonly regions: Map<number, FlowRegion>;
   readonly returnSites: ReturnSite[];
+  readonly iterations: FlowRegion[];
 }
 
 /** Oxc owns scopes and code paths; this per-file collector owns only copied IDs and events. */
@@ -51,9 +61,15 @@ export class NodeTestCollector {
     wrappers: readonly TestWrapper[],
   ) {
     this.context = context;
-    this.helpers = helpers;
+    this.helpers = helpers.map((helper) => ({
+      ...helper,
+      source: canonicalPath(context.cwd, helper.source),
+    }));
     this.rule = rule;
-    this.wrappers = wrappers;
+    this.wrappers = wrappers.map((wrapper) => ({
+      ...wrapper,
+      source: canonicalPath(context.cwd, wrapper.source),
+    }));
   }
 
   listeners(): Rule.RuleListener {
@@ -68,8 +84,10 @@ export class NodeTestCollector {
       "IfStatement:exit": this.regionEnd,
       "SwitchCase:exit": this.regionEnd,
       "CallExpression:exit": this.regionEnd,
+      "ForOfStatement:exit": this.loopEnd,
       ReturnStatement: this.returnSite,
       BreakStatement: this.returnSite,
+      ContinueStatement: this.returnSite,
     };
   }
 
@@ -77,14 +95,15 @@ export class NodeTestCollector {
     const frame: FrameState = {
       id: path.id,
       start: node.range?.[0] ?? 0,
-      parent: this.stack.findLast((owner) => owner.function)?.start,
       parameterCount: "params" in node && Array.isArray(node.params) ? node.params.length : 0,
       function: path.origin === "function",
       segments: new Map(),
       active: new Set(),
       returns: [],
+      throws: [],
       regions: new Map(),
       returnSites: [],
+      iterations: [],
     };
     this.frames.push(frame);
     this.stack.push(frame);
@@ -96,6 +115,9 @@ export class NodeTestCollector {
       throw new Error("Oxc code-path ownership changed unexpectedly");
     }
     frame.returns = path.returnedSegments
+      .filter((segment) => segment.reachable)
+      .map((segment) => segment.id);
+    frame.throws = path.thrownSegments
       .filter((segment) => segment.reachable)
       .map((segment) => segment.id);
     // Oxc completes loop back-edges after segment-start notifications.
@@ -147,20 +169,36 @@ export class NodeTestCollector {
     if (node.range === undefined) {
       return;
     }
-    const frame = this.stack.at(-1);
-    frame?.regions.set(node.range[0], {
+    this.stack.at(-1)?.regions.set(node.range[0], {
       start: node.range[0],
       end: node.range[1],
-      exits: [...frame.active],
+      exits: [...(this.stack.at(-1)?.active ?? [])],
     });
   };
 
   private readonly returnSite = (node: { readonly range?: readonly [number, number] }): void => {
-    if (node.range === undefined) {
+    if (node.range !== undefined) {
+      this.stack.at(-1)?.returnSites.push({
+        offset: node.range[0],
+        segments: [...(this.stack.at(-1)?.active ?? [])],
+      });
+    }
+  };
+
+  private readonly loopEnd = (node: ControlView): void => {
+    const frame = this.stack.at(-1);
+    const body = node.body !== undefined && "type" in node.body ? node.body.range : undefined;
+    if (frame === undefined || body === undefined || !nonemptyLiteral(node.right)) {
       return;
     }
-    const frame = this.stack.at(-1);
-    frame?.returnSites.push({ offset: node.range[0], segments: [...frame.active] });
+    const region = frame.regions.get(body[0]);
+    if (region !== undefined) {
+      frame.iterations.push({
+        ...region,
+        exits: regionExits(region, frame.returnSites),
+        after: [...frame.active],
+      });
+    }
   };
 
   private readonly call: NonNullable<Rule.RuleListener["CallExpression"]> = (node) => {
@@ -169,34 +207,38 @@ export class NodeTestCollector {
       return;
     }
     const scope = this.context.sourceCode.getScope(node);
-    const { binding, suffix } = calleeBinding(scope, node.callee);
+    const resolved = calleeBinding(scope, node.callee);
+    const binding =
+      resolved.binding.source?.startsWith(".") === true
+        ? {
+            ...resolved.binding,
+            source: canonicalPath(dirname(this.context.filename), resolved.binding.source),
+          }
+        : resolved.binding;
     const callbacks = callbackTargets(scope, node.arguments);
     const ancestors = this.context.sourceCode.getAncestors(node);
-    const boundary = ancestors.findLastIndex(
-      (ancestor) =>
-        ancestor.type === "FunctionExpression" ||
-        ancestor.type === "FunctionDeclaration" ||
-        ancestor.type === "ArrowFunctionExpression",
+    const boundary = ancestors.findLastIndex((ancestor) =>
+      ["FunctionExpression", "FunctionDeclaration", "ArrowFunctionExpression"].includes(
+        ancestor.type,
+      ),
     );
-    const facts = controlFacts(
-      ancestors.slice(boundary + 1),
-      this.context.sourceCode.text,
-      node.range,
-    );
+    const local = ancestors.slice(boundary + 1);
     const event: CallEvent = {
       offset: node.range[0],
       end: node.range[1],
       line: node.loc?.start.line ?? 1,
       binding,
-      suffix,
+      suffix: resolved.suffix,
       callbacks,
-      ...facts,
+      ...controlFacts(local, this.context.sourceCode.text, node.range),
+      handlers: rejectionHandlers(scope, local),
+      parallel: parallelTarget(scope, node, resolved, local),
       arguments: node.arguments.map((argument) => this.context.sourceCode.getText(argument)),
     };
     for (const id of frame.active) {
       frame.segments.get(id)?.events.push(event);
     }
-    if (testCall(binding, suffix)) {
+    if (testCall(binding, resolved.suffix)) {
       this.registrations.push({
         offset: event.offset,
         line: event.line,
@@ -206,17 +248,20 @@ export class NodeTestCollector {
   };
 
   private readonly report: NonNullable<Rule.RuleListener["Program:exit"]> = () => {
-    const flows: FunctionFlow[] = this.frames
+    const raw: FunctionFlow[] = this.frames
       .filter((frame) => frame.function)
       .map((frame) => ({
         start: frame.start,
-        parent: frame.parent,
         parameterCount: frame.parameterCount,
         segments: [...frame.segments.values()],
         returns: frame.returns,
         regions: [...frame.regions.values()],
         returnSites: frame.returnSites,
+        throws: frame.throws,
+        iterations: frame.iterations,
       }));
+    const flows = raw.map((flow) => normalizedFlow(flow, raw));
+    this.registerSubtests(flows);
     const summaries = flowSummaries(flows, this.registrations, this.helpers, this.wrappers);
     const contexts = new Set(
       this.registrations.flatMap((registration) =>
@@ -226,6 +271,35 @@ export class NodeTestCollector {
     this.checkPassingPaths(summaries);
     this.checkConditionalAssertions(flows, summaries, contexts);
   };
+
+  private registerSubtests(flows: readonly FunctionFlow[]): void {
+    const contexts = new Set(
+      this.registrations.flatMap((entry) => (entry.target === undefined ? [] : [entry.target])),
+    );
+    const events = new Map(
+      flows
+        .flatMap((flow) => flow.segments.flatMap((segment) => segment.events))
+        .map((event) => [event.offset, event]),
+    );
+    for (let pass = 0; pass <= flows.length; pass += 1) {
+      for (const event of events.values()) {
+        if (
+          subtestCall(event, contexts) &&
+          !this.registrations.some((entry) => entry.offset === event.offset)
+        ) {
+          this.registerChild(event).forEach((target) => {
+            contexts.add(target);
+          });
+        }
+      }
+    }
+  }
+
+  private registerChild(event: CallEvent): readonly number[] {
+    const target = [...event.callbacks.values()].at(-1);
+    this.registrations.push({ offset: event.offset, line: event.line, target });
+    return target === undefined ? [] : [target];
+  }
 
   private checkPassingPaths(summaries: ReadonlyMap<number, FlowSummary>): void {
     if (this.rule !== "node-test/expect-assertions") {
@@ -268,8 +342,13 @@ export class NodeTestCollector {
     ) {
       return;
     }
+    const owned = ownedFunctions(flows, contexts, summaries, {
+      tests: contexts,
+      wrappers: this.wrappers,
+      helpers: this.helpers,
+    });
     for (const flow of flows) {
-      if (!belongsToTest(flow.start, flows, contexts)) {
+      if (!owned.has(flow.start)) {
         continue;
       }
       const events = new Map(
@@ -288,16 +367,13 @@ export class NodeTestCollector {
     contexts: ReadonlySet<number>,
   ): void {
     const proven = failClosed(event, flow, this.context.sourceCode.text, this.helpers);
+    const context = { tests: contexts, helpers: this.helpers, wrappers: this.wrappers };
+    const bearing = assertionCall(event, this.helpers) || ownsAssertions(event, summaries, context);
+    if (!event.conditional || !bearing || proven) {
+      return;
+    }
     if (this.rule === "node-test/valid-exceptions") {
-      if (
-        this.hasDirective(event.line) &&
-        !proven &&
-        !exhaustive(event, flow, summaries, {
-          tests: contexts,
-          helpers: this.helpers,
-          wrappers: this.wrappers,
-        })
-      ) {
+      if (this.hasDirective(event.line) && !exhaustive(event, flow, summaries, context)) {
         this.context.report({
           loc: { line: event.line, column: 0 },
           message:
@@ -306,17 +382,7 @@ export class NodeTestCollector {
       }
       return;
     }
-    if (
-      event.conditional &&
-      !proven &&
-      (assertionCall(event, this.helpers) ||
-        ownsAssertions(event, summaries, {
-          tests: contexts,
-          helpers: this.helpers,
-          wrappers: this.wrappers,
-        })) &&
-      event.suffix !== ".skip"
-    ) {
+    if (event.suffix !== ".skip") {
       this.context.report({
         loc: { line: event.line, column: 0 },
         message: "Conditional assertions require exhaustive variant or fail-closed proof",
@@ -325,17 +391,75 @@ export class NodeTestCollector {
   }
 }
 
-function belongsToTest(
-  start: number,
-  flows: readonly FunctionFlow[],
-  contexts: ReadonlySet<number>,
-): boolean {
-  let owner: number | undefined = start;
-  while (owner !== undefined) {
-    if (contexts.has(owner)) {
-      return true;
-    }
-    owner = flows.find((flow) => flow.start === owner)?.parent;
+interface PromiseCallView extends ControlView {
+  readonly callee?: ControlView;
+  readonly arguments?: readonly ControlView[];
+}
+
+function parallelTarget(
+  scope: Scope.Scope,
+  node: PromiseCallView,
+  resolved: { readonly binding: { readonly kind: string }; readonly suffix: string },
+  ancestors: readonly ControlView[],
+): number | undefined {
+  if (resolved.binding.kind !== "native" || resolved.suffix !== ".all") {
+    return;
   }
-  return false;
+  const parent = ancestors.at(-1);
+  if (parent === undefined || !["AwaitExpression", "ReturnStatement"].includes(parent.type)) {
+    return;
+  }
+  const input = node.arguments?.[0];
+  if (input?.type !== "CallExpression") {
+    return;
+  }
+  return mappedTarget(scope, input);
+}
+
+function mappedTarget(scope: Scope.Scope, map: PromiseCallView): number | undefined {
+  if (map.callee?.type !== "MemberExpression" || map.callee.property?.name !== "map") {
+    return;
+  }
+  if (!nonemptyLiteral(map.callee.object)) {
+    return;
+  }
+  return callbackTargets(scope, map.arguments ?? []).get(0);
+}
+
+function rejectionHandlers(
+  scope: Scope.Scope,
+  nodes: readonly PromiseCallView[],
+): readonly number[] {
+  return nodes.flatMap((node) => {
+    if (node.type !== "CallExpression" || node.callee?.type !== "MemberExpression") {
+      return [];
+    }
+    const method = calleeBinding(scope, node.callee).suffix;
+    const index = rejectionIndex(method);
+    const handler = node.arguments?.[index];
+    if (index < 0 || handler === undefined || absentHandler(handler)) {
+      return [];
+    }
+    return [callbackTargets(scope, node.arguments ?? []).get(index) ?? -1];
+  });
+}
+
+function rejectionIndex(method: string): number {
+  if (method.endsWith(".catch")) {
+    return 0;
+  }
+  return method.endsWith(".then") ? 1 : -1;
+}
+
+function absentHandler(handler: ControlView): boolean {
+  return handler.value === null || handler.name === "undefined";
+}
+
+function regionExits(region: FlowRegion, sites: readonly ReturnSite[]): readonly string[] {
+  return [
+    ...region.exits,
+    ...sites
+      .filter((site) => site.offset >= region.start && site.offset <= region.end)
+      .flatMap((site) => site.segments),
+  ];
 }

@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { checkSuppressions } from "../scripts/suppression-policy.ts";
 import { checkLanguageScope } from "../scripts/language-policy.ts";
-import { effectiveConfig, expectDiagnostics, inProbe, lint } from "./quality-probe-support.ts";
+import {
+  effectiveConfig,
+  expectDiagnostics,
+  focusedConfig,
+  inProbe,
+  lint,
+  policyRule,
+} from "./quality-probe-support.ts";
 
 const directives = [
   {
@@ -122,6 +129,14 @@ test("language inventory fails closed on new unassigned source without reducing 
 
 const readonlySuppressionCases = [
   {
+    code: "export function invoke<T>(callback: () => T): T { return callback(); } export type Bad = (state: { value: number }) => void;",
+    count: 1,
+  },
+  {
+    code: "export function invoke<T>(callback: () => T): (state: { value: number }) => T {\n  return (state) => { console.log(state.value); return callback(); };\n}",
+    count: 1,
+  },
+  {
     code: "export function invoke<T>(callback: () => T): T { function unsafe(input: { value: number }): void { console.log(input); } unsafe({ value: 0 }); return callback(); }",
     count: 1,
   },
@@ -170,6 +185,38 @@ test("language classification recognizes only effective leading pragmas and inhe
     1,
   );
 });
+
+const signatureSites = [
+  { code: "export function invoke<T>(callback: () => T): T { return callback(); }", findings: 0 },
+  {
+    code: "export function invoke<T>(callback: () => T): (state: { value: number }) => T {\n  return (state) => { console.log(state.value); return callback(); };\n}",
+    findings: 1,
+  },
+  {
+    code: "export function invoke<T>(callback: () => T): T { return callback(); } export type Bad = (state: { value: number }) => void;",
+    findings: 1,
+  },
+] satisfies readonly { readonly code: string; readonly findings: number }[];
+for (const [index, probe] of signatureSites.entries()) {
+  test(`installed readonly directive cannot hide signature inputs ${index}`, async () => {
+    const source = `// This generic callback result needs its isolated readonly checker exception.\n// oxlint-disable-next-line typescript/prefer-readonly-parameter-types\n${probe.code}`;
+    assert.equal(checkSuppressions("src/probe.ts", source).length, probe.findings);
+    await inProbe(
+      {
+        ".oxlintrc.json": focusedConfig({
+          "typescript/prefer-readonly-parameter-types": policyRule(
+            "typescript/prefer-readonly-parameter-types",
+          ),
+        }),
+        "src/probe.ts": source,
+      },
+      async (directory) => {
+        // The native line directive hides all sites; the independent policy must reject unsafe signatures.
+        expectDiagnostics(lint(directory, ["src/probe.ts"]), [], "src/probe.ts");
+      },
+    );
+  });
+}
 
 const assertionCases = [
   {

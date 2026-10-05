@@ -1,10 +1,11 @@
 export interface CallBinding {
-  readonly kind: "import" | "function" | "parameter" | "unknown";
+  readonly kind: "import" | "function" | "parameter" | "unknown" | "native";
   readonly name: string;
   readonly source?: string;
   readonly target?: number;
   readonly parameter?: number;
   readonly owner?: number;
+  readonly member?: string;
 }
 export interface ConditionalControl {
   readonly parts: readonly number[];
@@ -21,6 +22,9 @@ export interface CallEvent {
   readonly callbacks: ReadonlyMap<number, number>;
   readonly conditional: boolean;
   readonly caught: boolean;
+  readonly handlers: readonly number[];
+  readonly catches: readonly number[];
+  readonly parallel?: number;
   readonly arguments: readonly string[];
   readonly controls: readonly ConditionalControl[];
 }
@@ -33,6 +37,7 @@ export interface FlowRegion {
   readonly start: number;
   readonly end: number;
   readonly exits: readonly string[];
+  readonly after?: readonly string[];
 }
 export interface ReturnSite {
   readonly offset: number;
@@ -46,6 +51,8 @@ export interface FunctionFlow {
   readonly parameterCount: number;
   readonly regions: readonly FlowRegion[];
   readonly returnSites: readonly ReturnSite[];
+  readonly throws: readonly string[];
+  readonly iterations: readonly FlowRegion[];
 }
 export interface Registration {
   readonly offset: number;
@@ -106,7 +113,7 @@ export function assertionCall(event: CallEvent, helpers: readonly AssertionHelpe
   if (event.binding.name !== "default" && event.binding.name !== "*") {
     return methods.has(event.binding.name) && event.suffix.length === 0;
   }
-  const member = event.suffix.replace(/^\.strict/u, "").replace(/^\./u, "");
+  const member = event.suffix.replace(/^\.strict(?=\.|$)/u, "").replace(/^\./u, "");
   return member.length === 0 || methods.has(member);
 }
 
@@ -119,6 +126,16 @@ export function testCall(binding: CallBinding, suffix: string): boolean {
   }
   return (
     ["default", "test", "it"].includes(binding.name) && /^(?:\.(?:only|skip|todo))?$/u.test(suffix)
+  );
+}
+
+export function subtestCall(event: CallEvent, contexts: ReadonlySet<number>): boolean {
+  return (
+    event.binding.kind === "parameter" &&
+    event.binding.parameter === 0 &&
+    event.binding.owner !== undefined &&
+    contexts.has(event.binding.owner) &&
+    event.suffix === ".test"
   );
 }
 
@@ -164,9 +181,23 @@ export function proves(flow: FunctionFlow, satisfies: (event: CallEvent) => bool
   }
   // Must-analysis uses the greatest fixed point so loop back-edges cannot erase an entry guarantee.
   const guaranteed = new Map(flow.segments.map((segment) => [segment.id, true]));
+  const iterations = flow.iterations.filter((region) =>
+    proves(
+      {
+        ...flow,
+        returns: region.exits,
+        iterations: flow.iterations.filter(
+          (nested) => nested.start > region.start && nested.end < region.end,
+        ),
+      },
+      (event) => event.offset >= region.start && event.end <= region.end && satisfies(event),
+    ),
+  );
   for (let pass = 0; pass <= flow.segments.length; pass += 1) {
     for (const segment of flow.segments) {
-      const direct = segment.events.some(satisfies);
+      const direct =
+        segment.events.some(satisfies) ||
+        iterations.some((region) => region.after?.includes(segment.id) === true);
       const inherited =
         segment.previous.length > 0 && segment.previous.every((id) => guaranteed.get(id) === true);
       guaranteed.set(segment.id, direct || inherited);
@@ -207,6 +238,12 @@ export function ownsAssertions(
 ): boolean {
   if (directAssertions(event, context)) {
     return true;
+  }
+  if (subtestCall(event, context.tests) && !event.caught) {
+    return [...event.callbacks.values()].some((target) => summaries.get(target)?.asserts === true);
+  }
+  if (event.parallel !== undefined && !event.caught) {
+    return summaries.get(event.parallel)?.asserts === true;
   }
   return delegatedAssertions(event, summaries, context.wrappers);
 }

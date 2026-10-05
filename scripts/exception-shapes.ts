@@ -52,6 +52,12 @@ export function plainGenericCallback(path: string, source: string, offset: numbe
     FunctionDeclaration: inspect,
     FunctionExpression: inspect,
     ArrowFunctionExpression: inspect,
+    TSDeclareFunction: inspect,
+    TSFunctionType: inspect,
+    TSConstructorType: inspect,
+    TSCallSignatureDeclaration: inspect,
+    TSConstructSignatureDeclaration: inspect,
+    TSMethodSignature: inspect,
   }).visit(parseSync(path, source).program);
   return validSites.length === 1 && parametersOnSite.length === 1;
 }
