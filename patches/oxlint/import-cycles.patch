@@ -37,7 +37,7 @@ index 000000000..cca5338a6
 @@ -0,0 +1 @@
 +{"name":"native-cycle","type":"module","exports":"./index.ts"}
 diff --git a/crates/oxc_linter/src/module_record.rs b/crates/oxc_linter/src/module_record.rs
-index 685a7be02..52d17cdfa 100644
+index 685a7be02..5034a7bdf 100644
 --- a/crates/oxc_linter/src/module_record.rs
 +++ b/crates/oxc_linter/src/module_record.rs
 @@ -8,8 +8,9 @@ use std::{
@@ -86,7 +86,7 @@ index 685a7be02..52d17cdfa 100644
 +        let mut requests: FxHashMap<CompactStr, Vec<RequestedModule>> = FxHashMap::default();
 +        for node in semantic.nodes().iter() {
 +            let AstKind::ImportExpression(import) = node.kind() else { continue };
-+            let value = match &import.source {
++            let value = match import.source.get_inner_expression() {
 +                Expression::StringLiteral(literal) => Some(literal.value.as_str()),
 +                Expression::TemplateLiteral(literal) if literal.expressions.is_empty() => {
 +                    literal.quasis.first().and_then(|quasi| quasi.value.cooked.as_deref())
@@ -110,7 +110,7 @@ index 685a7be02..52d17cdfa 100644
          &self,
      ) -> &FxHashMap<PathBuf, Vec<CompactStr>> {
 diff --git a/crates/oxc_linter/src/rules/import/no_cycle.rs b/crates/oxc_linter/src/rules/import/no_cycle.rs
-index 49c1a0f56..03b050583 100644
+index 49c1a0f56..769ad9fca 100644
 --- a/crates/oxc_linter/src/rules/import/no_cycle.rs
 +++ b/crates/oxc_linter/src/rules/import/no_cycle.rs
 @@ -167,7 +167,13 @@ impl Rule for NoCycle {
@@ -232,7 +232,7 @@ index 49c1a0f56..03b050583 100644
      }
  }
 
-@@ -521,6 +535,71 @@ fn test() {
+@@ -521,6 +535,91 @@ fn test() {
          .test_and_snapshot();
  }
 
@@ -241,7 +241,7 @@ index 49c1a0f56..03b050583 100644
 +    use crate::tester::Tester;
 +    use serde_json::json;
 +
-+    let pass = vec![
++    let mut pass = vec![
 +        (r#"import("./b.ts");"#, Some(json!([{"allowUnsafeDynamicCyclicDependency":true}]))),
 +        (r#"import type { T } from "./b.ts";"#, Some(json!([{"ignoreTypes":true}]))),
 +        (r#"import { type T } from "./b.ts";"#, Some(json!([{"ignoreTypes":true}]))),
@@ -253,7 +253,7 @@ index 49c1a0f56..03b050583 100644
 +        (r#"const path = "./b.ts"; import(path);"#, None),
 +        (r#"export const value = 1; export * as ns from "./a.ts";"#, None),
 +    ];
-+    let fail = vec![
++    let mut fail = vec![
 +        (r#"import("./b.ts");"#, None),
 +        (r#"import("./\u0062.ts");"#, None),
 +        (r#"import(`./b.ts`);"#, None),
@@ -278,6 +278,26 @@ index 49c1a0f56..03b050583 100644
 +        (r#"import "native-cycle";"#, Some(json!([{"ignoreExternal":false}]))),
 +        (r#"export const value = 1; export * as ns from "./a.ts"; import("./a.ts");"#, None),
 +    ];
++
++    for source in [
++        r#"import(("./b.ts"));"#,
++        r#"import((`./b.ts`));"#,
++        r#"import("./b.ts" as const);"#,
++        r#"import(<string>"./b.ts");"#,
++        r#"import("./b.ts"!);"#,
++        r#"import("./b.ts" satisfies string);"#,
++        r#"import((("./b.ts" as const)! satisfies string));"#,
++    ] {
++        fail.push((source, None));
++        pass.push((source, Some(json!([{"allowUnsafeDynamicCyclicDependency":true}]))));
++    }
++    for source in [
++        r#"const path = "./b.ts"; import((path as string)!);"#,
++        r#"const path = "b"; import((`./${path}.ts` satisfies string));"#,
++    ] {
++        pass.push((source, None));
++        pass.push((source, Some(json!([{"allowUnsafeDynamicCyclicDependency":true}]))));
++    }
 +
 +    Tester::new(NoCycle::NAME, NoCycle::PLUGIN, pass, fail)
 +        .change_rule_path("cycles/native-imports/a.ts")

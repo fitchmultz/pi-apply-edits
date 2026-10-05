@@ -438,6 +438,40 @@ for (const external of [false, true]) {
 }
 
 for (const allowUnsafeDynamicCyclicDependency of [false, true]) {
+  for (const [name, source, resolvable] of [
+    ["parenthesized string", '("./other.ts")', true],
+    ["parenthesized template", "((`./other.ts`))", true],
+    ["as const", '"./other.ts" as const', true],
+    ["type assertion", '<string>"./other.ts"', true],
+    ["non-null", '"./other.ts"!', true],
+    ["satisfies", '"./other.ts" satisfies string', true],
+    ["nested wrappers", '(("./other.ts" as const)! satisfies string)', true],
+    ["wrapped runtime identifier", "(path as string)!", false],
+    ["wrapped interpolated template", "(`${path}` satisfies string)", false],
+  ] as const) {
+    test(`installed import/no-cycle ${name}, unsafe=${allowUnsafeDynamicCyclicDependency}`, async () => {
+      await inProbe(
+        {
+          ".oxlintrc.json": focusedConfig({
+            "import/no-cycle": allowUnsafeDynamicCyclicDependency
+              ? [
+                  "error",
+                  { ignoreTypes: false, ignoreExternal: false, allowUnsafeDynamicCyclicDependency },
+                ]
+              : policyRule("import/no-cycle"),
+          }),
+          "probe.ts": `export const load = () => import(\n  ${source}\n);\nconst path = "./other.ts";`,
+          "other.ts": 'import "./probe.ts";',
+        },
+        async (directory) => {
+          expectDiagnostics(
+            lint(directory, ["probe.ts"]),
+            resolvable && !allowUnsafeDynamicCyclicDependency ? [["import(no-cycle)", 2, 3]] : [],
+          );
+        },
+      );
+    });
+  }
   test(`installed import/no-cycle dynamic option ${allowUnsafeDynamicCyclicDependency}`, async () => {
     await inProbe(
       {

@@ -13,6 +13,8 @@ The upstream rule did not collect dynamic imports and unconditionally excluded
 
 - collects decoded string literals and expression-free template literals in a
   separate dynamic-request map, without changing static ESM import/export entries;
+- unwraps parentheses and erased TypeScript expression wrappers with Oxc's
+  `Expression::get_inner_expression()`, retaining the original source span;
 - resolves static and literal-dynamic requests with the existing native resolver;
 - traverses eligible occurrences for `import/no-cycle`, honors `ignoreTypes` and
   `ignoreExternal`, and reports the eligible occurrence's source span;
@@ -84,7 +86,10 @@ Its `-modcacherw` flag only permits cleanup of downloaded modules in isolated ho
 Retire the patch only after an upstream version passes the installed native matrix:
 static/type cycles, mixed occurrences of the same specifier, pure/transitive dynamic
 cycles with both unsafe-dynamic settings, decoded literals/templates, self imports
-and named self-reexports, physical external packages with both external settings,
-and bounded depth. Also verify unchanged duplicate-import, empty-export and barrel
-rules, type-aware Go diagnostics, JavaScript plugin diagnostics, and editor/LSP
-publication. Schema acceptance alone does not establish these semantics.
+and named self-reexports, transparent parentheses/TypeScript wrappers (including
+`as`, angle-bracket assertions, non-null assertions, `satisfies`, and nested forms),
+wrapped runtime-computed negative controls, physical external packages with both
+external settings, and bounded depth. Also verify unchanged duplicate-import,
+empty-export and barrel rules, type-aware Go diagnostics, JavaScript plugin
+diagnostics, and editor/LSP publication. Schema acceptance alone does not establish
+these semantics.
