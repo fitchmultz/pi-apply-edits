@@ -1,11 +1,28 @@
 import test from "node:test";
 import {
   expectDiagnostics,
+  effectiveConfig,
   focusedConfig,
   inProbe,
   lint,
   policyRule,
 } from "./quality-probe-support.ts";
+
+test("installed Node checks protect unchecked CommonJS export ownership", async () => {
+  await inProbe(
+    {
+      ".oxlintrc.json": effectiveConfig(),
+      "probe.cjs": "exports = { value: 1 }; console.log(exports);",
+    },
+    async (directory) => {
+      expectDiagnostics(
+        lint(directory, ["probe.cjs"]),
+        [["node(no-exports-assign)", 1]],
+        "probe.cjs",
+      );
+    },
+  );
+});
 
 interface RuleProbe {
   readonly rule: string;
