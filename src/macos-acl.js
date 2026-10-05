@@ -27,7 +27,7 @@ function readAcl(path) {
   }
   // NULL/ENOENT means no extended ACL, including on non-ACL volumes.
   if (readError === 2) {
-    return undefined;
+    return;
   }
   throw new Error("Read ACL: " + $.strerror(readError));
 }
