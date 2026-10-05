@@ -236,7 +236,7 @@ const assertionCases = [
     expected: [],
   },
   {
-    body: 'test("hard-discriminator", () => { const result = { type: "message", content: "ok" }; assert.equal(result.type, "message"); if (result.type === "message") { assert.equal(result.content, "ok"); } });',
+    body: 'test("hard-discriminator", () => { const result = { type: "message", content: "ok" }; const type = result.type; assert.equal(type, "message"); if (type === "message") { assert.equal(result.content, "ok"); } });',
     expected: [["typescript(no-unnecessary-condition)", 3]],
   },
   {

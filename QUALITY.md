@@ -8,6 +8,11 @@ behavioral tests, package qualification, and review are separate gates.
 Use the declared npm version, Node 24.15 or newer for development, Git, Go
 1.26 or newer, and Rust 1.99.0. CI pins Go 1.27.1 and Rust 1.99.0. Go and Rust
 build the corrected **development checkers**, not the production extension.
+Install Rust's `llvm-tools` component as CI does to support native debug stripping:
+
+```sh
+rustup component add llvm-tools --toolchain 1.99.0
+```
 
 ```sh
 npm ci
@@ -94,6 +99,12 @@ caller, while internal read views and lifecycle owners stay explicit.
 - Meaningful positional `undefined`, documented no-ops, fail-closed variant
   assertions, and intentional control validation have only their demonstrated
   narrow handling. No blanket disables, `@ts-ignore`, or `@ts-nocheck` are allowed.
+- Automatic fail-closed discriminator proof compares saved values immediately
+  after a strict native assertion. Snapshot calls or property reads first:
+  repeated calls and getters can produce different values, and assertion
+  argument evaluation must not mutate the discriminator. This conservative
+  proof does not classify every plain data property as unsafe; it avoids
+  claiming effect analysis that the assertion checker does not perform.
 - Comment-aware policy distinguishes real directives from strings and isolated
   checker fixtures. Unused disables fail. Negative compiler suppressions belong
   only in described dedicated type tests.

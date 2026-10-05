@@ -194,12 +194,20 @@ function comparison(
 }
 
 function comparedValues(test: ControlView, source: string): readonly [string, string] | undefined {
+  if (!stableOperand(test.left) || !stableOperand(test.right)) {
+    return;
+  }
   const left = test.left?.range;
   const right = test.right?.range;
   if (left === undefined || right === undefined) {
     return;
   }
   return [source.slice(left[0], left[1]), source.slice(right[0], right[1])];
+}
+
+// ponytail: calls and accessors need saved-value snapshots; richer proof requires effect analysis.
+export function stableOperand(node: ExpressionView | undefined): boolean {
+  return node !== undefined && ["Identifier", "Literal", "ThisExpression"].includes(node.type);
 }
 
 export function failClosed(
@@ -229,6 +237,7 @@ function hardDiscriminator(
 ): boolean {
   if (
     prior.caught ||
+    !prior.stableArguments ||
     !assertionCall(prior, helpers) ||
     control.compared === undefined ||
     control.guard === undefined

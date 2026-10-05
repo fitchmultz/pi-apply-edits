@@ -5,6 +5,26 @@ const missing = "node-test(expect-assertions)";
 const conditional = "node-test(no-conditional-assertions)";
 const cases = [
   {
+    name: "repeated calls do not prove a stable discriminator",
+    body: 'let reads = 0; function next(): number { return ++reads; } test("optional", () => { assert.equal(next(), 1); if (next() === 1) { assert.fail("payload was skipped"); } });',
+    expected: [["node-test(no-conditional-assertions)", 3]],
+  },
+  {
+    name: "accessors do not prove a stable discriminator",
+    body: 'let reads = 0; const value = { get kind(): number { return ++reads; } }; test("optional", () => { assert.equal(value.kind, 1); if (value.kind === 1) { assert.fail("payload was skipped"); } });',
+    expected: [["node-test(no-conditional-assertions)", 3]],
+  },
+  {
+    name: "assertion arguments cannot mutate a proven discriminator",
+    body: 'let value = 1; function message(): string { value = 2; return "discriminator"; } test("optional", () => { assert.equal(value, 1, message()); if (value === 1) { assert.fail("payload was skipped"); } });',
+    expected: [["node-test(no-conditional-assertions)", 3]],
+  },
+  {
+    name: "captured values retain fail-closed discriminator proof",
+    body: 'let reads = 0; function next(): number { return ++reads; } test("asserted", () => { const value = next(); assert.equal(value, 1); if (value === 1) { assert.equal(reads, 1); } });',
+    expected: [],
+  },
+  {
     name: "finally return swallows rethrown assertion failure",
     body: 'test("empty", () => { try { assert.equal(1, 2); } catch (error) { console.log(error); throw error; } finally { return; } });',
     expected: [

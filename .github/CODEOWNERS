@@ -8,5 +8,7 @@
 /scripts/ @fitchmultz
 /patches/ @fitchmultz
 /test/quality*.test.ts @fitchmultz
+/test/quality-probe-support.ts @fitchmultz
+/test/racing.ts @fitchmultz
 /.github/ @fitchmultz
 /AGENTS.md @fitchmultz

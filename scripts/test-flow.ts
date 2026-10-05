@@ -27,6 +27,7 @@ export interface CallEvent {
   readonly finalizers: readonly number[];
   readonly parallel?: number;
   readonly arguments: readonly string[];
+  readonly stableArguments: boolean;
   readonly controls: readonly ConditionalControl[];
 }
 export interface FlowSegment {

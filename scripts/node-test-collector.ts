@@ -7,6 +7,7 @@ import {
   failClosed,
   exhaustive,
   nonemptyLiteral,
+  stableOperand,
   type ControlView,
 } from "./test-controls.ts";
 import {
@@ -234,6 +235,7 @@ export class NodeTestCollector {
       handlers: rejectionHandlers(scope, local),
       parallel: parallelTarget(scope, node, resolved, local),
       arguments: node.arguments.map((argument) => this.context.sourceCode.getText(argument)),
+      stableArguments: node.arguments.every(stableOperand),
     };
     for (const id of frame.active) {
       frame.segments.get(id)?.events.push(event);
