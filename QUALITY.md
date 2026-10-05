@@ -23,6 +23,8 @@ checker correction reproducibly; lint also prepares it. Do not bypass this
 step in editors. The workspace's Oxc extension uses the project-installed
 Oxlint/Oxfmt and enables type-aware linting. Disable competing formatters for
 these file types. A production-only install does not build the checker.
+The verified native build cache lives outside the repository under
+`~/.cache/pi-apply-edits/tsgolint`; see [checker provenance and correction](patches/tsgolint/README.md).
 
 `check:compat` composes suppression/scope policy, strict lint, formatting,
 canonical `tsc --noEmit`, the Node test suite (including installed-CLI quality
