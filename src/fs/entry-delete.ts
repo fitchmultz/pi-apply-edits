@@ -51,6 +51,7 @@ class EntryDeletion {
         `${errorMessage(error)}${this.started ? ` The removed entry may remain at ${this.retained}.` : ""}`,
         this.verified ? [this.entry.actualPath] : [],
         this.started && !this.verified ? [this.entry.actualPath] : [],
+        error,
       );
     }
     await this.cleanup(failure);
@@ -112,6 +113,7 @@ class EntryDeletion {
           `${failure.message} ${message}`,
           failure.modifiedFiles,
           failure.uncertainFiles,
+          failure,
         );
       }
       this.warnings.push(message);

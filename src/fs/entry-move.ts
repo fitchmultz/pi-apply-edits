@@ -377,8 +377,6 @@ class ReplacementMove {
   }
 
   async run(): Promise<string[]> {
-    let failure: unknown;
-    let failed = false;
     try {
       throwIfAborted(this.signal);
       await assertSafeToReplace(this.replacement.snapshot, this.signal);
@@ -405,20 +403,14 @@ class ReplacementMove {
         )),
       );
     } catch (error) {
-      failure = error;
-      failed = true;
+      await this.cleanup(error);
+      throw error;
     }
-    await this.cleanup(failure);
-    if (failed) {
-      if (failure instanceof Error) {
-        throw failure;
-      }
-      throw new Error(errorMessage(failure), { cause: failure });
-    }
+    await this.cleanup();
     return this.warnings;
   }
 
-  private async cleanup(failure: unknown): Promise<void> {
+  private async cleanup(failure?: unknown): Promise<void> {
     if (!this.directoryStats) {
       return;
     }
@@ -435,6 +427,7 @@ class ReplacementMove {
           `${errorMessage(failure)} ${message}`,
           outcome?.modifiedFiles,
           outcome?.uncertainFiles,
+          failure,
         );
       }
       this.warnings.push(message);

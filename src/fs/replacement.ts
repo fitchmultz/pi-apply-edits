@@ -112,16 +112,17 @@ class ReplacementPublication {
     }
     await this.cleanupPrivateFiles(failure);
     if (failed) {
-      throw this.receipt(errorMessage(failure));
+      throw this.receipt(errorMessage(failure), failure);
     }
     return this.warnings;
   }
 
-  private receipt(message: string): PublicationError {
+  private receipt(message: string, cause?: unknown): PublicationError {
     return new PublicationError(
       message,
       this.replacementVerified ? [this.snapshot.actualPath] : [],
       this.replacementPublished && !this.replacementVerified ? [this.snapshot.actualPath] : [],
+      cause,
     );
   }
 
@@ -360,6 +361,7 @@ class ReplacementPublication {
     if (failures.length > 0) {
       throw this.receipt(
         `${failure === undefined ? "" : `${errorMessage(failure)} `}Cleanup was incomplete: ${failures.join("; ")}`,
+        failure,
       );
     }
   }

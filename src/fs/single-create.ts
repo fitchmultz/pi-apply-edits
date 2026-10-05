@@ -98,16 +98,17 @@ class SingleCreation {
     }
     await this.cleanupUncommitted(failure);
     if (failed) {
-      throw this.receipt(errorMessage(failure));
+      throw this.receipt(errorMessage(failure), failure);
     }
     return this.warnings;
   }
 
-  private receipt(message: string): PublicationError {
+  private receipt(message: string, cause?: unknown): PublicationError {
     return new PublicationError(
       message,
       this.publicationVerified ? [this.plan.targetPath] : [],
       this.publicationStarted && !this.publicationVerified ? [this.plan.targetPath] : [],
+      cause,
     );
   }
 
@@ -345,6 +346,7 @@ class SingleCreation {
     if (failures.length > 0) {
       throw this.receipt(
         `${failure === undefined ? "Create failed. " : `${errorMessage(failure)} `}Cleanup was incomplete: ${failures.join("; ")}`,
+        failure,
       );
     }
   }
