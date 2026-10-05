@@ -10,10 +10,10 @@ import {
   MAX_BATCH_FILES,
   MAX_EDITS_PER_FILE,
   type ApplyEditsBatchDetails,
-  type EditingExecution,
 } from "./apply-edits.ts";
 import { bindPatchPaths, parsePatch, PATCH_GRAMMAR } from "./patch.ts";
 import { editingResultRenderer } from "./tool-rendering.ts";
+import type { ReadonlyEditingExecution } from "./editing/contracts.ts";
 
 export const EDITING_TOOL_NAMES = [
   "apply_patch",
@@ -350,7 +350,7 @@ function structuredCallLabel(args: {
     .join(", ")}${files.length > 3 ? `, … ${files.length - 3} more` : ""}`;
 }
 
-function toolResult(result: Readonly<EditingExecution>): {
+function toolResult(result: ReadonlyEditingExecution): {
   content: { type: "text"; text: string }[];
   details: ApplyEditsBatchDetails;
   structuredContent: JsonValue;
@@ -374,13 +374,24 @@ function toolResult(result: Readonly<EditingExecution>): {
       });
     }
   }
-  const structuredContent: unknown = JSON.parse(JSON.stringify(result.details));
+  // The adapter consumes a read view and returns independently owned mutable SDK details.
+  const details: ApplyEditsBatchDetails = {
+    ...result.details,
+    modifiedFiles: [...result.details.modifiedFiles],
+    files: result.details.files.map((file) =>
+      Object.assign({}, file, {
+        warnings: [...file.warnings],
+        matches: file.matches.map((match) => Object.assign({}, match, { lines: [...match.lines] })),
+      }),
+    ),
+  };
+  const structuredContent: unknown = JSON.parse(JSON.stringify(details));
   if (!isJsonValue(structuredContent)) {
     throw new Error("Editing receipt is not JSON-compatible");
   }
   return {
     content,
-    details: result.details,
+    details,
     structuredContent,
     isError: result.details.error !== undefined,
   };
