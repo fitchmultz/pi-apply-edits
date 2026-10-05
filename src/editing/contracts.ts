@@ -32,19 +32,58 @@ export interface ApplyEditsInput {
   readonly preserveFormatting?: boolean;
 }
 export interface AppliedEditDetail {
+  index: number;
+  strategy: MatchStrategy;
+  replacements: number;
+  lines: number[];
+  linesTruncated?: boolean;
+}
+export interface ApplyEditsDetails {
+  preview?: true;
+  path: string;
+  operation: "edit" | "rewrite" | "create" | "patch" | "delete" | "move" | "no_change";
+  editsRequested: number;
+  editsApplied: number;
+  matches: AppliedEditDetail[];
+  bytesBefore: number;
+  bytesAfter: number;
+  addedLines?: number;
+  deletedLines?: number;
+  diff: string;
+  diffTruncated: boolean;
+  warnings: string[];
+}
+export type FileStatus = "applied" | "unchanged" | "failed" | "unattempted" | "uncertain";
+export interface FileReceipt extends ApplyEditsDetails {
+  status: FileStatus;
+  moveTo?: string;
+}
+export interface ApplyEditsBatchDetails {
+  preview?: true;
+  modifiedFiles: string[];
+  files: FileReceipt[];
+  error?: string;
+}
+export interface EditingExecution {
+  summary: string;
+  details: ApplyEditsBatchDetails;
+}
+
+/** Read contracts used inside the editing pipeline and SDK rendering boundaries. */
+export interface ReadonlyAppliedEditDetail {
   readonly index: number;
   readonly strategy: MatchStrategy;
   readonly replacements: number;
   readonly lines: readonly number[];
   readonly linesTruncated?: boolean;
 }
-export interface ApplyEditsDetails {
+export interface ReadonlyApplyEditsDetails {
   readonly preview?: true;
   readonly path: string;
-  readonly operation: "edit" | "rewrite" | "create" | "patch" | "delete" | "move" | "no_change";
+  readonly operation: ApplyEditsDetails["operation"];
   readonly editsRequested: number;
   readonly editsApplied: number;
-  readonly matches: readonly AppliedEditDetail[];
+  readonly matches: readonly ReadonlyAppliedEditDetail[];
   readonly bytesBefore: number;
   readonly bytesAfter: number;
   readonly addedLines?: number;
@@ -53,20 +92,19 @@ export interface ApplyEditsDetails {
   readonly diffTruncated: boolean;
   readonly warnings: readonly string[];
 }
-export type FileStatus = "applied" | "unchanged" | "failed" | "unattempted" | "uncertain";
-export interface FileReceipt extends ApplyEditsDetails {
+export interface ReadonlyFileReceipt extends ReadonlyApplyEditsDetails {
   readonly status: FileStatus;
   readonly moveTo?: string;
 }
-export interface ApplyEditsBatchDetails {
+export interface ReadonlyApplyEditsBatchDetails {
   readonly preview?: true;
   readonly modifiedFiles: readonly string[];
-  readonly files: readonly FileReceipt[];
+  readonly files: readonly ReadonlyFileReceipt[];
   readonly error?: string;
 }
-export interface EditingExecution {
+export interface ReadonlyEditingExecution {
   readonly summary: string;
-  readonly details: ApplyEditsBatchDetails;
+  readonly details: ReadonlyApplyEditsBatchDetails;
 }
 export interface ReplaceTextRequest {
   readonly files: readonly { readonly path: string; readonly edits: readonly TargetedEdit[] }[];
@@ -92,7 +130,7 @@ export interface PlannedMutation {
   readonly nextBytes: Buffer;
   readonly originalText: string;
   readonly nextText: string;
-  readonly matches: readonly AppliedEditDetail[];
+  readonly matches: readonly ReadonlyAppliedEditDetail[];
   readonly operation: ApplyEditsDetails["operation"];
   readonly editsRequested: number;
   readonly needsWrite: boolean;
@@ -102,8 +140,8 @@ export interface PlannedMutation {
   readonly movePlan?: EntryMovePlan;
 }
 export interface TextEditResult {
-  readonly text: string;
-  readonly matches: readonly AppliedEditDetail[];
+  text: string;
+  matches: AppliedEditDetail[];
 }
 export interface Replacement {
   readonly start: number;

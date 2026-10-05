@@ -6,9 +6,10 @@ import { resolveInputPath } from "./queue.ts";
 import {
   errorMessage,
   required,
-  type ApplyEditsDetails,
-  type ApplyEditsBatchDetails,
-  type FileReceipt,
+  type ReadonlyApplyEditsDetails as ApplyEditsDetails,
+  type ReadonlyApplyEditsBatchDetails as ApplyEditsBatchDetails,
+  type ApplyEditsBatchDetails as MutableBatchDetails,
+  type ReadonlyFileReceipt as FileReceipt,
   type FileStatus,
   type EditingExecution,
   type MutationInput,
@@ -151,6 +152,17 @@ function hasStringPath(value: unknown): boolean {
     typeof value === "object" && value !== null && "path" in value && typeof value.path === "string"
   );
 }
+function mutableDetails(details: ApplyEditsBatchDetails): MutableBatchDetails {
+  return {
+    ...details,
+    modifiedFiles: [...details.modifiedFiles],
+    files: details.files.map((file) => ({
+      ...file,
+      warnings: [...file.warnings],
+      matches: file.matches.map((match) => ({ ...match, lines: [...match.lines] })),
+    })),
+  };
+}
 export function failedExecution(
   error: unknown,
   preview: boolean,
@@ -170,7 +182,7 @@ export function failedExecution(
           ...(preview ? { preview: true } : {}),
           error: message,
         };
-  return { summary: message, details };
+  return { summary: message, details: mutableDetails(details) };
 }
 export function committedPaths(plan: PlannedMutation): string[] {
   if (plan.movePlan !== undefined) {
@@ -260,12 +272,12 @@ export function describeBatch(details: ApplyEditsBatchDetails, cwd: string): Edi
   if (changed.length === 0) {
     return {
       summary: `No change: ${details.files.length} file${details.files.length === 1 ? "" : "s"} already match.${preview ? " No files written (preview)." : ""}`,
-      details,
+      details: mutableDetails(details),
     };
   }
   return {
     summary: `${changedDescription(changed, preview)}${correctionSummary(displayFiles)}.${preview ? " No files written." : ""}${warningSummary(details.files)}`,
-    details,
+    details: mutableDetails(details),
   };
 }
 
