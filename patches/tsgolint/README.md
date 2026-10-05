@@ -29,7 +29,9 @@ remain fatal when the development checker is installed.
 Preparation follows canonical upstream initialization: fetch the immutable
 revision, verify the submodule revision, apply upstream TypeScript patches, copy
 its generated collections, and apply local patches. The build uses
-`-mod=readonly -buildvcs=false -trimpath -ldflags='-s -w'` and `CGO_ENABLED=0`.
+`-mod=readonly -modcacherw -buildvcs=false -trimpath -ldflags='-s -w'` and
+`CGO_ENABLED=0`. Writable cache directories let isolated qualification homes be
+removed normally; dependency manifests and checksums remain readonly inputs.
 
 A cache under `~/.cache/pi-apply-edits/tsgolint/` is keyed by both source revisions,
 patch SHA-256 digests, platform, architecture and Go version. The executable's
@@ -73,7 +75,14 @@ values are checked through instantiated signatures. Mutable `Map`/`Set` mutators
 remain mutable even behind mapped `Readonly` wrappers. A readonly mapped view
 containing only native `get`, `has`, and `size` capabilities is accepted when its
 exposed keys and values are recursively readonly; iterator/callback views of
-mutable collections remain conservatively rejected. Additional application
+mutable collections remain conservatively rejected. Partial `ReadonlyMap` and
+`ReadonlySet` views audit each actual exposure independently: iterators, entry
+pairs, callbacks (including their collection receiver), and set-algebra results
+cannot hide mutable stored data by omitting `get` or `has`. Fresh iterator entry
+pairs may be mutable, but their stored keys and values must be recursively
+readonly; a stored mutable tuple still fails. Size-only views expose no stored
+data. Unknown future native exposure channels are conservatively rejected until
+their instantiated signatures have an explicit analysis. Additional application
 properties are checked normally; same-named local/package types do not receive
 native handling. Intersections are checked constituent by constituent **before**
 any native allowance, so `Theme & { counter: number }` fails while the readonly

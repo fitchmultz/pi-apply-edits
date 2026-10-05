@@ -5,9 +5,9 @@ behavioral tests, package qualification, and review are separate gates.
 
 ## Development and acceptance
 
-Use the declared npm version, Node 24.15 or newer for development, Git, and Go
-1.26 or newer. CI pins Go 1.27.1. Go is needed only to build the corrected
-**development checker**, not to run or install the extension in production.
+Use the declared npm version, Node 24.15 or newer for development, Git, Go
+1.26 or newer, and Rust 1.99.0. CI pins Go 1.27.1 and Rust 1.99.0. Go and Rust
+build the corrected **development checkers**, not the production extension.
 
 ```sh
 npm ci
@@ -19,14 +19,23 @@ npm run check:compat
 
 With lifecycle scripts intentionally disabled, run `npm run quality:prepare`
 after `npm ci --ignore-scripts`. Preparation builds and installs the pinned
-checker correction reproducibly; lint also prepares it. Do not bypass this
+checker corrections reproducibly; lint also prepares them. Do not bypass this
 step in editors. The workspace's Oxc extension uses the project-installed
 Oxlint/Oxfmt and enables type-aware linting. Disable competing formatters for
 these file types. Oxc supplies editor lint diagnostics; the TypeScript language
 service supplies compiler diagnostics. The canonical typecheck remains an
 independent acceptance gate. A production-only install does not build the checker.
-The verified native build cache lives outside the repository under
-`~/.cache/pi-apply-edits/tsgolint`; see [checker provenance and correction](patches/tsgolint/README.md).
+The verified native build caches live outside the repository under
+`~/.cache/pi-apply-edits/`; see the [type-aware checker correction](patches/tsgolint/README.md)
+and [native import-graph correction](patches/oxlint/README.md).
+
+Isolated host qualification uses a private `HOME`. Put the physical Rust
+toolchain's `bin` directory on `PATH` before invoking the qualifier, rather than
+passing rustup shims that depend on the original home:
+
+```sh
+export PATH="$(rustc --print sysroot)/bin:$PATH"
+```
 
 `check:compat` composes suppression/scope policy, strict lint, formatting,
 canonical `tsc --noEmit`, the Node test suite (including installed-CLI quality

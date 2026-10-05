@@ -6,6 +6,7 @@
 /package.json @fitchmultz
 /package-lock.json @fitchmultz
 /scripts/ @fitchmultz
+/patches/ @fitchmultz
 /test/quality*.test.ts @fitchmultz
 /.github/ @fitchmultz
 /AGENTS.md @fitchmultz
