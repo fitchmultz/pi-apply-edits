@@ -108,7 +108,7 @@
         "ignoreIIFE": false,
         "ignoreVoid": false,
         "allowForKnownSafeCalls": [
-          { "from": "package", "package": "@types/node", "name": ["test", "it", "describe"] }
+          { "from": "package", "package": "@types/node", "name": ["test", "suite"] }
         ],
         "allowForKnownSafePromises": []
       }
@@ -180,7 +180,8 @@
               "WritableStreamDefaultWriter",
               "WritableStreamDefaultController",
               "TransformStream",
-              "TransformStreamDefaultController"
+              "TransformStreamDefaultController",
+              "RegExp"
             ]
           },
           {
@@ -197,7 +198,8 @@
               "MakeDirectoryOptions",
               "ObjectEncodingOptions",
               "RmOptions",
-              "RmDirOptions"
+              "RmDirOptions",
+              "URL"
             ]
           },
           {
@@ -211,11 +213,13 @@
               "ExtensionUIContext",
               "AgentSession",
               "ModelRuntime",
-              "Theme"
+              "Theme",
+              "SessionManager"
             ]
           },
           { "from": "package", "package": "@earendil-works/pi-ai", "name": ["Tool"] },
-          { "from": "package", "package": "typebox", "name": ["TSchema"] }
+          { "from": "package", "package": "typebox", "name": ["TSchema"] },
+          { "from": "package", "package": "@types/eslint", "name": ["RuleContext", "Scope"] }
         ]
       }
     ],
@@ -356,10 +360,38 @@
         "**/*.test-d.ts"
       ],
       "rules": {
-        "node-test/expect-assertions": ["error", { "assertFunctionNames": ["expectDiagnostics"] }],
+        "node-test/expect-assertions": [
+          "error",
+          {
+            "assertFunctionNames": [
+              { "source": "./quality-probe-support.ts", "name": "expectDiagnostics" }
+            ],
+            "wrappers": [
+              { "source": "./quality-probe-support.ts", "name": "inProbe", "callback": 1 }
+            ]
+          }
+        ],
+        "node-test/valid-exceptions": [
+          "error",
+          {
+            "assertFunctionNames": [
+              { "source": "./quality-probe-support.ts", "name": "expectDiagnostics" }
+            ],
+            "wrappers": [
+              { "source": "./quality-probe-support.ts", "name": "inProbe", "callback": 1 }
+            ]
+          }
+        ],
         "node-test/no-conditional-assertions": [
           "error",
-          { "assertFunctionNames": ["expectDiagnostics"] }
+          {
+            "assertFunctionNames": [
+              { "source": "./quality-probe-support.ts", "name": "expectDiagnostics" }
+            ],
+            "wrappers": [
+              { "source": "./quality-probe-support.ts", "name": "inProbe", "callback": 1 }
+            ]
+          }
         ],
         "typescript/no-unnecessary-condition": [
           "error",

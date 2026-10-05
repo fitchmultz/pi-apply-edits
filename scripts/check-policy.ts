@@ -1,11 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { checkSuppressions } from "./suppression-policy.ts";
 import { checkLanguageScope } from "./language-policy.ts";
 import { compilerProjects } from "./compiler-projects.ts";
-import { resolve } from "node:path";
 
-const help = `Usage: node scripts/check-policy.ts [--help]\n\nAudit tracked maintained source for approved suppressions and node:test assertions.\nExample: npm run policy:check\nExits 1 for violations; 0 when the policy is satisfied.\n`;
+const help = `Usage: node scripts/check-policy.ts [--help]\n\nAudit maintained source for approved suppressions and effective compiler/language scope.\nExample: npm run policy:check\nExits 1 for violations; 0 when the policy is satisfied.\n`;
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   process.stdout.write(help);
 } else {
@@ -20,7 +19,7 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
   const sourceFiles = files.filter((path) => /\.[cm]?[jt]sx?$/u.test(path));
   const findings = sourceFiles.flatMap((path) => {
     const source = readFileSync(path, "utf8");
-    const membership = projects.filter((project) => project.files.has(resolve(path)));
+    const membership = projects.filter((project) => project.files.has(realpathSync(path)));
     return [
       ...checkSuppressions(path, source),
       ...checkLanguageScope(path, source, {

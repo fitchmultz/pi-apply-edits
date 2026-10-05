@@ -1,7 +1,19 @@
 import { parseSync } from "oxc-parser";
 import type { PolicyFinding } from "./suppression-policy.ts";
 
-/** New JavaScript must be intentionally assigned, never silently dropped from semantic coverage. */
+/** Only leading single-line pragmas affect TypeScript's JavaScript checking status. */
+export function leadingCheck(path: string, source: string): boolean {
+  const parsed = parseSync(path, source);
+  const first = parsed.program.body[0]?.start ?? source.length;
+  const pragma = parsed.comments.findLast(
+    (comment) =>
+      comment.type === "Line" &&
+      comment.end <= first &&
+      /^\s*@ts-(?:check|nocheck)\b/u.test(comment.value),
+  );
+  return pragma !== undefined && /^\s*@ts-check\b/u.test(pragma.value);
+}
+
 export function checkLanguageScope(
   path: string,
   source: string,
@@ -21,9 +33,7 @@ export function checkLanguageScope(
   if (!/\.[cm]?jsx?$/u.test(path)) {
     return [];
   }
-  const checked = parseSync(path, source).comments.some((comment) =>
-    /^\s*@ts-check\b/u.test(comment.value),
-  );
+  const checked = leadingCheck(path, source) || project.checkJs;
   if (path === "src/macos-acl.js") {
     return checked
       ? [
@@ -31,12 +41,12 @@ export function checkLanguageScope(
             path,
             line: 1,
             message:
-              "JXA is explicitly unchecked; remove its semantic-rule override before opting it into checking",
+              "JXA became checked; remove its semantic-rule override before opting it into checking",
           },
         ]
       : [];
   }
-  if (checked || project.checkJs) {
+  if (checked) {
     return project.assigned
       ? []
       : [{ path, line: 1, message: "Checked JavaScript must belong to a compiler project" }];

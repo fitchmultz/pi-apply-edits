@@ -1,4 +1,5 @@
 import { parseSync } from "oxc-parser";
+import { plainGenericCallback, conditionalExceptionShape } from "./exception-shapes.ts";
 
 export interface PolicyFinding {
   readonly path: string;
@@ -24,7 +25,13 @@ export function checkSuppressions(path: string, source: string): readonly Policy
   }
   for (const comment of parsed.comments) {
     const line = source.slice(0, comment.start).split("\n").length;
-    const message = suppressionError(path, comment.value.trim(), source, comment.start);
+    const directives = comment.value
+      .split("\n")
+      .map((value) => value.trim().replace(/^\*\s*/u, ""))
+      .filter((value) => /^(?:@ts-|oxlint-|eslint-)/u.test(value));
+    const message = directives
+      .map((directive) => suppressionError(path, directive, source, comment.start))
+      .find((error) => error !== undefined);
     if (message !== undefined) {
       findings.push({ path, line, message });
     }
@@ -81,13 +88,28 @@ function lintSuppressionError(
   if (preceding === undefined) {
     return "An adjacent, specific explanation must precede each exception";
   }
-  const nextLine = source.slice(source.indexOf("\n", offset) + 1).split("\n")[0] ?? "";
-  if (directive[1] === "node-test/no-conditional-assertions") {
-    return /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(path)
+  return exceptionError(directive[1], preceding, { path, source, offset });
+}
+
+function exceptionError(
+  rule: string,
+  preceding: string,
+  site: { readonly path: string; readonly source: string; readonly offset: number },
+): string | undefined {
+  const { path, source, offset } = site;
+  if (rule === "node-test/no-conditional-assertions") {
+    return /exhaustive|variant|fail-closed|discriminator/iu.test(preceding) &&
+      conditionalExceptionShape(path, source, offset)
       ? undefined
-      : "Exhaustive conditional assertion exceptions are test-only";
+      : "Conditional assertion exceptions require an exhaustive variant or fail-closed scope, not an optional branch";
   }
-  return semanticExplanationError(directive[1], preceding, nextLine);
+  if (
+    rule === "typescript/prefer-readonly-parameter-types" &&
+    !plainGenericCallback(path, source, offset)
+  ) {
+    return "Readonly exceptions are limited to a plain zero-argument generic-result callable at one parameter site";
+  }
+  return semanticExplanationError(rule, preceding);
 }
 
 function explanationBefore(source: string, offset: number): string | undefined {
@@ -98,17 +120,7 @@ function explanationBefore(source: string, offset: number): string | undefined {
   return;
 }
 
-function semanticExplanationError(
-  rule: string,
-  preceding: string,
-  nextLine: string,
-): string | undefined {
-  if (
-    rule === "typescript/prefer-readonly-parameter-types" &&
-    (!/\b\w+\s*:\s*\([^)]*\)\s*=>\s*[A-Z]\w*/u.test(nextLine) || nextLine.includes("&"))
-  ) {
-    return "Readonly directives may cover only plain generic-result callables, not mutable inputs or attached properties";
-  }
+function semanticExplanationError(rule: string, preceding: string): string | undefined {
   if (
     rule === "typescript/prefer-readonly-parameter-types" &&
     !/callback|callable|result|generic/iu.test(preceding)

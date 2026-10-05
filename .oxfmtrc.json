@@ -12,6 +12,6 @@
   "sortPackageJson": false,
   "sortTailwindcss": false,
   "jsdoc": false,
-  "ignorePatterns": ["package-lock.json", ".cache/tsgolint/"],
+  "ignorePatterns": ["package-lock.json"],
   "overrides": [{ "files": ["**/*.yml", "**/*.yaml"], "options": { "singleQuote": true } }]
 }
