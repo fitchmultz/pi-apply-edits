@@ -64,8 +64,9 @@ class EntryDeletion {
     throwIfAborted(this.signal);
     await assertEntryCurrent(this.entry);
     await mkdir(this.directory, { mode: 0o700 });
-    this.directoryStats = await lstat(this.directory, { bigint: true });
-    assertCreatedDirectoryOwner(this.directoryStats, this.directory);
+    const directoryStats = await lstat(this.directory, { bigint: true });
+    assertCreatedDirectoryOwner(directoryStats, this.directory);
+    this.directoryStats = directoryStats;
     await this.hooks?.beforeCommit?.();
     await assertEntryCurrent(this.entry);
     throwIfAborted(this.signal);

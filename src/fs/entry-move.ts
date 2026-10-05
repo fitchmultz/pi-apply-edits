@@ -383,8 +383,9 @@ class ReplacementMove {
       throwIfAborted(this.signal);
       await assertSafeToReplace(this.replacement.snapshot, this.signal);
       await mkdir(this.directory, { mode: 0o700 });
-      this.directoryStats = await lstat(this.directory, { bigint: true });
-      assertCreatedDirectoryOwner(this.directoryStats, this.directory);
+      const directoryStats = await lstat(this.directory, { bigint: true });
+      assertCreatedDirectoryOwner(directoryStats, this.directory);
+      this.directoryStats = directoryStats;
       this.candidateStats = await prepareMoveReplacement(
         this.candidate,
         this.replacement.snapshot,
