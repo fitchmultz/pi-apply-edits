@@ -378,7 +378,7 @@ test("tools return bounded preview text, full expanded diffs, and truthful recei
 
   const nativeRealpath = fs.realpath;
   let resolutions = 0;
-  t.mock.method(fs, "realpath", async (...args: Parameters<typeof fs.realpath>) => {
+  t.mock.method(fs, "realpath", async (...args: Readonly<Parameters<typeof fs.realpath>>) => {
     const [path, options] = args;
     if (path === join(directory, "file") && ++resolutions === 2) {
       throw new Error("");

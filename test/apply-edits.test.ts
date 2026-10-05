@@ -28,12 +28,15 @@ import {
   applyTargetedEdits,
   replaceTextInFiles,
   resolveInputPath,
-  type ApplyEditsDetails,
   type EditingExecution,
   type WriteFilesRequest,
   type ReplaceTextRequest,
   type TargetedEdit,
 } from "../src/apply-edits.ts";
+import type {
+  ReadonlyApplyEditsBatchDetails,
+  ReadonlyApplyEditsDetails,
+} from "../src/editing/contracts.ts";
 import { createEditingTools } from "../src/tools.ts";
 
 import {
@@ -75,7 +78,7 @@ function filePath(value: unknown): string {
   throw new Error("Expected a native filesystem path");
 }
 
-function singleDetails(details: EditingExecution["details"]): ApplyEditsDetails {
+function singleDetails(details: ReadonlyApplyEditsBatchDetails): ReadonlyApplyEditsDetails {
   assert.equal(details.error, undefined);
   assert.equal(details.files.length, 1);
   return details.files[0];

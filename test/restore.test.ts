@@ -77,7 +77,7 @@ test("native reload and journal restore preserve history and explicit tool selec
     role: "system",
     content: "fixture",
     toolsAdded: session.agent.state.tools.map(
-      ({ name, description, parameters, constrainedSampling }: Readonly<Tool>) => ({
+      ({ name, description, parameters, constrainedSampling }: Tool) => ({
         name,
         description,
         parameters,
