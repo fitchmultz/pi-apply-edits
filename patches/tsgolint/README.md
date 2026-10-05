@@ -56,7 +56,9 @@ still be awaited. The safe-Promise allowlist remains empty.
 
 `value-and-readonly.patch` also repairs the shared value matcher, whose previous
 non-package branch ignored file/lib qualification entirely. Type-qualified
-allowances and safe calls remain separate checks.
+allowances and safe calls remain separate checks. Package qualification requires
+an actual external-library declaration source; a local ambient module with the
+same package spelling cannot confer ownership.
 
 ## Readonly integrity
 
@@ -67,12 +69,23 @@ not permission to blanket-allow containers or enable methods globally.
 
 The correction recognizes only collection properties declared by actual default
 TypeScript library interfaces. `ReadonlyMap` keys and values and `ReadonlySet`
-values are checked through instantiated signatures. Mutable `Map`/`Set` APIs
-remain mutable even behind mapped `Readonly` wrappers. Additional application
+values are checked through instantiated signatures. Mutable `Map`/`Set` mutators
+remain mutable even behind mapped `Readonly` wrappers. A readonly mapped view
+containing only native `get`, `has`, and `size` capabilities is accepted when its
+exposed keys and values are recursively readonly; iterator/callback views of
+mutable collections remain conservatively rejected. Additional application
 properties are checked normally; same-named local/package types do not receive
 native handling. Intersections are checked constituent by constituent **before**
 any native allowance, so `Theme & { counter: number }` fails while the readonly
 attached-state form passes. Ordinary unions retain constituent checking.
+
+Qualified native allowances exempt only members owned by the approved declaration
+and its original native inheritance contract. Application declarations merged
+into lib handles or package classes/interfaces are audited separately, including
+inherited additions and index signatures. Mutable additions and readonly fields
+containing mutable values fail; readonly application additions pass without
+rejecting legitimate library merges. This covers global `URL`, module-augmented
+`Theme`/`TSchema`, and Node `Stats`, while preserving their original APIs.
 
 This is acceptance of specific native collection contracts, not freezing,
 method purity, or universal immutability. `no-param-reassign` independently
