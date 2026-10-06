@@ -7,9 +7,12 @@ import {
   parallelTarget,
   promiseCallbacks,
   promiseExpression,
+  promiseReturnFacts,
   promiseSources,
   rejectionHandlers,
   savedPromise,
+  settlingConsumer,
+  arrayLength,
 } from "./node-test-promises.ts";
 import {
   controlFacts,
@@ -46,7 +49,8 @@ interface FrameState {
   readonly parameterCount: number;
   readonly function: boolean;
   promise: boolean;
-  readonly promiseTargets: Set<number>;
+  readonly promiseReturns: Set<number>;
+  readonly promiseParameters: Set<number>;
   readonly segments: Map<string, SegmentState>;
   readonly active: Set<string>;
   returns: string[];
@@ -93,6 +97,7 @@ export class NodeTestCollector {
       CallExpression: this.call,
       AwaitExpression: this.consume,
       "ReturnStatement:exit": this.consumeReturn,
+      "ArrowFunctionExpression:exit": this.consumeArrow,
       "Program:exit": this.report,
       "BlockStatement:exit": this.regionEnd,
       "IfStatement:exit": this.regionEnd,
@@ -112,7 +117,8 @@ export class NodeTestCollector {
       parameterCount: "params" in node && Array.isArray(node.params) ? node.params.length : 0,
       function: path.origin === "function",
       promise: "async" in node && node.async === true,
-      promiseTargets: new Set(),
+      promiseReturns: new Set(),
+      promiseParameters: new Set(),
       segments: new Map(),
       active: new Set(),
       returns: [],
@@ -123,6 +129,9 @@ export class NodeTestCollector {
     };
     this.frames.push(frame);
     this.stack.push(frame);
+    if (node.type === "ArrowFunctionExpression" && node.expression) {
+      this.returnFacts(this.context.sourceCode.getScope(node.body), node.body);
+    }
   };
 
   private readonly end: NonNullable<Rule.RuleListener["onCodePathEnd"]> = (path) => {
@@ -249,6 +258,8 @@ export class NodeTestCollector {
       promiseCallbacks: promiseCallbacks(scope, node),
       promiseSources: promiseSources(scope, node),
       deferred: savedPromise(scope, node, local),
+      promise: promiseExpression(scope, node),
+      settles: settlingConsumer(scope, local),
       ...controlFacts(local, this.context.sourceCode.text, node.range),
       handlers: rejectionHandlers(scope, local),
       parallel: parallelTarget(scope, node, resolved, local),
@@ -277,30 +288,37 @@ export class NodeTestCollector {
   };
 
   private readonly consumeReturn: NonNullable<Rule.RuleListener["ReturnStatement"]> = (node) => {
-    const frame = this.stack.at(-1);
     const scope = this.context.sourceCode.getScope(node);
-    for (const call of callChain(scope, node.argument ?? undefined)) {
-      const target =
-        call.node.callee === undefined
-          ? undefined
-          : calleeBinding(call.scope, call.node.callee).binding.target;
-      if (target !== undefined) {
-        frame?.promiseTargets.add(target);
-      }
-    }
-    if (
-      frame !== undefined &&
-      promiseExpression(this.context.sourceCode.getScope(node), node.argument ?? undefined)
-    ) {
-      frame.promise = true;
-    }
-    this.consumeValue(
-      this.context.sourceCode.getScope(node),
-      node.argument,
-      this.context.sourceCode.getAncestors(node),
-      node.range,
-    );
+    this.returnFacts(scope, node.argument ?? undefined);
+    this.consumeValue(scope, node.argument, this.context.sourceCode.getAncestors(node), node.range);
   };
+
+  private readonly consumeArrow: NonNullable<Rule.RuleListener["ArrowFunctionExpression"]> = (
+    node,
+  ) => {
+    if (node.expression) {
+      this.consumeValue(
+        this.context.sourceCode.getScope(node.body),
+        node.body,
+        [],
+        node.body.range,
+      );
+    }
+  };
+
+  private returnFacts(scope: Scope.Scope, argument: ControlView | undefined): void {
+    const frame = this.stack.at(-1);
+    if (frame !== undefined) {
+      const facts = promiseReturnFacts(scope, argument, frame.start);
+      frame.promise = frame.promise || facts.promise;
+      facts.returns.forEach((offset) => {
+        frame.promiseReturns.add(offset);
+      });
+      facts.parameters.forEach((index) => {
+        frame.promiseParameters.add(index);
+      });
+    }
+  }
 
   private consumeValue(
     scope: Scope.Scope,
@@ -333,6 +351,10 @@ export class NodeTestCollector {
       ],
       arguments: [],
       stableArguments: false,
+      settles:
+        arrayLength(scope, argument) !== undefined ||
+        settlingConsumer(scope, local) ||
+        chain.some((call) => settlingConsumer(call.scope, [call.node])),
       producers: chain.flatMap((call) =>
         call.node.range === undefined ? [] : [call.node.range[0]],
       ),
@@ -348,7 +370,8 @@ export class NodeTestCollector {
       .map((frame) => ({
         start: frame.start,
         promise: frame.promise,
-        promiseTargets: [...frame.promiseTargets],
+        promiseReturns: [...frame.promiseReturns],
+        promiseParameters: [...frame.promiseParameters],
         parameterCount: frame.parameterCount,
         segments: [...frame.segments.values()],
         returns: frame.returns,
@@ -448,9 +471,13 @@ export class NodeTestCollector {
       if (!owned.has(flow.start)) {
         continue;
       }
+      const sites = flow.segments.flatMap((segment) => segment.events);
+      const consumed = new Set(
+        sites.flatMap((event) => (event.producer === undefined ? [] : [event.producer])),
+      );
       const events = new Map(
-        flow.segments
-          .flatMap((segment) => segment.events)
+        sites
+          .filter((event) => event.deferred !== true || !consumed.has(event.offset))
           .map((event) => [`${event.offset}:${event.producer ?? event.offset}`, event]),
       );
       for (const event of events.values()) {

@@ -5,10 +5,11 @@ import { nonemptyLiteral, type ControlView } from "./test-controls.ts";
 interface PromiseView extends ControlView {
   readonly init?: PromiseView | null;
   readonly async?: boolean;
+  readonly argument?: ControlView | null;
   readonly typeAnnotation?: {
     readonly typeAnnotation?: {
       readonly returnType?: {
-        readonly typeAnnotation?: { readonly type: string };
+        readonly typeAnnotation?: { readonly type: string; readonly typeName?: ControlView };
       };
     };
   };
@@ -39,16 +40,57 @@ export function callChain(
       ? []
       : callChain(declaration.scope, declaration.value, visited);
   }
+  return expressionCalls(scope, node, visited);
+}
+
+function expressionCalls(
+  scope: Scope.Scope,
+  node: PromiseView,
+  visited: ReadonlySet<unknown>,
+): readonly ScopedCall[] {
+  if (node.type === "ArrayExpression") {
+    return (node.elements ?? []).flatMap((element) =>
+      callChain(scope, element ?? undefined, visited),
+    );
+  }
+  if (node.type === "SpreadElement") {
+    return callChain(scope, node.argument ?? undefined, visited);
+  }
   if (node.type !== "CallExpression") {
     return [];
   }
   return [
     { scope, node },
     ...callChain(scope, node.callee?.object, visited),
-    ...parallelInputs(scope, node).flatMap((input) =>
-      callChain(scope, input ?? undefined, visited),
-    ),
+    ...consumedInputs(scope, node, visited),
   ];
+}
+
+export function promiseReturnFacts(
+  scope: Scope.Scope,
+  argument: ControlView | undefined,
+  owner: number,
+): {
+  readonly promise: boolean;
+  readonly returns: readonly number[];
+  readonly parameters: readonly number[];
+} {
+  const calls = arrayLength(scope, argument) === undefined ? callChain(scope, argument) : [];
+  return {
+    promise: promiseExpression(scope, argument),
+    returns: calls.flatMap((call) => (call.node.range === undefined ? [] : [call.node.range[0]])),
+    parameters: calls.flatMap((call) => returnedParameter(call, owner)),
+  };
+}
+
+function returnedParameter(call: ScopedCall, owner: number): readonly number[] {
+  const binding =
+    call.node.callee === undefined
+      ? undefined
+      : calleeBinding(call.scope, call.node.callee).binding;
+  return binding?.kind === "parameter" && binding.owner === owner && binding.parameter !== undefined
+    ? [binding.parameter]
+    : [];
 }
 
 export function promiseExpression(
@@ -104,16 +146,12 @@ function promiseCall(
 
 function parameterPromise(scope: Scope.Scope, name: string): boolean {
   const parameter: PromiseView | undefined = bindingValue(scope, name)?.value;
-  const type = parameter?.typeAnnotation?.typeAnnotation?.returnType?.typeAnnotation?.type;
-  return ![
-    "TSVoidKeyword",
-    "TSNeverKeyword",
-    "TSUndefinedKeyword",
-    "TSNumberKeyword",
-    "TSStringKeyword",
-    "TSBooleanKeyword",
-    "TSNullKeyword",
-  ].includes(type ?? "");
+  const type = parameter?.typeAnnotation?.typeAnnotation?.returnType?.typeAnnotation;
+  return (
+    type?.type === "TSTypeReference" &&
+    type.typeName?.name === "Promise" &&
+    calleeBinding(scope, type.typeName).binding.kind === "native"
+  );
 }
 
 function asyncFunction(
@@ -146,11 +184,79 @@ function transparentExpression(node: ControlView): ControlView | undefined {
     : undefined;
 }
 
-function parallelInputs(scope: Scope.Scope, node: PromiseView): readonly (ControlView | null)[] {
+function consumedInputs(
+  scope: Scope.Scope,
+  node: PromiseView,
+  seen: ReadonlySet<unknown>,
+): readonly ScopedCall[] {
+  return nativeConsumer(scope, node) === undefined
+    ? []
+    : callChain(scope, node.arguments?.[0], seen);
+}
+
+function nativeConsumer(scope: Scope.Scope, node: PromiseView): string | undefined {
   const resolved = node.callee === undefined ? undefined : calleeBinding(scope, node.callee);
-  return resolved?.binding.kind === "native" && resolved.suffix === ".all"
-    ? (node.arguments?.[0]?.elements ?? [])
-    : [];
+  return resolved?.binding.kind === "native" &&
+    /^\.(?:all|allSettled|any|race|resolve)$/u.test(resolved.suffix)
+    ? resolved.suffix
+    : undefined;
+}
+
+export function arrayLength(
+  scope: Scope.Scope,
+  node: PromiseView | undefined,
+  seen: ReadonlySet<unknown> = new Set(),
+): number | undefined {
+  if (node === undefined || seen.has(node)) {
+    return;
+  }
+  const visited = new Set(seen).add(node);
+  const expression = transparentExpression(node);
+  if (expression !== undefined) {
+    return arrayLength(scope, expression, visited);
+  }
+  if (node.type === "Identifier" && node.name !== undefined) {
+    const declaration = bindingValue(scope, node.name);
+    return declaration === undefined
+      ? undefined
+      : arrayLength(declaration.scope, declaration.value, visited);
+  }
+  return node.type === "ArrayExpression"
+    ? expandedLength(scope, node.elements ?? [], visited)
+    : undefined;
+}
+
+function expandedLength(
+  scope: Scope.Scope,
+  elements: readonly (PromiseView | null)[],
+  seen: ReadonlySet<unknown>,
+): number | undefined {
+  let length = 0;
+  for (const element of elements) {
+    const size =
+      element?.type === "SpreadElement"
+        ? arrayLength(scope, element.argument ?? undefined, seen)
+        : 1;
+    if (size === undefined) {
+      return;
+    }
+    length += size;
+  }
+  return length;
+}
+
+export function settlingConsumer(scope: Scope.Scope, nodes: readonly PromiseView[]): boolean {
+  return nodes.some((node) => {
+    const method = nativeConsumer(scope, node);
+    if (method === ".allSettled") {
+      return true;
+    }
+    const count = arrayLength(scope, node.arguments?.[0]);
+    if (method === ".resolve") {
+      return count !== undefined;
+    }
+    return (method === ".any" || method === ".race") && count !== 1;
+  });
 }
 
 function nativeAsyncAssertion({ binding, suffix }: ReturnType<typeof calleeBinding>): boolean {
@@ -207,14 +313,12 @@ export function savedPromise(
   node: PromiseView,
   ancestors: readonly PromiseView[],
 ): boolean {
-  const local =
-    node.callee === undefined ? undefined : calleeBinding(scope, node.callee).binding.target;
   return ancestors.some(
     (ancestor) =>
-      ancestor.type === "VariableDeclarator" &&
-      ancestor.init !== null &&
-      (promiseExpression(scope, ancestor.init) || local !== undefined) &&
-      callChain(scope, ancestor.init).some((call) => call.node.range?.[0] === node.range?.[0]),
+      ancestor.type === "ArrayExpression" ||
+      (ancestor.type === "VariableDeclarator" &&
+        ancestor.init !== null &&
+        callChain(scope, ancestor.init).some((call) => call.node.range?.[0] === node.range?.[0])),
   );
 }
 

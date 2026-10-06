@@ -5,6 +5,121 @@ const missing = "node-test(expect-assertions)";
 const conditional = "node-test(no-conditional-assertions)";
 const cases = [
   {
+    name: "same named generic return is not the native Promise",
+    body: 'function invoke<Promise>(run: () => Promise): Promise { return run(); } test("asserted", () => { const result = invoke(() => { assert.equal(process.argv.length > 0, true); return { value: 1 }; }); console.log(result); });',
+    expected: [],
+  },
+  {
+    name: "concise Promise return owns conditional handler",
+    body: 'const pending = () => Promise.resolve(); test("payload", async () => { assert.equal(process.argv.length > 0, true); await pending().then(() => { if (process.env.NO_SUCH_REVIEW_FLAG === "yes") { assert.fail("must run"); } }); });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "concise assertion return cannot launder saved catch",
+    body: 'const verify = () => assert.rejects(Promise.resolve()); test("empty", async () => { const assertion = verify(); await assertion.catch((error: unknown) => { console.log(error); }); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "concise assertion return retains visible saved await",
+    body: 'const verify = () => assert.rejects(Promise.reject(new Error("expected"))); test("asserted", async () => { const assertion = verify(); await assertion; });',
+    expected: [],
+  },
+  {
+    name: "saved native array cannot launder aggregate catch",
+    body: 'test("empty", async () => { const tasks = [assert.rejects(Promise.resolve())]; await Promise.all(tasks).catch((error: unknown) => { console.log(error); }); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "saved native array retains visible aggregate assertions",
+    body: 'test("asserted", async () => { const assertion = assert.rejects(Promise.reject(new Error("expected"))); const tasks = [assertion]; await Promise.all(tasks); });',
+    expected: [],
+  },
+  {
+    name: "readonly array aliases retain native aggregate visibility",
+    body: 'test("asserted", async () => { const tasks = [assert.rejects(Promise.reject(new Error("expected")))] as const; const alias = tasks; await Promise.all(alias); });',
+    expected: [],
+  },
+  {
+    name: "native allSettled cannot hide inline failed assertion",
+    body: 'test("empty", async () => { await Promise.allSettled([assert.rejects(Promise.resolve())]); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "native allSettled cannot hide saved array assertion",
+    body: 'test("empty", async () => { const tasks = [assert.rejects(Promise.resolve())] as const; const alias = tasks; await Promise.allSettled(alias); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "settled outcomes need an independent visible assertion",
+    body: 'test("asserted", async () => { const outcomes = await Promise.allSettled([Promise.reject(new Error("expected"))]); assert.equal(outcomes.at(0)?.status, "rejected"); });',
+    expected: [],
+  },
+  {
+    name: "settling cannot swallow synchronous assertion argument",
+    body: 'function verify(): number { assert.equal(process.argv.length > 0, true); return process.argv.length; } test("asserted", async () => { await Promise.allSettled([Promise.resolve(verify())]); });',
+    expected: [],
+  },
+  {
+    name: "generic saved synchronous callback retains immediate ownership",
+    body: 'function invoke<T>(run: () => T): T { return run(); } test("asserted", () => { const result = invoke(() => { assert.equal(process.argv.length > 0, true); return 1; }); console.log(result); });',
+    expected: [],
+  },
+  {
+    name: "readonly object saved callback retains immediate ownership",
+    body: 'function invoke(run: () => { readonly value: number }): { readonly value: number } { return run(); } test("asserted", () => { const result = invoke(() => { assert.equal(process.argv.length > 0, true); return { value: 1 }; }); console.log(result); });',
+    expected: [],
+  },
+  {
+    name: "generic saved async callback cannot launder catch",
+    body: 'function invoke<T>(run: () => T): T { return run(); } test("empty", async () => { const result = invoke(() => assert.rejects(Promise.resolve())); await result.catch((error: unknown) => { console.log(error); }); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "generic saved async callback retains visible await",
+    body: 'function invoke<T>(run: () => T): T { return run(); } test("asserted", async () => { const result = invoke(() => assert.rejects(Promise.reject(new Error("expected")))); await result; });',
+    expected: [],
+  },
+  {
+    name: "generic stored callback cannot credit swallowed async failure",
+    body: 'async function invoke<T>(run: () => T): Promise<{ readonly result: T }> { const result = run(); await Promise.resolve(result).catch((error: unknown) => { console.log(error); }); return { result }; } test("empty", async () => { await invoke(() => assert.rejects(Promise.resolve())); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "native any cannot credit one ignored failed assertion",
+    body: 'test("empty", async () => { await Promise.any([assert.rejects(Promise.resolve()), Promise.resolve()]); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "native race cannot credit one ignored failed assertion",
+    body: 'test("empty", async () => { await Promise.race([assert.rejects(Promise.resolve()), Promise.resolve()]); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "single native any input retains failure visibility",
+    body: 'test("asserted", async () => { const tasks = [assert.rejects(Promise.reject(new Error("expected")))]; await Promise.any(tasks); });',
+    expected: [],
+  },
+  {
+    name: "single native race input retains failure visibility",
+    body: 'test("asserted", async () => { const tasks = [assert.rejects(Promise.reject(new Error("expected")))]; await Promise.race(tasks); });',
+    expected: [],
+  },
+  {
     name: "repeated calls do not prove a stable discriminator",
     body: 'let reads = 0; function next(): number { return ++reads; } test("optional", () => { assert.equal(next(), 1); if (next() === 1) { assert.fail("payload was skipped"); } });',
     expected: [["node-test(no-conditional-assertions)", 3]],

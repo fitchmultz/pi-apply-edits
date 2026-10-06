@@ -44,7 +44,7 @@ function ownedTargets(
   );
   const indices =
     wrapper === undefined
-      ? (summaries.get(event.binding.target ?? -1)?.callbacks ?? [])
+      ? (summaries.get(event.binding.target ?? -1)?.calledCallbacks ?? [])
       : [wrapper.callback];
   return [
     ...direct,
@@ -91,6 +91,7 @@ export function normalizedFlow(flow: FunctionFlow, flows: readonly FunctionFlow[
                   end: event.end,
                   line: event.line,
                   deferred: false,
+                  settles: producer.settles === true || event.settles === true,
                   conditional: producer.conditional || event.conditional,
                   controls: [...producer.controls, ...event.controls],
                   handlers: [...producer.handlers, ...event.handlers],
@@ -105,30 +106,54 @@ export function normalizedFlow(flow: FunctionFlow, flows: readonly FunctionFlow[
     ]);
     return { id: segment.id, previous: segment.previous, events };
   });
-  return { ...flow, segments };
+  return { ...flow, promise: returnsPromise(flow.start, flows), segments };
 }
 
 function deferredCall(event: CallEvent, flows: readonly FunctionFlow[]): boolean {
   return (
     event.deferred === true &&
-    (event.binding.target === undefined || returnsPromise(event.binding.target, flows))
+    (event.binding.kind === "parameter" || asynchronousCall(event, flows))
+  );
+}
+
+function asynchronousCall(event: CallEvent, flows: readonly FunctionFlow[]): boolean {
+  return (
+    event.promise === true ||
+    (event.binding.target !== undefined &&
+      returnsPromise(event.binding.target, flows, event.callbacks))
   );
 }
 
 function returnsPromise(
   target: number,
   flows: readonly FunctionFlow[],
+  callbacks: ReadonlyMap<number, number> = new Map(),
   seen: ReadonlySet<number> = new Set(),
 ): boolean {
   if (seen.has(target)) {
     return false;
   }
   const flow = flows.find((candidate) => candidate.start === target);
+  const visited = new Set(seen).add(target);
   return (
     flow?.promise === true ||
-    (flow?.promiseTargets ?? []).some((callee) =>
-      returnsPromise(callee, flows, new Set(seen).add(target)),
+    (flow?.promiseParameters ?? []).some((index) => {
+      const callback = callbacks.get(index);
+      return callback !== undefined && returnsPromise(callback, flows, new Map(), visited);
+    }) ||
+    returningCalls(flow).some(
+      (call) =>
+        call.binding.target !== undefined &&
+        returnsPromise(call.binding.target, flows, call.callbacks, visited),
     )
+  );
+}
+
+function returningCalls(flow: FunctionFlow | undefined): readonly CallEvent[] {
+  return (
+    flow?.segments
+      .flatMap((segment) => segment.events)
+      .filter((event) => flow.promiseReturns?.includes(event.offset) === true) ?? []
   );
 }
 
@@ -138,6 +163,7 @@ function normalizeCatches(
   flows: readonly FunctionFlow[],
 ): CallEvent {
   const caught =
+    (event.settles === true && (event.producer !== undefined || asynchronousCall(event, flows))) ||
     event.handlers.some((target) => {
       const handler = flows.find((candidate) => candidate.start === target);
       return handler === undefined || handler.returns.length > 0 || handler.throws.length === 0;

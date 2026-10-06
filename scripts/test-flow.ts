@@ -34,6 +34,8 @@ export interface CallEvent {
   readonly producer?: number;
   readonly promiseCallbacks?: readonly number[];
   readonly promiseSources?: readonly number[];
+  readonly promise?: boolean;
+  readonly settles?: boolean;
 }
 export interface FlowSegment {
   readonly id: string;
@@ -54,7 +56,8 @@ export interface FunctionFlow {
   readonly start: number;
   /** May return a Promise; this is not proof of assertions or callback execution. */
   readonly promise?: boolean;
-  readonly promiseTargets?: readonly number[];
+  readonly promiseReturns?: readonly number[];
+  readonly promiseParameters?: readonly number[];
   readonly segments: readonly FlowSegment[];
   readonly returns: readonly string[];
   readonly parameterCount: number;
@@ -70,7 +73,10 @@ export interface Registration {
 }
 export interface FlowSummary {
   readonly asserts: boolean;
-  readonly callbacks: ReadonlySet<number>;
+  readonly asynchronousCallbacks: ReadonlySet<number>;
+  readonly synchronousCallbacks: ReadonlySet<number>;
+  readonly calledCallbacks: ReadonlySet<number>;
+  readonly promise: boolean;
 }
 
 export interface AssertionHelper {
@@ -162,27 +168,52 @@ export function flowSummaries(
   );
   for (let pass = 0; pass <= flows.length; pass += 1) {
     for (const flow of flows) {
-      const callbacks = new Set(
+      const synchronousCallbacks = new Set(
+        Array.from({ length: flow.parameterCount }, (_, index) => index).filter((index) =>
+          proves(flow, (event) => parameterCall(event, flow.start, index) && !event.caught),
+        ),
+      );
+      const asynchronousCallbacks = new Set(
         Array.from({ length: flow.parameterCount }, (_, index) => index).filter((index) =>
           proves(
             flow,
             (event) =>
-              event.binding.kind === "parameter" &&
-              event.binding.owner === flow.start &&
-              event.binding.parameter === index &&
-              event.suffix.length === 0 &&
-              event.deferred !== true &&
-              !event.caught,
+              parameterCall(event, flow.start, index) && event.deferred !== true && !event.caught,
           ),
         ),
       );
       const asserts = proves(flow, (event) =>
         ownsAssertions(event, summaries, { tests: contexts, helpers, wrappers }),
       );
-      summaries.set(flow.start, { asserts, callbacks });
+      const calledCallbacks = new Set(
+        flow.segments
+          .flatMap((segment) => segment.events)
+          .flatMap((event) =>
+            event.binding.parameter !== undefined &&
+            parameterCall(event, flow.start, event.binding.parameter)
+              ? [event.binding.parameter]
+              : [],
+          ),
+      );
+      summaries.set(flow.start, {
+        asserts,
+        asynchronousCallbacks,
+        synchronousCallbacks,
+        calledCallbacks,
+        promise: flow.promise === true,
+      });
     }
   }
   return summaries;
+}
+
+function parameterCall(event: CallEvent, owner: number, index: number): boolean {
+  return (
+    event.binding.kind === "parameter" &&
+    event.binding.owner === owner &&
+    event.binding.parameter === index &&
+    event.suffix.length === 0
+  );
 }
 
 export function proves(flow: FunctionFlow, satisfies: (event: CallEvent) => boolean): boolean {
@@ -291,5 +322,10 @@ function delegatedAssertions(
   if (summary?.asserts === true) {
     return true;
   }
-  return [...(summary?.callbacks ?? [])].some((index) => callbackAsserts(event, index, summaries));
+  return [...(summary?.calledCallbacks ?? [])].some((index) => {
+    const callback = summaries.get(event.callbacks.get(index) ?? -1);
+    const guaranteed =
+      callback?.promise === true ? summary?.asynchronousCallbacks : summary?.synchronousCallbacks;
+    return guaranteed?.has(index) === true && callback?.asserts === true;
+  });
 }

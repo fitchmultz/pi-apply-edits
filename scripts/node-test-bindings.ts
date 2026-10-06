@@ -228,6 +228,7 @@ function declaredBinding(scope: Scope.Scope, name: string): CallBinding {
     case "TDZ":
       return { kind: "unknown", name };
   }
+  return { kind: "unknown", name };
 }
 
 interface ParameterOwner extends ExpressionView {
