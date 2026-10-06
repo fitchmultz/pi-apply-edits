@@ -155,6 +155,18 @@ independent guarantees, exercised by real syscall/race tests. Private module
 loading in tests follows the whole owner graph so platform caches cannot mask
 fault injection after decomposition.
 
+### SDK tools and presentation
+
+Before: tool construction mixed schemas, path binding, execution, receipt
+adaptation and detailed result rendering in one module.
+
+After: `src/tools.ts` owns typed tool construction, argument validation and path
+binding, execution, and SDK receipt adaptation. `src/tool-rendering.ts` owns
+presentation of previews and verified, failed or unattempted outcomes. The
+adapter consumes readonly editing results and transfers detached mutable
+receipts to SDK callers; tool names, schemas, protocol behavior and public
+contracts remain intact. Presentation changes no longer touch publication.
+
 These are maintainability improvements, not claims that every removed diagnostic
 was a runtime bug. Formatting consistency, checker-integrity corrections, safer
 contracts and any independently demonstrated runtime fixes are reported separately.
