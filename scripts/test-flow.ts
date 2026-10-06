@@ -29,6 +29,11 @@ export interface CallEvent {
   readonly arguments: readonly string[];
   readonly stableArguments: boolean;
   readonly controls: readonly ConditionalControl[];
+  readonly deferred?: boolean;
+  readonly producers?: readonly number[];
+  readonly producer?: number;
+  readonly promiseCallbacks?: readonly number[];
+  readonly promiseSources?: readonly number[];
 }
 export interface FlowSegment {
   readonly id: string;
@@ -47,6 +52,9 @@ export interface ReturnSite {
 }
 export interface FunctionFlow {
   readonly start: number;
+  /** May return a Promise; this is not proof of assertions or callback execution. */
+  readonly promise?: boolean;
+  readonly promiseTargets?: readonly number[];
   readonly segments: readonly FlowSegment[];
   readonly returns: readonly string[];
   readonly parameterCount: number;
@@ -163,6 +171,7 @@ export function flowSummaries(
               event.binding.owner === flow.start &&
               event.binding.parameter === index &&
               event.suffix.length === 0 &&
+              event.deferred !== true &&
               !event.caught,
           ),
         ),
@@ -237,6 +246,9 @@ export function ownsAssertions(
   summaries: ReadonlyMap<number, FlowSummary>,
   context: AssertionContext,
 ): boolean {
+  if (event.deferred === true) {
+    return false;
+  }
   if (directAssertions(event, context)) {
     return true;
   }

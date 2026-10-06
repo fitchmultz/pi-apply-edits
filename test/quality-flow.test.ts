@@ -25,6 +25,174 @@ const cases = [
     expected: [],
   },
   {
+    name: "saved synchronous wrapper assertions remain immediate",
+    body: 'function invoke(run: () => void): void { return run(); } test("asserted", () => { const result = invoke(() => { assert.equal(process.argv.length > 0, true); }); console.log(result); });',
+    expected: [],
+  },
+  {
+    name: "saved transitive Promise returning helper cannot swallow rejection",
+    body: 'function verify() { return assert.rejects(Promise.resolve()); } function invoke() { return verify(); } test("empty", async () => { const verification = invoke(); await verification.catch(() => {}); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "inferred Promise returning helper owns conditional handler",
+    body: 'function pending() { return Promise.resolve(); } test("payload", async () => { assert.equal(process.argv.length > 0, true); await pending().then(() => { if (process.env.MAYBE !== undefined) { assert.fail("unchecked payload"); } }); });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "saved inferred Promise returning helper cannot swallow rejection",
+    body: 'function verify() { return assert.rejects(Promise.resolve()); } test("empty", async () => { const verification = verify(); await verification.catch(() => {}); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "saved synchronous helper assertions remain immediate",
+    body: 'function verify(): number { assert.equal(process.argv.length > 0, true); return process.argv.length; } test("asserted", () => { const result = verify(); console.log(result); });',
+    expected: [],
+  },
+  {
+    name: "saved fail closed handler retains declaration scope",
+    body: 'test("asserted", async () => { const rethrow = (error: unknown): never => { throw error; }; const assertion = assert.rejects(Promise.reject(new Error("expected"))).catch(rethrow); { const rethrow = (): void => {}; console.log(rethrow); await assertion; } });',
+    expected: [],
+  },
+  {
+    name: "native second then handler cannot skip payload",
+    body: 'test("payload", async () => { assert.equal(process.argv.length > 0, true); await Promise.resolve().then(undefined, () => { if (process.env.MAYBE !== undefined) { assert.fail("unchecked payload"); } }); });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "native handler preserves fail closed narrowing",
+    body: 'test("payload", async () => { assert.equal(process.argv.length > 0, true); await Promise.resolve().then(() => { const mode = process.env.MODE; assert.equal(mode, "message"); if (mode === "message") { assert.equal(process.env.PAYLOAD, "expected"); } }); });',
+    expected: [],
+  },
+  {
+    name: "saved native assertions visibly awaited together",
+    body: 'test("asserted", async () => { const assertion = assert.rejects(Promise.reject(new Error("expected"))); await Promise.all([assertion]); });',
+    expected: [],
+  },
+  {
+    name: "saved assertion wrappers cannot launder swallowed rejection",
+    body: 'test("empty", async () => { const assertion = assert.rejects(Promise.resolve()) as Promise<void>; const alias = assertion; const handled = alias.then(undefined, () => {}); await handled; });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "saved assertion consumption catch cannot swallow rejection",
+    body: 'test("empty", async () => { const assertion = assert.rejects(Promise.resolve()); try { await assertion; } catch { console.log("hidden"); } });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "saved assertion consumption finally cannot swallow rejection",
+    body: 'test("empty", async () => { const assertion = assert.rejects(Promise.resolve()); try { await assertion; } finally { return; } });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "saved native assertion visibly returned",
+    body: 'test("asserted", () => { const assertion = assert.rejects(Promise.reject(new Error("expected"))); return assertion; });',
+    expected: [],
+  },
+  {
+    name: "saved local helper visibly awaited",
+    body: 'async function verify(): Promise<void> { await Promise.resolve(); assert.equal(process.argv.length > 0, true); } test("asserted", async () => { const verification = verify(); await verification; });',
+    expected: [],
+  },
+  {
+    name: "saved wrapper callback visibly awaited",
+    body: 'async function invoke(run: () => Promise<void>): Promise<void> { const result = run(); await result; } test("asserted", async () => { await invoke(async () => { await Promise.resolve(); assert.equal(process.argv.length > 0, true); }); });',
+    expected: [],
+  },
+  {
+    name: "native handler callback does not independently prove parent assertions",
+    body: 'test("empty", async () => { await Promise.resolve().then(() => { assert.equal(process.argv.length > 0, true); }); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "shadowed Promise cannot own dormant then callback",
+    body: 'const Promise = { resolve: () => ({ then: (_run: () => void): void => {} }) }; test("payload", () => { assert.equal(process.argv.length > 0, true); Promise.resolve().then(() => { if (process.env.MAYBE !== undefined) { assert.fail("dormant"); } }); });',
+    expected: [],
+  },
+  {
+    name: "saved native then callback identity survives lexical shadow",
+    body: 'const pending = Promise.resolve(); test("payload", async () => { const Promise = { resolve: (): number => 1 }; assert.equal(Promise.resolve(), 1); await pending.then(() => { if (process.env.MAYBE !== undefined) { assert.fail("unchecked payload"); } }); });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "native then callback cannot skip payload after parent assertion",
+    body: 'test("payload", async () => { assert.equal(process.argv.length > 0, true); await Promise.resolve().then(() => { if (process.env.MAYBE !== undefined) { assert.fail("unchecked payload"); } }); });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "native catch callback cannot skip payload after parent assertion",
+    body: 'test("payload", async () => { assert.equal(process.argv.length > 0, true); await Promise.resolve().catch(() => { if (process.env.MAYBE !== undefined) { assert.fail("unchecked payload"); } }); });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "native finally callback cannot skip payload after parent assertion",
+    body: 'test("payload", async () => { assert.equal(process.argv.length > 0, true); await Promise.resolve().finally(() => { if (process.env.MAYBE !== undefined) { assert.fail("unchecked payload"); } }); });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "native handler reaches named local helper",
+    body: 'function verify(): void { if (process.env.MAYBE !== undefined) { assert.fail("unchecked payload"); } } test("payload", async () => { const callback = verify as () => void; assert.equal(process.argv.length > 0, true); await Promise.resolve().then(callback); });',
+    expected: [[conditional, 3]],
+  },
+  {
+    name: "native handler reaches child registration",
+    body: 'test("parent", async (context) => { assert.equal(process.argv.length > 0, true); await Promise.resolve().then(async () => { await context.test("child", () => { if (process.env.MAYBE !== undefined) { assert.fail("unchecked payload"); } }); }); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "foreign then callbacks stay dormant",
+    body: 'const foreign = { then: (_run: () => void): void => {} }; test("payload", () => { assert.equal(process.argv.length > 0, true); foreign.then(() => { if (process.env.MAYBE !== undefined) { assert.fail("dormant"); } }); });',
+    expected: [],
+  },
+  {
+    name: "saved native assertion cannot launder swallowed rejection",
+    body: 'test("empty", async () => { const assertion = assert.rejects(Promise.resolve()); await assertion.catch((error: unknown) => { console.log(error); }); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "saved local helper cannot launder swallowed rejection",
+    body: 'async function verify(): Promise<void> { await Promise.resolve(); assert.fail("hidden"); } test("empty", async () => { const verification = verify(); await verification.catch((error: unknown) => { console.log(error); }); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "saved wrapper callback cannot launder swallowed rejection",
+    body: 'async function invoke(run: () => Promise<void>): Promise<void> { const result = run(); await result.catch((error: unknown) => { console.log(error); }); } test("empty", async () => { await invoke(async () => { await Promise.resolve(); assert.fail("hidden"); }); });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "saved native assertion visibly awaited through alias",
+    body: 'test("asserted", async () => { const assertion = assert.rejects(Promise.reject(new Error("expected"))); const alias = assertion; await alias; });',
+    expected: [],
+  },
+  {
+    name: "saved assertion fail closed handler",
+    body: 'test("asserted", async () => { const assertion = assert.rejects(Promise.reject(new Error("expected"))); await assertion.catch((error: unknown) => { throw error; }); });',
+    expected: [],
+  },
+  {
+    name: "conditional saved assertion consumption cannot own passing path",
+    body: 'test("empty", async () => { const assertion = assert.rejects(Promise.reject(new Error("expected"))); if (process.env.MAYBE !== undefined) { await assertion; } });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
     name: "finally return swallows rethrown assertion failure",
     body: 'test("empty", () => { try { assert.equal(1, 2); } catch (error) { console.log(error); throw error; } finally { return; } });',
     expected: [
@@ -333,6 +501,11 @@ for (const probe of cases) {
 }
 
 const exceptionCases = [
+  {
+    name: "native handler cannot suppress optional payload",
+    body: 'test("payload", async () => { assert.equal(process.argv.length > 0, true); await Promise.resolve().finally(() => { if (process.env.MAYBE !== undefined) {\n// Exhaustive variants supposedly validate every optional payload.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.fail("unchecked payload");\n} }); });',
+    expected: [["node-test(valid-exceptions)", 6]],
+  },
   {
     name: "exhaustive throwing assertions with nested callbacks",
     body: 'function operation(reason: string): never { throw new Error(reason); } test("variants", () => { if (process.env.MODE === "left") {\n// Exhaustive variants validate each operation refusal through a native throwing assertion.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.throws(() => operation("left"), /left/);\n} else {\n// Exhaustive variants validate each operation refusal through a native throwing assertion.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.throws(() => operation("right"), /right/);\n} });',

@@ -33,7 +33,7 @@ function ownedTargets(
   summaries: ReadonlyMap<number, FlowSummary>,
   context: AssertionContext,
 ): readonly number[] {
-  const direct = [event.binding.target, event.parallel].filter(
+  const direct = [event.binding.target, event.parallel, ...(event.promiseCallbacks ?? [])].filter(
     (target): target is number => target !== undefined,
   );
   if (assertionCall(event, context.helpers)) {
@@ -56,11 +56,80 @@ function ownedTargets(
 }
 
 export function normalizedFlow(flow: FunctionFlow, flows: readonly FunctionFlow[]): FunctionFlow {
+  // Saved asynchronous work receives assertion credit only at a failure-visible consumer.
+  const producers = new Map(
+    flow.segments
+      .flatMap((segment) => segment.events)
+      .filter((event) => deferredCall(event, flows))
+      .map((event) => [event.offset, event]),
+  );
   const segments = flow.segments.map((segment) => {
-    const events = segment.events.map((event) => normalizeCatches(event, flow, flows));
+    const events = segment.events.flatMap((event) => [
+      normalizeCatches(
+        {
+          ...event,
+          deferred: deferredCall(event, flows),
+          promiseCallbacks: (event.promiseSources ?? []).some((target) =>
+            returnsPromise(target, flows),
+          )
+            ? [...event.callbacks.values()]
+            : event.promiseCallbacks,
+        },
+        flow,
+        flows,
+      ),
+      ...(event.producers ?? []).flatMap((offset) => {
+        const producer = producers.get(offset);
+        return producer === undefined
+          ? []
+          : [
+              normalizeCatches(
+                {
+                  ...producer,
+                  producer: producer.offset,
+                  offset: event.offset,
+                  end: event.end,
+                  line: event.line,
+                  deferred: false,
+                  conditional: producer.conditional || event.conditional,
+                  controls: [...producer.controls, ...event.controls],
+                  handlers: [...producer.handlers, ...event.handlers],
+                  catches: [...producer.catches, ...event.catches],
+                  finalizers: [...producer.finalizers, ...event.finalizers],
+                },
+                flow,
+                flows,
+              ),
+            ];
+      }),
+    ]);
     return { id: segment.id, previous: segment.previous, events };
   });
   return { ...flow, segments };
+}
+
+function deferredCall(event: CallEvent, flows: readonly FunctionFlow[]): boolean {
+  return (
+    event.deferred === true &&
+    (event.binding.target === undefined || returnsPromise(event.binding.target, flows))
+  );
+}
+
+function returnsPromise(
+  target: number,
+  flows: readonly FunctionFlow[],
+  seen: ReadonlySet<number> = new Set(),
+): boolean {
+  if (seen.has(target)) {
+    return false;
+  }
+  const flow = flows.find((candidate) => candidate.start === target);
+  return (
+    flow?.promise === true ||
+    (flow?.promiseTargets ?? []).some((callee) =>
+      returnsPromise(callee, flows, new Set(seen).add(target)),
+    )
+  );
 }
 
 function normalizeCatches(

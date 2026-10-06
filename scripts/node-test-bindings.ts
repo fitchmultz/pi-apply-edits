@@ -52,7 +52,19 @@ function calleeParts(input: ExpressionView): {
   return { callee, members };
 }
 
-export function functionTarget(scope: Scope.Scope, node: ExpressionView): number | undefined {
+export function functionTarget(
+  scope: Scope.Scope,
+  node: ExpressionView & { readonly expression?: ExpressionView | boolean },
+): number | undefined {
+  if (
+    ["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion"].includes(
+      node.type,
+    ) &&
+    node.expression !== undefined &&
+    typeof node.expression !== "boolean"
+  ) {
+    return functionTarget(scope, node.expression);
+  }
   if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
     return node.range?.[0];
   }
@@ -65,6 +77,42 @@ export function functionTarget(scope: Scope.Scope, node: ExpressionView): number
 interface VariableView extends ExpressionView {
   readonly init?: ExpressionView | null;
 }
+/** Only immutable local declarations can carry a saved call's identity. */
+export function bindingValue(
+  initial: Scope.Scope,
+  name: string,
+): { readonly scope: Scope.Scope; readonly value: ExpressionView } | undefined {
+  let scope: Scope.Scope | null = initial;
+  while (scope !== null) {
+    const variable = scope.set.get(name);
+    if (variable === undefined) {
+      scope = scope.upper;
+      continue;
+    }
+    if (variable.references.some((reference) => reference.isWrite() && !reference.init)) {
+      return;
+    }
+    return declarationValue(variable.scope, name);
+  }
+  return;
+}
+
+function declarationValue(
+  scope: Scope.Scope,
+  name: string,
+): { readonly scope: Scope.Scope; readonly value: ExpressionView } | undefined {
+  const definition = scope.set.get(name)?.defs.at(0);
+  if (definition?.type === "Variable") {
+    return definition.node.init === null || definition.node.init === undefined
+      ? undefined
+      : { scope, value: definition.node.init };
+  }
+  if (definition?.type === "Parameter") {
+    return { scope, value: definition.name };
+  }
+  return definition?.type === "FunctionName" ? { scope, value: definition.node } : undefined;
+}
+
 function variableTarget(scope: Scope.Scope, node: VariableView): number | undefined {
   if (node.init === null || node.init === undefined) {
     return;

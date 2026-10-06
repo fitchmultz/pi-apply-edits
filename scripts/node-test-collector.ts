@@ -3,6 +3,15 @@ import { dirname } from "node:path";
 import { canonicalPath, normalizedFlow, ownedFunctions } from "./node-test-ownership.ts";
 import { calleeBinding, callbackTargets } from "./node-test-bindings.ts";
 import {
+  callChain,
+  parallelTarget,
+  promiseCallbacks,
+  promiseExpression,
+  promiseSources,
+  rejectionHandlers,
+  savedPromise,
+} from "./node-test-promises.ts";
+import {
   controlFacts,
   failClosed,
   exhaustive,
@@ -36,6 +45,8 @@ interface FrameState {
   readonly start: number;
   readonly parameterCount: number;
   readonly function: boolean;
+  promise: boolean;
+  readonly promiseTargets: Set<number>;
   readonly segments: Map<string, SegmentState>;
   readonly active: Set<string>;
   returns: string[];
@@ -80,6 +91,8 @@ export class NodeTestCollector {
       onCodePathSegmentStart: this.segmentStart,
       onCodePathSegmentEnd: this.segmentEnd,
       CallExpression: this.call,
+      AwaitExpression: this.consume,
+      "ReturnStatement:exit": this.consumeReturn,
       "Program:exit": this.report,
       "BlockStatement:exit": this.regionEnd,
       "IfStatement:exit": this.regionEnd,
@@ -98,6 +111,8 @@ export class NodeTestCollector {
       start: node.range?.[0] ?? 0,
       parameterCount: "params" in node && Array.isArray(node.params) ? node.params.length : 0,
       function: path.origin === "function",
+      promise: "async" in node && node.async === true,
+      promiseTargets: new Set(),
       segments: new Map(),
       active: new Set(),
       returns: [],
@@ -231,6 +246,9 @@ export class NodeTestCollector {
       binding,
       suffix: resolved.suffix,
       callbacks,
+      promiseCallbacks: promiseCallbacks(scope, node),
+      promiseSources: promiseSources(scope, node),
+      deferred: savedPromise(scope, node, local),
       ...controlFacts(local, this.context.sourceCode.text, node.range),
       handlers: rejectionHandlers(scope, local),
       parallel: parallelTarget(scope, node, resolved, local),
@@ -249,11 +267,88 @@ export class NodeTestCollector {
     }
   };
 
+  private readonly consume: NonNullable<Rule.RuleListener["AwaitExpression"]> = (node) => {
+    this.consumeValue(
+      this.context.sourceCode.getScope(node),
+      node.argument,
+      this.context.sourceCode.getAncestors(node),
+      node.range,
+    );
+  };
+
+  private readonly consumeReturn: NonNullable<Rule.RuleListener["ReturnStatement"]> = (node) => {
+    const frame = this.stack.at(-1);
+    const scope = this.context.sourceCode.getScope(node);
+    for (const call of callChain(scope, node.argument ?? undefined)) {
+      const target =
+        call.node.callee === undefined
+          ? undefined
+          : calleeBinding(call.scope, call.node.callee).binding.target;
+      if (target !== undefined) {
+        frame?.promiseTargets.add(target);
+      }
+    }
+    if (
+      frame !== undefined &&
+      promiseExpression(this.context.sourceCode.getScope(node), node.argument ?? undefined)
+    ) {
+      frame.promise = true;
+    }
+    this.consumeValue(
+      this.context.sourceCode.getScope(node),
+      node.argument,
+      this.context.sourceCode.getAncestors(node),
+      node.range,
+    );
+  };
+
+  private consumeValue(
+    scope: Scope.Scope,
+    argument: ControlView | null | undefined,
+    ancestors: readonly ControlView[],
+    range: readonly [number, number] | undefined,
+  ): void {
+    const frame = this.stack.at(-1);
+    if (frame === undefined || range === undefined || argument === null || argument === undefined) {
+      return;
+    }
+    const boundary = ancestors.findLastIndex((ancestor) =>
+      ["FunctionExpression", "FunctionDeclaration", "ArrowFunctionExpression"].includes(
+        ancestor.type,
+      ),
+    );
+    const local = ancestors.slice(boundary + 1);
+    const chain = callChain(scope, argument);
+    const event: CallEvent = {
+      offset: range[0],
+      end: range[1],
+      line: this.context.sourceCode.getLocFromIndex(range[0]).line,
+      binding: { kind: "unknown", name: "" },
+      suffix: "",
+      callbacks: new Map(),
+      ...controlFacts(local, this.context.sourceCode.text, range),
+      handlers: [
+        ...rejectionHandlers(scope, local),
+        ...chain.flatMap((call) => rejectionHandlers(call.scope, [call.node])),
+      ],
+      arguments: [],
+      stableArguments: false,
+      producers: chain.flatMap((call) =>
+        call.node.range === undefined ? [] : [call.node.range[0]],
+      ),
+    };
+    for (const id of frame.active) {
+      frame.segments.get(id)?.events.push(event);
+    }
+  }
+
   private readonly report: NonNullable<Rule.RuleListener["Program:exit"]> = () => {
     const raw: FunctionFlow[] = this.frames
       .filter((frame) => frame.function)
       .map((frame) => ({
         start: frame.start,
+        promise: frame.promise,
+        promiseTargets: [...frame.promiseTargets],
         parameterCount: frame.parameterCount,
         segments: [...frame.segments.values()],
         returns: frame.returns,
@@ -354,7 +449,9 @@ export class NodeTestCollector {
         continue;
       }
       const events = new Map(
-        flow.segments.flatMap((segment) => segment.events).map((event) => [event.offset, event]),
+        flow.segments
+          .flatMap((segment) => segment.events)
+          .map((event) => [`${event.offset}:${event.producer ?? event.offset}`, event]),
       );
       for (const event of events.values()) {
         this.checkSite(event, flow, summaries, contexts);
@@ -391,70 +488,6 @@ export class NodeTestCollector {
       });
     }
   }
-}
-
-interface PromiseCallView extends ControlView {
-  readonly callee?: ControlView;
-  readonly arguments?: readonly ControlView[];
-}
-
-function parallelTarget(
-  scope: Scope.Scope,
-  node: PromiseCallView,
-  resolved: { readonly binding: { readonly kind: string }; readonly suffix: string },
-  ancestors: readonly ControlView[],
-): number | undefined {
-  if (resolved.binding.kind !== "native" || resolved.suffix !== ".all") {
-    return;
-  }
-  const parent = ancestors.at(-1);
-  if (parent === undefined || !["AwaitExpression", "ReturnStatement"].includes(parent.type)) {
-    return;
-  }
-  const input = node.arguments?.[0];
-  if (input?.type !== "CallExpression") {
-    return;
-  }
-  return mappedTarget(scope, input);
-}
-
-function mappedTarget(scope: Scope.Scope, map: PromiseCallView): number | undefined {
-  if (map.callee?.type !== "MemberExpression" || map.callee.property?.name !== "map") {
-    return;
-  }
-  if (!nonemptyLiteral(map.callee.object)) {
-    return;
-  }
-  return callbackTargets(scope, map.arguments ?? []).get(0);
-}
-
-function rejectionHandlers(
-  scope: Scope.Scope,
-  nodes: readonly PromiseCallView[],
-): readonly number[] {
-  return nodes.flatMap((node) => {
-    if (node.type !== "CallExpression" || node.callee?.type !== "MemberExpression") {
-      return [];
-    }
-    const method = calleeBinding(scope, node.callee).suffix;
-    const index = rejectionIndex(method);
-    const handler = node.arguments?.[index];
-    if (index < 0 || handler === undefined || absentHandler(handler)) {
-      return [];
-    }
-    return [callbackTargets(scope, node.arguments ?? []).get(index) ?? -1];
-  });
-}
-
-function rejectionIndex(method: string): number {
-  if (method.endsWith(".catch")) {
-    return 0;
-  }
-  return method.endsWith(".then") ? 1 : -1;
-}
-
-function absentHandler(handler: ControlView): boolean {
-  return handler.value === null || handler.name === "undefined";
 }
 
 function regionExits(region: FlowRegion, sites: readonly ReturnSite[]): readonly string[] {
