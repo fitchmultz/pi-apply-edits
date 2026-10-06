@@ -5,6 +5,24 @@ const missing = "node-test(expect-assertions)";
 const conditional = "node-test(no-conditional-assertions)";
 const cases = [
   {
+    name: "alias replacement and pop cannot forge saved producer visibility",
+    body: 'const verify = () => assert.rejects(Promise.resolve()); test("empty", async () => { const assertion = verify(); const observed = assertion.catch((error: unknown) => { console.log(error); }); const tasks = [assertion]; const alias = tasks; alias[0] = Promise.resolve(); const removed = alias.pop(); console.log(removed); await Promise.all(tasks); await observed; });',
+    expected: [[missing, 3]],
+  },
+  {
+    name: "mutating an array cannot forge singleton any visibility",
+    body: 'test("empty", async () => { const assertion = assert.rejects(Promise.resolve()); const tasks = [assertion]; tasks.push(Promise.resolve()); await Promise.any(tasks); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "removing an array producer cannot forge all visibility",
+    body: 'const verify = () => assert.rejects(Promise.resolve()); test("empty", async () => { const assertion = verify(); const observed = assertion.catch((error: unknown) => { console.log(error); }); const tasks = [assertion]; tasks.length = 0; await Promise.all(tasks); await observed; });',
+    expected: [[missing, 3]],
+  },
+  {
     name: "same named generic return is not the native Promise",
     body: 'function invoke<Promise>(run: () => Promise): Promise { return run(); } test("asserted", () => { const result = invoke(() => { assert.equal(process.argv.length > 0, true); return { value: 1 }; }); console.log(result); });',
     expected: [],

@@ -1,5 +1,11 @@
-import type { Scope } from "eslint";
-import { bindingValue, calleeBinding, callbackTargets } from "./node-test-bindings.ts";
+import type { Rule, Scope } from "eslint";
+import {
+  bindingValue,
+  calleeBinding,
+  callbackTargets,
+  transparentExpression,
+} from "./node-test-bindings.ts";
+import { arrayLength, arraySnapshotSafe } from "./node-test-arrays.ts";
 import { nonemptyLiteral, type ControlView } from "./test-controls.ts";
 
 interface PromiseView extends ControlView {
@@ -172,18 +178,6 @@ function asyncFunction(
   return node.async === true;
 }
 
-function transparentExpression(node: ControlView): ControlView | undefined {
-  return [
-    "TSAsExpression",
-    "TSSatisfiesExpression",
-    "TSNonNullExpression",
-    "TSTypeAssertion",
-    "ChainExpression",
-  ].includes(node.type) && typeof node.expression !== "boolean"
-    ? node.expression
-    : undefined;
-}
-
 function consumedInputs(
   scope: Scope.Scope,
   node: PromiseView,
@@ -202,56 +196,21 @@ function nativeConsumer(scope: Scope.Scope, node: PromiseView): string | undefin
     : undefined;
 }
 
-export function arrayLength(
+export function settlingConsumer(
   scope: Scope.Scope,
-  node: PromiseView | undefined,
-  seen: ReadonlySet<unknown> = new Set(),
-): number | undefined {
-  if (node === undefined || seen.has(node)) {
-    return;
-  }
-  const visited = new Set(seen).add(node);
-  const expression = transparentExpression(node);
-  if (expression !== undefined) {
-    return arrayLength(scope, expression, visited);
-  }
-  if (node.type === "Identifier" && node.name !== undefined) {
-    const declaration = bindingValue(scope, node.name);
-    return declaration === undefined
-      ? undefined
-      : arrayLength(declaration.scope, declaration.value, visited);
-  }
-  return node.type === "ArrayExpression"
-    ? expandedLength(scope, node.elements ?? [], visited)
-    : undefined;
-}
-
-function expandedLength(
-  scope: Scope.Scope,
-  elements: readonly (PromiseView | null)[],
-  seen: ReadonlySet<unknown>,
-): number | undefined {
-  let length = 0;
-  for (const element of elements) {
-    const size =
-      element?.type === "SpreadElement"
-        ? arrayLength(scope, element.argument ?? undefined, seen)
-        : 1;
-    if (size === undefined) {
-      return;
-    }
-    length += size;
-  }
-  return length;
-}
-
-export function settlingConsumer(scope: Scope.Scope, nodes: readonly PromiseView[]): boolean {
+  nodes: readonly PromiseView[],
+  context: Rule.RuleContext,
+): boolean {
   return nodes.some((node) => {
     const method = nativeConsumer(scope, node);
     if (method === ".allSettled") {
       return true;
     }
-    const count = arrayLength(scope, node.arguments?.[0]);
+    const input = node.arguments?.[0];
+    if (method !== undefined && !arraySnapshotSafe(scope, input, context)) {
+      return true;
+    }
+    const count = arrayLength(scope, input);
     if (method === ".resolve") {
       return count !== undefined;
     }

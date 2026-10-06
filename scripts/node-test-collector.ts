@@ -12,8 +12,8 @@ import {
   rejectionHandlers,
   savedPromise,
   settlingConsumer,
-  arrayLength,
 } from "./node-test-promises.ts";
+import { arrayLength } from "./node-test-arrays.ts";
 import {
   controlFacts,
   failClosed,
@@ -259,7 +259,7 @@ export class NodeTestCollector {
       promiseSources: promiseSources(scope, node),
       deferred: savedPromise(scope, node, local),
       promise: promiseExpression(scope, node),
-      settles: settlingConsumer(scope, local),
+      settles: settlingConsumer(scope, local, this.context),
       ...controlFacts(local, this.context.sourceCode.text, node.range),
       handlers: rejectionHandlers(scope, local),
       parallel: parallelTarget(scope, node, resolved, local),
@@ -353,8 +353,8 @@ export class NodeTestCollector {
       stableArguments: false,
       settles:
         arrayLength(scope, argument) !== undefined ||
-        settlingConsumer(scope, local) ||
-        chain.some((call) => settlingConsumer(call.scope, [call.node])),
+        settlingConsumer(scope, local, this.context) ||
+        chain.some((call) => settlingConsumer(call.scope, [call.node], this.context)),
       producers: chain.flatMap((call) =>
         call.node.range === undefined ? [] : [call.node.range[0]],
       ),

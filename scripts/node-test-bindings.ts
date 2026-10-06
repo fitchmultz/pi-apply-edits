@@ -52,18 +52,27 @@ function calleeParts(input: ExpressionView): {
   return { callee, members };
 }
 
+export function transparentExpression(
+  node: ExpressionView & { readonly expression?: ExpressionView | boolean },
+): ExpressionView | undefined {
+  return [
+    "TSAsExpression",
+    "TSSatisfiesExpression",
+    "TSNonNullExpression",
+    "TSTypeAssertion",
+    "ChainExpression",
+  ].includes(node.type) && typeof node.expression !== "boolean"
+    ? node.expression
+    : undefined;
+}
+
 export function functionTarget(
   scope: Scope.Scope,
   node: ExpressionView & { readonly expression?: ExpressionView | boolean },
 ): number | undefined {
-  if (
-    ["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion"].includes(
-      node.type,
-    ) &&
-    node.expression !== undefined &&
-    typeof node.expression !== "boolean"
-  ) {
-    return functionTarget(scope, node.expression);
+  const expression = transparentExpression(node);
+  if (expression !== undefined) {
+    return functionTarget(scope, expression);
   }
   if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
     return node.range?.[0];
