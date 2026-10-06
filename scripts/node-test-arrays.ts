@@ -4,6 +4,7 @@ import type { ControlView } from "./test-controls.ts";
 
 interface ArrayView extends ControlView {
   readonly argument?: ControlView | null;
+  readonly elements?: readonly (ArrayView | null)[];
 }
 
 export function arrayLength(
@@ -76,7 +77,7 @@ function arrayOrigin(
 
 export function arraySnapshotSafe(
   scope: Scope.Scope,
-  node: ControlView | undefined,
+  node: ArrayView | undefined,
   context: Rule.RuleContext,
   seen: ReadonlySet<unknown> = new Set(),
 ): boolean {
@@ -91,14 +92,39 @@ export function arraySnapshotSafe(
   if (expression !== undefined) {
     return arraySnapshotSafe(scope, expression, context, visited);
   }
+  if (node.type === "ArrayExpression") {
+    return spreadSnapshotsSafe(scope, node.elements ?? [], context, visited);
+  }
+  return identifierSnapshotSafe(scope, node, context, visited);
+}
+
+function identifierSnapshotSafe(
+  scope: Scope.Scope,
+  node: ArrayView,
+  context: Rule.RuleContext,
+  seen: ReadonlySet<unknown>,
+): boolean {
   if (node.type !== "Identifier" || node.name === undefined) {
     return true;
   }
   const declaration = bindingValue(scope, node.name);
   return (
     declaration === undefined ||
-    (referencesSafe(declaration.scope, node.name, context, visited) &&
-      arraySnapshotSafe(declaration.scope, declaration.value, context, visited))
+    (referencesSafe(declaration.scope, node.name, context, seen) &&
+      arraySnapshotSafe(declaration.scope, declaration.value, context, seen))
+  );
+}
+
+function spreadSnapshotsSafe(
+  scope: Scope.Scope,
+  elements: readonly (ArrayView | null)[],
+  context: Rule.RuleContext,
+  seen: ReadonlySet<unknown>,
+): boolean {
+  return elements.every(
+    (element) =>
+      element?.type !== "SpreadElement" ||
+      arraySnapshotSafe(scope, element.argument ?? undefined, context, seen),
   );
 }
 

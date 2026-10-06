@@ -5,6 +5,19 @@ const missing = "node-test(expect-assertions)";
 const conditional = "node-test(no-conditional-assertions)";
 const cases = [
   {
+    name: "saved mutated spread cannot forge singleton any visibility",
+    body: 'test("empty", async () => { const assertion = assert.rejects(Promise.resolve()); const tasks = [assertion]; tasks.push(Promise.resolve()); const copied = [...tasks]; await Promise.any(copied); });',
+    expected: [
+      [missing, 3],
+      [conditional, 3],
+    ],
+  },
+  {
+    name: "saved unmutated spread retains singleton any visibility",
+    body: 'test("asserted", async () => { const assertion = assert.rejects(Promise.reject(new Error("expected"))); const tasks = [assertion]; const copied = [...tasks]; await Promise.any(copied); });',
+    expected: [],
+  },
+  {
     name: "alias replacement and pop cannot forge saved producer visibility",
     body: 'const verify = () => assert.rejects(Promise.resolve()); test("empty", async () => { const assertion = verify(); const observed = assertion.catch((error: unknown) => { console.log(error); }); const tasks = [assertion]; const alias = tasks; alias[0] = Promise.resolve(); const removed = alias.pop(); console.log(removed); await Promise.all(tasks); await observed; });',
     expected: [[missing, 3]],
