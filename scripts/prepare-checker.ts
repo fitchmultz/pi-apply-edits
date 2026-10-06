@@ -26,6 +26,9 @@ const SOURCE = "https://github.com/oxc-project/tsgolint.git";
 const PATCHES = ["safe-call.patch", "value-and-readonly.patch"].map((name) =>
   fileURLToPath(new URL(`../patches/tsgolint/${name}`, import.meta.url)),
 );
+const LIBRARY_PATCH = fileURLToPath(
+  new URL("../patches/tsgolint/readonly-array-library.patch", import.meta.url),
+);
 const require = createRequire(import.meta.url);
 
 function run(executable: string, args: readonly string[], cwd?: string): string {
@@ -107,6 +110,8 @@ function checkoutSource(directory: string): void {
     ],
     typescript,
   );
+  run("git", ["apply", "--check", LIBRARY_PATCH], typescript);
+  run("git", ["apply", LIBRARY_PATCH], typescript);
   // Canonical upstream initialization generates collections from the patched submodule.
   const collections = join(directory, "internal", "collections");
   mkdirSync(collections, { recursive: true });
@@ -225,7 +230,9 @@ function main(): void {
   }
   checkedVersion();
   const goVersion = checkedGoVersion();
-  const patchDigest = createHash("sha256").update(PATCHES.map(sha256).join("\n")).digest("hex");
+  const patchDigest = createHash("sha256")
+    .update([...PATCHES, LIBRARY_PATCH].map(sha256).join("\n"))
+    .digest("hex");
   const fingerprint = createHash("sha256")
     .update(
       [REVISION, TYPESCRIPT_REVISION, patchDigest, process.platform, process.arch, goVersion].join(

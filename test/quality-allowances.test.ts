@@ -133,7 +133,11 @@ for (const [name, module] of nativeCases) {
           },
           true,
         ),
-        "probe.ts": `import type { ${name} as Native } from "${module}";\nexport function approved(input: Native): void { console.log(input); }\ninterface ${name} { value: string }\nexport function unrelated(input: ${name}): void { console.log(input); }\nimport type { ${name} as Foreign } from "other-package";\nexport function foreign(input: Foreign): void { console.log(input); }`,
+        "probe.ts":
+          `import type { ${name} as Native } from "${module}";\nexport function approved(input: Native): void { console.log(input); }\ninterface ${name} { value: string }\nexport function unrelated(input: ${name}): void { console.log(input); }\nimport type { ${name} as Foreign } from "other-package";\nexport function foreign(input: Foreign): void { console.log(input); }` +
+          (name === "SessionManager"
+            ? "\nexport function projected(input: Readonly<Native>): void { console.log(input); }"
+            : ""),
         "node_modules/other-package/package.json": '{"name":"other-package","types":"index.d.ts"}',
         "node_modules/other-package/index.d.ts": `export interface ${name} { value: string }`,
       },
@@ -199,7 +203,7 @@ test("readonly contracts retain mutable-container, mapped-wrapper and nested-val
         true,
       ),
       "probe.ts":
-        "export function immutable(input: ReadonlyMap<string, number>): void { console.log(input); }\nexport function mutable(input: Map<string, number>): void { console.log(input); }\nexport function nested(input: ReadonlyMap<string, { value: string }>): void { console.log(input); }\nexport function data(input: { readonly values: readonly string[] }): void { console.log(input); }\nexport function mutableWrapper(input: Readonly<Map<string, number>>): void { console.log(input); }\nexport function nestedWrapper(input: Readonly<ReadonlyMap<string, { value: string }>>): void { console.log(input); }\nexport function set(input: ReadonlySet<string>): void { console.log(input); }\nexport function mutableSet(input: Set<string>): void { console.log(input); }\nexport function mutableSetWrapper(input: Readonly<Set<string>>): void { console.log(input); }\nexport function attached(input: ReadonlyMap<string, number> & { value: string }): void { console.log(input); }",
+        "export function immutable(input: ReadonlyMap<string, number>): void { console.log(input); }\nexport function mutable(input: Map<string, number>): void { console.log(input); }\nexport function nested(input: ReadonlyMap<string, { value: string }>): void { console.log(input); }\nexport function data(input: { readonly values: readonly string[] }): void { console.log(input); }\nexport function mutableWrapper(input: Readonly<Map<string, number>>): void { console.log(input); }\nexport function nestedWrapper(input: Readonly<ReadonlyMap<string, { value: string }>>): void { console.log(input); }\nexport function set(input: ReadonlySet<string>): void { console.log(input); }\nexport function mutableSet(input: Set<string>): void { console.log(input); }\nexport function mutableSetWrapper(input: Readonly<Set<string>>): void { console.log(input); }\nexport function attached(input: ReadonlyMap<string, number> & { value: string }): void { console.log(input); }\nconst immutableArray: readonly number[] = [1]; immutableArray.flatMap((value, index, array) => { array.push(value); return [index]; });\nconst mutableArray: number[] = [1]; mutableArray.flatMap((value, index, array) => { array.push(value); return [index]; });",
     },
     async (directory) => {
       expectDiagnostics(lint(directory, ["probe.ts"]), [
@@ -210,6 +214,7 @@ test("readonly contracts retain mutable-container, mapped-wrapper and nested-val
         [readonly, 8],
         [readonly, 9],
         [readonly, 10],
+        ["typescript(TS2339)", 11],
       ]);
     },
   );
@@ -238,6 +243,37 @@ test("partial native collection views audit every exposed data channel", async (
     ['Pick<ReadonlySet<number>, "entries" | "union">', false],
     ['Pick<ReadonlyMap<string, { value: number }>, "size">', false],
     ['Readonly<Pick<Map<string, number>, "get" | "has" | "size">>', false],
+    ["Partial<ReadonlyMap<string, number>>", false],
+    ["Partial<ReadonlySet<string>>", false],
+    ['Partial<Pick<ReadonlyMap<string, { readonly value: number }>, "values">>', false],
+    ['Readonly<Partial<Pick<Map<string, number>, "get" | "has" | "size">>>', false],
+    ["Partial<ReadonlyMap<string, { value: number }>>", true],
+    ["Partial<ReadonlySet<{ value: number }>>", true],
+    ['Pick<Map<string, number>, "get">', true],
+    ['Partial<Pick<Map<string, number>, "get">>', true],
+    ['Pick<Set<number>, "has">', true],
+    ['Partial<Pick<Set<number>, "has">>', true],
+    ['Pick<ReadonlyMap<string, number>, "get">', false],
+    ['Partial<Pick<ReadonlySet<number>, "has">>', false],
+    ['Readonly<Partial<Pick<Set<number>, "has">>>', false],
+    ['Pick<MutableMethods, "get">', true],
+    ['Partial<Pick<MutableMethods, "get">>', true],
+    ['Readonly<Partial<Pick<MutableMethods, "get">>>', false],
+    ['Partial<Pick<ForeignMethods, "get">>', true],
+    ['Readonly<Partial<Pick<ForeignMethods, "get">>>', false],
+    ['Pick<ReadonlySet<{ value: number }>, "isSubsetOf">', true],
+    ['Pick<ReadonlySet<{ value: number }>, "isDisjointFrom">', true],
+    ['Pick<ReadonlySet<{ value: number }>, "isSupersetOf">', false],
+    ['Pick<ReadonlySet<{ readonly value: number }>, "isSubsetOf" | "isDisjointFrom">', false],
+    ['Partial<Pick<ReadonlySet<{ value: number }>, "isSubsetOf">>', true],
+    ['Partial<Pick<ReadonlySet<number>, "isDisjointFrom">>', false],
+    ["readonly number[]", false],
+    ["readonly { readonly value: number }[]", false],
+    ['Pick<readonly number[], "map" | "length">', false],
+    ['Partial<Pick<readonly number[], "map">>', false],
+    ["readonly { value: number }[]", true],
+    ['Pick<readonly { value: number }[], "map" | "length">', true],
+    ['Partial<Pick<readonly { value: number }[], "map">>', true],
   ] satisfies readonly (readonly [string, boolean])[];
   await inProbe(
     {
@@ -251,17 +287,21 @@ test("partial native collection views audit every exposed data channel", async (
       ),
       "probe.ts":
         '/// <reference lib="esnext.collection" />\n' +
+        'import type { MutableMethods as ForeignMethods } from "other-package";\n' +
+        "interface MutableMethods { get(): number }\n" +
         cases
           .map(
             ([type], index) =>
               `export function view${index}(input: ${type}): void { console.log(input); }`,
           )
           .join("\n"),
+      "node_modules/other-package/package.json": '{"name":"other-package","types":"index.d.ts"}',
+      "node_modules/other-package/index.d.ts": "export interface MutableMethods { get(): number }",
     },
     async (directory) => {
       expectDiagnostics(
         lint(directory, ["probe.ts"]),
-        cases.flatMap(([, mutable], index) => (mutable ? [[readonly, index + 2]] : [])),
+        cases.flatMap(([, mutable], index) => (mutable ? [[readonly, index + 4]] : [])),
       );
     },
   );

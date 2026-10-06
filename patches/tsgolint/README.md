@@ -10,6 +10,8 @@ strictness. No native binaries or upstream source trees are committed.
 - tsgolint: [`eb9339115edde6811ca94c3433adf69ea9852880`](https://github.com/oxc-project/tsgolint/tree/eb9339115edde6811ca94c3433adf69ea9852880)
 - TypeScript Go submodule: `2bd066d87f5bafd315be9f40889d0a60b9e58e0b`
 - Upstream TypeScript patches: ordered `patches/*.patch` at that exact revision
+- Bundled TypeScript library correction: `readonly-array-library.patch`, applied
+  inside the prepared TypeScript Go submodule before building
 - Local patches, in order: `safe-call.patch`, `value-and-readonly.patch`
 - Go module inputs: upstream `go.mod`, `go.sum`, `go.work`, `go.work.sum`
 - Build: Git and **Go >=1.26**; qualified locally with **Go 1.27.1**, macOS arm64
@@ -34,7 +36,7 @@ its generated collections, and apply local patches. The build uses
 removed normally; dependency manifests and checksums remain readonly inputs.
 
 A cache under `~/.cache/pi-apply-edits/tsgolint/` is keyed by both source revisions,
-patch SHA-256 digests, platform, architecture and Go version. The executable's
+all patch SHA-256 digests, platform, architecture and Go version. The executable's
 stored SHA-256 is verified before reuse. An integrity failure names the exact
 cache directory to remove. The installed native package executable is replaced
 by a verified same-directory atomic rename only after a successful build.
@@ -75,8 +77,11 @@ values are checked through instantiated signatures. Mutable `Map`/`Set` mutators
 remain mutable even behind mapped `Readonly` wrappers. A readonly mapped view
 containing only native `get`, `has`, and `size` capabilities is accepted when its
 exposed keys and values are recursively readonly; iterator/callback views of
-mutable collections remain conservatively rejected. Partial `ReadonlyMap` and
-`ReadonlySet` views audit each actual exposure independently: iterators, entry
+mutable collections remain conservatively rejected. Plain or `Partial` views of
+mutable collection methods still require an explicit readonly projection.
+Ordinary mapped methods use the checker's actual readonly-symbol semantics,
+not synthetic/mapped flags or missing declarations as automatic permission.
+Partial `ReadonlyMap` and `ReadonlySet` views audit each actual exposure independently: iterators, entry
 pairs, callbacks (including their collection receiver), and set-algebra results
 cannot hide mutable stored data by omitting `get` or `has`. Fresh iterator entry
 pairs may be mutable, but their stored keys and values must be recursively
@@ -84,7 +89,14 @@ readonly; a stored mutable tuple still fails. Size-only views expose no stored
 data. Unknown future native exposure channels are conservatively rejected until
 their instantiated signatures have an explicit analysis. Additional application
 properties are checked normally; same-named local/package types do not receive
-native handling. Intersections are checked constituent by constituent **before**
+native handling. Optional methods are normalized before examining signatures.
+Set subset/disjoint predicates also expose stored elements to the other set's
+`has` callback; the superset predicate only reads the other set's keys.
+Readonly arrays retain element/tuple checks and also audit consumer-added members;
+derived and partial views check their actual native method channels. Instantiated
+symbols and their mappers are followed through generated checker shims, whose
+inputs are maintained in `shim/checker/extra-shim.json` and regenerated canonically.
+Intersections are checked constituent by constituent **before**
 any native allowance, so `Theme & { counter: number }` fails while the readonly
 attached-state form passes. Ordinary unions retain constituent checking.
 
@@ -95,6 +107,8 @@ inherited additions and index signatures. Mutable additions and readonly fields
 containing mutable values fail; readonly application additions pass without
 rejecting legitimate library merges. This covers global `URL`, module-augmented
 `Theme`/`TSchema`, and Node `Stats`, while preserving their original APIs.
+Qualified aliases resolve their own declaration symbol and origin; native SDK
+aliases retain only their original API, not foreign augmentations.
 
 This is acceptance of specific native collection contracts, not freezing,
 method purity, or universal immutability. `no-param-reassign` independently
@@ -102,6 +116,30 @@ protects parameter properties. Generic containers remain outside the allowlist;
 `treatMethodsAsReadonly: false` and `ignoreInferredTypes: true` are unchanged.
 Plain `() => T` callbacks already pass this release; mutable attached callable
 state still fails, so no obsolete generic-callback suppression is added.
+
+### Bundled readonly array callback contract
+
+The pinned TypeScript Go bundle declares `ReadonlyArray.flatMap`'s callback
+receiver as mutable `T[]`, although it receives the original array at runtime.
+`readonly-array-library.patch` changes only that third argument to `readonly T[]`;
+the corresponding `Array.flatMap` signature remains mutable. This prevents a
+readonly input from exposing a mutating callback channel while retaining ordinary
+readonly array operations and legitimate mutable-array callbacks.
+
+The patch applies to `internal/bundled/libs/lib.es2019.array.d.ts` after upstream
+preparation (prepared revision `db8b2fb437bb33ce5dca5d3ce128300c8f63763f`).
+That external declaration is embedded directly by `go:embed`; the normal build
+does not regenerate it. Its generator consumes the separately pinned TypeScript
+source `4d4f005c8541e0255a9d8791205fdce326e462bc`. Regenerating that external bundle
+requires the equivalent source correction or reapplication of this patch before
+building. The library patch's SHA-256 participates in the checker cache identity.
+
+Installed-CLI probes require TS2339 for mutation through the readonly callback
+receiver and retain a mutable-array positive. Native editor/LSP linting rejects
+the unavailable mutator through `no-unsafe-call`; compiler diagnostics remain a
+separate language-service boundary. The independent npm TypeScript
+compiler and its declarations are not modified; this correction belongs only to
+the reproducibly built development checker.
 
 ## Qualification and removal
 

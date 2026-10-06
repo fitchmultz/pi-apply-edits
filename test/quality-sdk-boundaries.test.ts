@@ -69,3 +69,22 @@ for (const modifier of ["", "readonly "]) {
     );
   });
 }
+
+for (const [field, mutable] of [
+  ["counter: number", true],
+  ["readonly counter: number", false],
+  ["readonly application: { value: number }", true],
+  ["readonly application: { readonly value: number }", false],
+] as const) {
+  test(`merged readonly array application state stays checked: ${field}`, async () => {
+    await inProbe(
+      {
+        ".oxlintrc.json": config,
+        "probe.ts": `export {};\ndeclare global { interface ReadonlyArray<T> { ${field} } }\nexport function augmented(input: readonly string[]): void { console.log(input); }`,
+      },
+      async (directory) => {
+        expectDiagnostics(lint(directory, ["probe.ts"]), mutable ? [[readonly, 3]] : []);
+      },
+    );
+  });
+}
