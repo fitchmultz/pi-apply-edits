@@ -1,11 +1,14 @@
 import { lstat, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
-/** Operation addresses retain POSIX traversal; Windows uses its native DOS path normalization. */
+/** Operation addresses retain POSIX traversal; Windows uses native DOS normalization. */
 export function operationPath(input: string, cwd = process.cwd()): string {
-  if (process.platform === "win32") return resolve(cwd, input);
-  if (!isAbsolute(cwd)) cwd = operationPath(cwd);
-  return isAbsolute(input) ? input : `${cwd.endsWith(sep) ? cwd : `${cwd}${sep}`}${input}`;
+  if (process.platform === "win32") {
+    return resolve(cwd, input);
+  }
+  const directory = isAbsolute(cwd) ? cwd : operationPath(cwd);
+  const prefix = directory.endsWith(sep) ? directory : `${directory}${sep}`;
+  return isAbsolute(input) ? input : `${prefix}${input}`;
 }
 
 export async function nativeRealpath(path: string): Promise<string> {
@@ -14,61 +17,112 @@ export async function nativeRealpath(path: string): Promise<string> {
   return realpath(path);
 }
 
-async function missingPath(path: string, error: unknown): Promise<void> {
-  if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  await assertNotDanglingSymbolicLink(path);
+function hasCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
-/** Resolve one component at a time, revisiting existing links after prospective missing/.. traversal. */
-export async function prospectiveDirectory(path: string, missing: Set<string> = new Set()): Promise<string> {
-  try {
-    const info = await stat(path);
-    if (!info.isDirectory()) throw Object.assign(new Error(`A parent path is not a directory: ${path}`), { code: "ENOTDIR" });
-    return await realpath(path);
-  } catch (error) {
-    await missingPath(path, error);
+async function existingDirectory(path: string): Promise<string> {
+  const info = await stat(path);
+  if (!info.isDirectory()) {
+    throw Object.assign(new Error(`A parent path is not a directory: ${path}`), {
+      code: "ENOTDIR",
+    });
   }
-  const parent = dirname(path);
-  if (parent === path) throw new Error(`No existing parent directory: ${path}`);
-  const candidate = join(await prospectiveDirectory(parent, missing), basename(path));
-  try {
-    const info = await stat(candidate);
-    if (!info.isDirectory()) throw Object.assign(new Error(`A parent path is not a directory: ${candidate}`), { code: "ENOTDIR" });
-    return await realpath(candidate);
-  } catch (error) {
-    await missingPath(candidate, error);
-    missing.add(candidate);
-    return candidate;
+  return realpath(path);
+}
+
+export interface ProspectiveDirectory {
+  readonly path: string;
+  readonly missing: ReadonlySet<string>;
+}
+
+/** Owns discovery state; resolution never creates the missing directories. */
+class DirectoryDiscovery {
+  readonly #missing = new Set<string>();
+
+  async resolve(path: string): Promise<string> {
+    try {
+      return await existingDirectory(path);
+    } catch (error) {
+      if (!hasCode(error, "ENOENT")) {
+        throw error;
+      }
+      await assertNotDanglingSymbolicLink(path);
+    }
+    const parent = dirname(path);
+    if (parent === path) {
+      throw new Error(`No existing parent directory: ${path}`);
+    }
+    const candidate = join(await this.resolve(parent), basename(path));
+    try {
+      return await existingDirectory(candidate);
+    } catch (error) {
+      if (!hasCode(error, "ENOENT")) {
+        throw error;
+      }
+      await assertNotDanglingSymbolicLink(candidate);
+      this.#missing.add(candidate);
+      return candidate;
+    }
+  }
+
+  async discover(path: string): Promise<ProspectiveDirectory> {
+    return { path: await this.resolve(path), missing: this.#missing };
   }
 }
 
-// Called after direct lookup failed. Resolve parents before retrying the target;
-// this detects dangling ancestors before any queue acquisition. Never creates parents.
+/** Resolve components, revisiting links after prospective missing/.. traversal. */
+export async function discoverProspectiveDirectory(path: string): Promise<ProspectiveDirectory> {
+  return new DirectoryDiscovery().discover(path);
+}
+
+export async function prospectiveDirectory(path: string): Promise<string> {
+  return new DirectoryDiscovery().resolve(path);
+}
+
+// Resolve parents before retrying the target; detects dangling ancestors before queue acquisition.
 export async function prospectiveTarget(path: string): Promise<string> {
   const parent = dirname(path);
-  if (parent === path) return path;
+  if (parent === path) {
+    return path;
+  }
   let canonicalParent: string;
-  try { canonicalParent = await realpath(parent); }
-  catch (error) {
-    await assertNotDanglingSymbolicLink(parent, error);
+  try {
+    canonicalParent = await realpath(parent);
+  } catch (error) {
+    if (!hasCode(error, "ENOENT") && !hasCode(error, "ENOTDIR")) {
+      throw error;
+    }
+    await assertNotDanglingSymbolicLink(parent);
     canonicalParent = await prospectiveTarget(parent);
   }
   const candidate = join(canonicalParent, basename(path));
-  try { return await realpath(candidate); }
-  catch (error) { await assertNotDanglingSymbolicLink(candidate, error); }
+  try {
+    return await realpath(candidate);
+  } catch (error) {
+    if (!hasCode(error, "ENOENT") && !hasCode(error, "ENOTDIR")) {
+      throw error;
+    }
+    await assertNotDanglingSymbolicLink(candidate);
+  }
   return candidate;
 }
 
-export async function assertNotDanglingSymbolicLink(path: string, error?: unknown): Promise<void> {
-  if (error !== undefined && !["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-  const entry = await lstat(path).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+export async function assertNotDanglingSymbolicLink(path: string): Promise<void> {
+  const entry = await lstat(path).catch((failure: unknown) => {
+    if (!hasCode(failure, "ENOENT") && !hasCode(failure, "ENOTDIR")) {
+      throw failure;
+    }
   });
-  if (entry?.isSymbolicLink()) throw new Error(`Cannot mutate dangling symbolic link ${path}. No changes were written.`);
+  if (entry?.isSymbolicLink() === true) {
+    throw new Error(`Cannot mutate dangling symbolic link ${path}. No changes were written.`);
+  }
 }
 
 export function assertFileAddress(path: string): void {
   if (path.endsWith(sep) || basename(path) === "." || basename(path) === "..") {
-    throw new Error(`Target is a directory path, not a regular file: ${path}. No changes were written.`);
+    throw new Error(
+      `Target is a directory path, not a regular file: ${path}. No changes were written.`,
+    );
   }
 }

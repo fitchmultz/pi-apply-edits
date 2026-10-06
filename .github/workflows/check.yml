@@ -14,13 +14,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PI_AUTOMATION_REF: a0fdc5780053237ac4ee24f49976ee5449e3aaab # v1.0.1
+  PI_AUTOMATION_REF: a465b71c0707336df89073240d5100354d31566f # reviewed PR 103 candidate
 
 jobs:
   official:
     name: Official Pi / macOS / Node 24
     runs-on: macos-latest
-    timeout-minutes: 6
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,6 +38,14 @@ jobs:
           package-manager-cache: false
       - name: Use the declared npm version
         run: npm install --global "$(node -p 'require("./extension/package.json").packageManager')" --no-audit --no-fund
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - name: Install pinned native checker toolchain
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --component llvm-tools
+          echo "$(rustup run 1.99.0 rustc --print sysroot)/bin" >> "$GITHUB_PATH"
       - name: Qualify declared official Pi
         shell: bash
         run: |
@@ -45,12 +53,12 @@ jobs:
           GITHUB_STEP_SUMMARY='' node automation/scripts/qualify.mjs --repo pi-apply-edits \
             --source "$GITHUB_WORKSPACE/extension" --host official --target "$version" \
             --output "$RUNNER_TEMP/qualification"
-          echo "Official Pi $version: package contracts and Git-consumer CLI probe passed." >> "$GITHUB_STEP_SUMMARY"
+          echo "Official Pi $version: strict quality gates, checker-isolation probes, package contracts and Git-consumer CLI probe passed." >> "$GITHUB_STEP_SUMMARY"
 
   fork:
     name: Fitch fork / Linux / Node 24
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,6 +82,14 @@ jobs:
           package-manager-cache: false
       - name: Use the declared npm version
         run: npm install --global "$(node -p 'require("./extension/package.json").packageManager')" --no-audit --no-fund
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - name: Install pinned native checker toolchain
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --component llvm-tools
+          echo "$(rustup run 1.99.0 rustc --print sysroot)/bin" >> "$GITHUB_PATH"
       - name: Install Linux metadata tools
         run: |
           sudo apt-get update
@@ -98,4 +114,4 @@ jobs:
           GITHUB_STEP_SUMMARY='' node automation/scripts/qualify.mjs --repo pi-apply-edits \
             --source "$GITHUB_WORKSPACE/extension" --host fork \
             --target "$RUNNER_TEMP/fork-package" --output "$RUNNER_TEMP/qualification"
-          echo "Fork $PI_COMPAT_FORK_REF: package contracts and Git-consumer CLI probe passed." >> "$GITHUB_STEP_SUMMARY"
+          echo "Fork $PI_COMPAT_FORK_REF: strict quality gates, checker-isolation probes, package contracts and Git-consumer CLI probe passed." >> "$GITHUB_STEP_SUMMARY"

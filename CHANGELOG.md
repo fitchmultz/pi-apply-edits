@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Enforce strict type-aware Oxlint, Oxfmt, compiler, suppression, language-scope, and declaration-isolation checks in local development, editors, and CI.
+- Separate patch interpretation, editing phases, and filesystem publication into focused owners while preserving public APIs, mutable result receipts, ordering, cancellation, metadata, and guarded cleanup.
+- Reproducibly correct the pinned development checker’s declaration matching and readonly-container handling without weakening Promise or application-input checks.
+- Reject foreign-owned delete and content-move staging directories before adopting cleanup state, leaving those directories untouched. Preserve original publication failures through `Error.cause`.
+
 ## 1.1.0 — 2026-10-01
 
 - Qualify Pi 1.0.0 and TypeBox 1.3.27; require Pi 1.0.0 on official and maintained fork hosts.

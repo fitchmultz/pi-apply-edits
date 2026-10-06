@@ -1,14 +1,29 @@
 import { basename, dirname, join } from "node:path";
-import type { NewFilePlan } from "./file-system.ts";
+
+/** Only path spellings are needed; filesystem identities and mutable staging state stay with their owner. */
+interface CreationPaths {
+  readonly inputPath: string;
+  readonly targetPath: string;
+  readonly ancestorPath: string;
+  readonly missingDirectories: readonly string[];
+}
 
 const PATH_UUID_SHAPE = "00000000-0000-4000-8000-000000000000";
 
 function pathBudget(): { platform: string; limit: number; margin: number } {
-  if (process.platform === "darwin") return { platform: "macOS", limit: 1024, margin: 32 };
-  if (process.platform === "linux" || process.platform === "android") {
-    return { platform: process.platform === "android" ? "Android" : "Linux", limit: 4096, margin: 32 };
+  if (process.platform === "darwin") {
+    return { platform: "macOS", limit: 1024, margin: 32 };
   }
-  if (process.platform === "win32") return { platform: "Windows", limit: 32767, margin: 64 };
+  if (process.platform === "linux" || process.platform === "android") {
+    return {
+      platform: process.platform === "android" ? "Android" : "Linux",
+      limit: 4096,
+      margin: 32,
+    };
+  }
+  if (process.platform === "win32") {
+    return { platform: "Windows", limit: 32767, margin: 64 };
+  }
   return { platform: process.platform, limit: 1024, margin: 32 };
 }
 
@@ -17,10 +32,7 @@ function pathUnits(path: string): number {
 }
 
 function shapedTemporaryPath(targetPath: string): string {
-  return join(
-    dirname(targetPath),
-    `.pi-apply-edits-${process.pid}-${PATH_UUID_SHAPE}.tmp`,
-  );
+  return join(dirname(targetPath), `.pi-apply-edits-${process.pid}-${PATH_UUID_SHAPE}.tmp`);
 }
 
 function shapedTemporaryDirectory(targetPath: string): string {
@@ -31,11 +43,13 @@ function shapedCleanupEntry(path: string): string {
   return join(shapedTemporaryDirectory(path), "entry");
 }
 
-export function assertPlannedPathBudget(displayPath: string, candidates: string[]): void {
+export function assertPlannedPathBudget(displayPath: string, candidates: readonly string[]): void {
   const budget = pathBudget();
   const longest = Math.max(...candidates.map(pathUnits));
   const supportedMaximum = budget.limit - budget.margin - 1;
-  if (longest <= supportedMaximum) return;
+  if (longest <= supportedMaximum) {
+    return;
+  }
   throw new Error(
     `Cannot modify ${displayPath}: planned staging and cleanup require a ${longest}-` +
       `${process.platform === "win32" ? "character" : "byte"} path, beyond the supported ` +
@@ -59,7 +73,10 @@ export function assertReplacementPathBudget(targetPath: string, displayPath: str
   ]);
 }
 
-export function assertCreatePathBudget(plan: NewFilePlan, displayPath: string): void {
+export function assertCreatePathBudget(
+  plan: Omit<CreationPaths, "inputPath">,
+  displayPath: string,
+): void {
   if (plan.missingDirectories.length > 0) {
     const container = join(plan.ancestorPath, `.pi-apply-edits-${PATH_UUID_SHAPE}.tmpdir`);
     const staging = join(container, "publish");
@@ -87,7 +104,11 @@ export function assertEntryDeletePathBudget(targetPath: string, displayPath: str
   assertPlannedPathBudget(displayPath, [targetPath, retained, shapedCleanupEntry(retained)]);
 }
 
-export function assertEntryMovePathBudget(sourcePath: string, destination: NewFilePlan, displayPath: string): void {
+export function assertEntryMovePathBudget(
+  sourcePath: string,
+  destination: CreationPaths,
+  displayPath: string,
+): void {
   assertEntryDeletePathBudget(sourcePath, displayPath);
   const sourceCandidate = join(shapedTemporaryDirectory(sourcePath), "move");
   const sourceProbe = shapedTemporaryPath(sourcePath);
