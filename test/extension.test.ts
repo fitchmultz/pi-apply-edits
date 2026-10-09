@@ -108,6 +108,8 @@ function renderContext(cwd: string, isError = false) {
     expanded: true,
     showImages: false,
     isError,
+    durationMs: undefined,
+    outputPad: 1,
     invalidate() {
       // There is no live TUI to invalidate in this rendered-output fixture.
     },
