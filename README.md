@@ -5,8 +5,6 @@ The tools preserve existing text formats by default and report which changes com
 
 ![Pi selects a file tool, checks all requested files, then previews changes or writes files and returns file results.](.github/readme/editing-flow.png)
 
-Pi checks every requested file before it applies changes. A preview shows the planned changes without a write.
-
 ## Install and start
 
 The extension requires Node 24+ and Pi 1.0.0+. You can use official Pi or Fitch Pi.
