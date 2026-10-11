@@ -4,10 +4,8 @@ Detailed tool formats, integration behavior, and filesystem guarantees for pi-ap
 
 ## Loading and tool selection
 
-To install the tagged 1.1.0 release:
-
 ```sh
-pi install git:github.com/fitchmultz/pi-apply-edits@v1.1.0
+pi install git:github.com/fitchmultz/pi-apply-edits
 ```
 
 On Pi 1.0, `/reload` refreshes extension code. Restart after changing dependencies. A checkout can be loaded with `pi -e /path/to/pi-apply-edits`.
