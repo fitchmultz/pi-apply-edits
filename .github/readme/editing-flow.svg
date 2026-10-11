@@ -56,7 +56,7 @@
   <rect width="1600" height="620" fill="url(#violetBloom)"/>
   <rect width="1600" height="620" fill="url(#dotGrid)"/>
   <text x="64" y="76" class="title">From a Pi request to a file change</text>
-  <text x="64" y="120" class="copy">Choose a tool. Plan every file. See what completed.</text>
+  <text x="64" y="120" class="copy">Pi checks all files before it applies changes.</text>
 
   <!-- Causal paths: planning precedes either writing or previewing. Both return receipts. -->
   <path d="M446 273H526" class="connector" stroke="#60A5FA" marker-end="url(#arrowBlue)"/>
@@ -87,7 +87,7 @@
     <text x="30" y="58" class="card-title" style="font-size:36px">Plan every file</text>
     <text x="30" y="105" class="copy">Read files, match changes,</text>
     <text x="30" y="143" class="copy">validate the whole request.</text>
-    <text x="30" y="185" class="chip" fill="#AFC6FF">BEFORE WRITING</text>
+    <text x="30" y="185" class="chip" fill="#AFC6FF">BEFORE A WRITE</text>
   </g>
 
   <g transform="translate(1080 168)" filter="url(#shadow)">
@@ -96,7 +96,7 @@
     <path d="m32 45 6 6 12-14" fill="none" stroke="#E9D5FF" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
     <text x="72" y="56" class="card-title">Write + verify</text>
     <text x="30" y="105" class="copy">Publish prepared changes.</text>
-    <text x="30" y="143" class="copy">Check the resulting files.</text>
+    <text x="30" y="143" class="copy">Check each file.</text>
   </g>
 
   <g transform="translate(526 440)" filter="url(#shadow)">
@@ -108,9 +108,9 @@
   <g transform="translate(1080 410)" filter="url(#shadow)">
     <rect width="456" height="166" rx="24" fill="url(#glass)" stroke="#285347"/>
     <rect width="5" height="166" rx="2.5" fill="#34D399"/>
-    <text x="30" y="54" class="card-title">Check the receipt</text>
-    <text x="30" y="103" class="copy">Per-file outcomes and diffs.</text>
+    <text x="30" y="54" class="card-title">Check file results</text>
+    <text x="30" y="103" class="copy">File results and diffs.</text>
     <text x="30" y="140" class="copy">Partial failures stay visible.</text>
   </g>
-  <text x="64" y="610" class="sans" font-size="22" fill="#91A0B8">A write failure can still leave a partial batch. Inspect the receipt before retrying.</text>
+  <text x="64" y="610" class="sans" font-size="22" fill="#91A0B8">A write failure can leave a partial batch. Check file results before you retry.</text>
 </svg>
