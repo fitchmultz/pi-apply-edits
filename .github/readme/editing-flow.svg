@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="620" viewBox="0 0 1600 620" role="img" aria-labelledby="title desc">
+  <title id="title">How pi-apply-edits handles a change</title>
+  <desc id="desc">Pi chooses apply_patch, replace_text, write_files, or preview_patch. Every file is planned first. A writing call publishes and verifies files, while a preview writes nothing. Both return per-file receipts. Writing can leave a partial batch.</desc>
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#060A12"/>
+      <stop offset="0.52" stop-color="#0B1120"/>
+      <stop offset="1" stop-color="#080C16"/>
+    </linearGradient>
+    <radialGradient id="blueBloom" cx="0.24" cy="0.22" r="0.8">
+      <stop stop-color="#2563EB" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#2563EB" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="violetBloom" cx="0.82" cy="0.3" r="0.7">
+      <stop stop-color="#8B5CF6" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#172238" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#0E1525" stop-opacity="0.98"/>
+    </linearGradient>
+    <linearGradient id="focus" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#172554" stop-opacity="0.82"/>
+      <stop offset="1" stop-color="#312E81" stop-opacity="0.58"/>
+    </linearGradient>
+    <pattern id="dotGrid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.2" fill="#94A3B8" fill-opacity="0.08"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#02040A" flood-opacity="0.44"/>
+    </filter>
+    <marker id="arrowBlue" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M1 1 11 6 1 11Z" fill="#60A5FA"/>
+    </marker>
+    <marker id="arrowViolet" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M1 1 11 6 1 11Z" fill="#C084FC"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M1 1 11 6 1 11Z" fill="#34D399"/>
+    </marker>
+    <style>
+      .sans { font-family: Inter, ui-sans-serif, Arial, sans-serif; }
+      .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+      .title { font: 700 46px Inter, ui-sans-serif, Arial, sans-serif; fill: #F8FAFC; }
+      .card-title { font: 650 32px Inter, ui-sans-serif, Arial, sans-serif; fill: #F8FAFC; }
+      .copy { font: 450 26px Inter, ui-sans-serif, Arial, sans-serif; fill: #B5C2D6; }
+      .code { font: 500 26px "JetBrains Mono", ui-monospace, monospace; fill: #C6DCFF; }
+      .chip { font: 700 20px "JetBrains Mono", ui-monospace, monospace; letter-spacing: 1px; }
+      .connector { fill: none; stroke-width: 3.5; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <!-- Opaque canvas and restrained starter-token depth. -->
+  <rect width="1600" height="620" fill="url(#canvas)"/>
+  <rect width="1600" height="620" fill="url(#blueBloom)"/>
+  <rect width="1600" height="620" fill="url(#violetBloom)"/>
+  <rect width="1600" height="620" fill="url(#dotGrid)"/>
+  <text x="64" y="76" class="title">From a Pi request to a file change</text>
+  <text x="64" y="120" class="copy">Pi checks all files before it applies changes.</text>
+
+  <!-- Causal paths: planning precedes either writing or previewing. Both return receipts. -->
+  <path d="M446 273H526" class="connector" stroke="#60A5FA" marker-end="url(#arrowBlue)"/>
+  <path d="M966 251H1080" class="connector" stroke="#C084FC" marker-end="url(#arrowViolet)"/>
+  <text x="1023" y="231" text-anchor="middle" class="copy" fill="#D8B4FE">write</text>
+  <path d="M746 378V440" class="connector" stroke="#60A5FA" marker-end="url(#arrowBlue)"/>
+  <text x="772" y="418" class="copy">preview</text>
+  <path d="M1308 342V410" class="connector" stroke="#34D399" marker-end="url(#arrowGreen)"/>
+  <path d="M966 506H1080" class="connector" stroke="#34D399" marker-end="url(#arrowGreen)"/>
+
+  <!-- Tool choices are alternatives within one request, not sequential stages. -->
+  <g transform="translate(64 168)" filter="url(#shadow)">
+    <rect width="382" height="408" rx="26" fill="url(#glass)" stroke="#2A3851"/>
+    <rect width="5" height="408" rx="2.5" fill="#60A5FA"/>
+    <text x="30" y="56" class="card-title">Ask Pi to edit</text>
+    <text x="30" y="96" class="copy">Pi chooses a tool:</text>
+    <text x="30" y="151" class="code">apply_patch</text>
+    <text x="30" y="200" class="code">replace_text</text>
+    <text x="30" y="249" class="code">write_files</text>
+    <text x="30" y="298" class="code">preview_patch</text>
+    <rect x="30" y="336" width="206" height="40" rx="20" fill="#172554" stroke="#3B82F6" stroke-opacity="0.50"/>
+    <text x="133" y="363" text-anchor="middle" class="chip" fill="#93C5FD">YOUR REQUEST</text>
+  </g>
+
+  <!-- Planning is the dominant subject. No target is published before all files are planned. -->
+  <g transform="translate(526 168)" filter="url(#shadow)">
+    <rect width="440" height="210" rx="28" fill="url(#focus)" stroke="#6D7DFF" stroke-opacity="0.62"/>
+    <text x="30" y="58" class="card-title" style="font-size:36px">Plan every file</text>
+    <text x="30" y="105" class="copy">Read files, match changes,</text>
+    <text x="30" y="143" class="copy">validate the whole request.</text>
+    <text x="30" y="185" class="chip" fill="#AFC6FF">BEFORE A WRITE</text>
+  </g>
+
+  <g transform="translate(1080 168)" filter="url(#shadow)">
+    <rect width="456" height="174" rx="24" fill="url(#glass)" stroke="#4A3563"/>
+    <circle cx="41" cy="45" r="18" fill="#C084FC" fill-opacity="0.14"/>
+    <path d="m32 45 6 6 12-14" fill="none" stroke="#E9D5FF" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="72" y="56" class="card-title">Write + verify</text>
+    <text x="30" y="105" class="copy">Publish prepared changes.</text>
+    <text x="30" y="143" class="copy">Check each file.</text>
+  </g>
+
+  <g transform="translate(526 440)" filter="url(#shadow)">
+    <rect width="440" height="136" rx="24" fill="url(#glass)" stroke="#285064"/>
+    <text x="30" y="53" class="card-title">Preview changes</text>
+    <text x="30" y="100" class="copy">Read-only. No files written.</text>
+  </g>
+
+  <g transform="translate(1080 410)" filter="url(#shadow)">
+    <rect width="456" height="166" rx="24" fill="url(#glass)" stroke="#285347"/>
+    <rect width="5" height="166" rx="2.5" fill="#34D399"/>
+    <text x="30" y="54" class="card-title">Check file results</text>
+    <text x="30" y="103" class="copy">File results and diffs.</text>
+    <text x="30" y="140" class="copy">Partial failures stay visible.</text>
+  </g>
+  <text x="64" y="610" class="sans" font-size="22" fill="#91A0B8">A write failure can leave a partial batch. Check file results before you retry.</text>
+</svg>

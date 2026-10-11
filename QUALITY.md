@@ -11,7 +11,7 @@ build the corrected **development checkers**, not the production extension.
 Install Rust's `llvm-tools` component as CI does to support native debug stripping:
 
 ```sh
-rustup component add llvm-tools --toolchain 1.99.0
+rustup component add llvm-tools
 ```
 
 ```sh
