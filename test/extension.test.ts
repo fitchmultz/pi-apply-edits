@@ -12,6 +12,7 @@ import {
   ModelRuntime,
   SessionManager,
   SettingsManager,
+  type BuildSystemPromptOptions,
   type SourceInfo,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -93,6 +94,36 @@ async function harness(
     tools.set(registered.definition.name, registered.definition);
   }
   return { state, tools, sources, session };
+}
+
+type StartOptions = Readonly<Pick<BuildSystemPromptOptions, "cwd">>;
+type LegacyStartEmitter = (
+  prompt: string,
+  images: undefined,
+  options: StartOptions,
+) => Promise<unknown>;
+type TriggerStartEmitter = (
+  trigger: Readonly<{ messageType: "user"; prompt: string }>,
+  options: StartOptions,
+) => Promise<unknown>;
+
+function acceptsStartTrigger(
+  emit: LegacyStartEmitter | TriggerStartEmitter,
+): emit is TriggerStartEmitter {
+  // Pi 1.1.0 takes three arguments; newer hosts take a trigger and options.
+  return emit.length === 2;
+}
+
+async function emitBeforeAgentStart(emit: LegacyStartEmitter | TriggerStartEmitter, cwd: string) {
+  const options = {
+    cwd,
+    selectedTools: [],
+  } satisfies BuildSystemPromptOptions;
+  if (acceptsStartTrigger(emit)) {
+    await emit({ messageType: "user", prompt: "fixture" }, options);
+  } else {
+    await emit("fixture", undefined, options);
+  }
 }
 
 function renderContext(cwd: string, isError = false) {
@@ -202,15 +233,11 @@ test("environment opt-in and later manual selection survive the first turn", asy
     }
   }
   const fixture = await harness(t);
-  await fixture.session.extensionRunner.emitBeforeAgentStart("fixture", undefined, {
-    cwd: fixture.session.extensionRunner.createContext().cwd,
-    selectedTools: [],
-  });
+  const runner = fixture.session.extensionRunner;
+  const emit: LegacyStartEmitter | TriggerStartEmitter = runner.emitBeforeAgentStart.bind(runner);
+  await emitBeforeAgentStart(emit, runner.createContext().cwd);
   fixture.state.active = ["read", "write"];
-  await fixture.session.extensionRunner.emitBeforeAgentStart("fixture", undefined, {
-    cwd: fixture.session.extensionRunner.createContext().cwd,
-    selectedTools: [],
-  });
+  await emitBeforeAgentStart(emit, runner.createContext().cwd);
   assert.deepEqual(fixture.state.active, ["read", "write"]);
 });
 
