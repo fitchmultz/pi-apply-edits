@@ -14,13 +14,27 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PI_AUTOMATION_REF: a465b71c0707336df89073240d5100354d31566f # reviewed PR 103 candidate
+  PI_AUTOMATION_REF: 9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
 
 jobs:
+  resolve:
+    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
+    with:
+      automation-ref: 9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
+
   official:
-    name: Official Pi / macOS / Node 24
+    needs: resolve
+    name: ${{ matrix.name }}
     runs-on: macos-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: declared
+            name: Official Pi / macOS / Node 24
+          - target: latest
+            name: Latest official Pi / macOS / Node 24
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,16 +60,32 @@ jobs:
         run: |
           rustup toolchain install 1.99.0 --profile minimal --component llvm-tools
           echo "$(rustup run 1.99.0 rustc --print sysroot)/bin" >> "$GITHUB_PATH"
-      - name: Qualify declared official Pi
+      - name: Qualify official Pi and Git consumer
         shell: bash
+        env:
+          OFFICIAL_TARGET: ${{ matrix.target }}
+          OFFICIAL_VERSION: ${{ needs.resolve.outputs.official-version }}
         run: |
-          version="$(node -p 'require("./extension/package.json").devDependencies["@earendil-works/pi-coding-agent"]')"
+          case "$OFFICIAL_TARGET" in
+            declared) version="$(node -p 'require("./extension/package.json").devDependencies["@earendil-works/pi-coding-agent"]')" ;;
+            latest) version="$OFFICIAL_VERSION"; test -n "$version" ;;
+            *) exit 1 ;;
+          esac
           GITHUB_STEP_SUMMARY='' node automation/scripts/qualify.mjs --repo pi-apply-edits \
             --source "$GITHUB_WORKSPACE/extension" --host official --target "$version" \
             --output "$RUNNER_TEMP/qualification"
           echo "Official Pi $version: strict quality gates, checker-isolation probes, package contracts and Git-consumer CLI probe passed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: official-qualification-${{ matrix.target }}
+          path: ${{ runner.temp }}/qualification
+          if-no-files-found: error
+          retention-days: 3
 
   fork:
+    needs: resolve
     name: Fitch fork / Linux / Node 24
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -73,7 +103,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: fitchmultz/pi
-          ref: main
+          ref: ${{ needs.resolve.outputs.fork-ref }}
           path: fork
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -96,22 +126,43 @@ jobs:
           sudo apt-get install -y attr acl libcap2-bin
           command -v cc
       - name: Build the checked-out fork
-        id: fork_build
         working-directory: fork
+        env:
+          FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
         run: |
-          fork_ref="$(git rev-parse HEAD)"
-          echo "sha=$fork_ref" >> "$GITHUB_OUTPUT"
           npm ci --ignore-scripts --no-audit --no-fund
           npm run hydrate:model-data
           git diff --exit-code
           npm run build:offline
-          node ../automation/scripts/pack-fork.mjs . "$RUNNER_TEMP/fork-package" "$fork_ref"
+          node ../automation/scripts/pack-fork.mjs . "$RUNNER_TEMP/fork-package" "$FORK_REF"
           git diff --exit-code
       - name: Qualify fork and Git consumer
         env:
-          PI_COMPAT_FORK_REF: ${{ steps.fork_build.outputs.sha }}
+          PI_COMPAT_FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
         run: |
           GITHUB_STEP_SUMMARY='' node automation/scripts/qualify.mjs --repo pi-apply-edits \
             --source "$GITHUB_WORKSPACE/extension" --host fork \
             --target "$RUNNER_TEMP/fork-package" --output "$RUNNER_TEMP/qualification"
           echo "Fork $PI_COMPAT_FORK_REF: strict quality gates, checker-isolation probes, package contracts and Git-consumer CLI probe passed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fork-qualification
+          path: ${{ runner.temp }}/qualification
+          if-no-files-found: error
+          retention-days: 3
+
+  compatibility:
+    name: compatibility / compatibility
+    if: always()
+    needs: [resolve, official, fork]
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require resolution and every qualification lane
+        env:
+          RESOLVE: ${{ needs.resolve.result }}
+          OFFICIAL: ${{ needs.official.result }}
+          FORK: ${{ needs.fork.result }}
+        run: test "$RESOLVE" = success && test "$OFFICIAL" = success && test "$FORK" = success
