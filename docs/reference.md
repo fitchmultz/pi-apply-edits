@@ -150,6 +150,10 @@ diffs remain in structured details and the expanded TUI. Applied calls return a
 compact summary; expanding their TUI result shows the retained evidence. Entry-only
 moves/deletes have operation evidence rather than a text diff.
 
+Expanded previews distinguish `planned preview`, `unchanged`, `failed preview`, and
+`unattempted preview` per file. Files unreached after a planning failure are not
+shown as planned. Preview is a read-only mode, not a replacement for each file's outcome.
+
 Every executed editing call returns:
 
 - `details.modifiedFiles`: verified committed absolute paths, including both paths

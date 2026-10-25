@@ -17,7 +17,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import editingExtension from "../extensions/apply-edits.ts";
 import { createEditingTools, EDITING_TOOL_NAMES } from "../src/tools.ts";
@@ -320,6 +320,105 @@ test("compaction includes partial commits while ignoring previews and uncertain 
     },
   });
   assert.deepEqual([...edited], ["/committed"]);
+});
+
+test("preview rendering preserves unchanged, planned, failed, and unattempted file outcomes without writes", async (t) => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-preview-")));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const [, , write, preview] = createEditingTools();
+  const fixture = await harness(t, EDITING_TOOL_NAMES, false, directory);
+  const ctx = fixture.session.extensionRunner.createToolContext(
+    "preview",
+    fixture.session.extensionRunner.createContext().signal,
+  );
+  await Promise.all(
+    ["same", "planned"].map((path) => writeFile(join(directory, path), "before\n")),
+  );
+  const mixed = await write.execute(
+    "mixed-preview",
+    {
+      files: [
+        { path: "same", content: "before\n", mode: "replace" },
+        { path: "planned", content: "after\n", mode: "replace" },
+      ],
+      preview: true,
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
+  assert.equal(mixed.isError, false);
+  assert(mixed.details !== undefined);
+  assert.equal(mixed.details.error, undefined);
+  assert.deepEqual(
+    mixed.details.files.map((file) => file.status),
+    ["unchanged", "unattempted"],
+  );
+  const failed = await preview.execute(
+    "failed-preview",
+    {
+      input:
+        "*** Begin Patch\n*** Update File: planned\n@@\n-before\n+after\n" +
+        "*** Update File: same\n@@\n-missing\n+after\n" +
+        "*** Add File: unreached\n+never written\n*** End Patch",
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
+  assert.equal(failed.isError, true);
+  assert(failed.details !== undefined);
+  assert.notEqual(failed.details.error, undefined);
+  assert.deepEqual(
+    failed.details.files.map((file) => file.status),
+    ["unattempted", "failed", "unattempted"],
+  );
+  assert.equal(failed.details.files[0]?.preview, true);
+  assert.equal(Object.hasOwn(failed.details.files[2], "preview"), false);
+  initTheme("dark", false);
+  const theme = fixture.session.extensionRunner.getUIContext().theme;
+  for (const { tool, result, labels } of [
+    {
+      tool: write,
+      result: mixed,
+      labels: ["same (no_change; unchanged)", "planned (rewrite; planned preview)"],
+    },
+    {
+      tool: preview,
+      result: failed,
+      labels: [
+        "planned (patch; planned preview)",
+        "same (patch; failed preview)",
+        "unreached (create; unattempted preview)",
+      ],
+    },
+  ]) {
+    const details = result.details;
+    assert(details !== undefined);
+    assert.equal(details.preview, true);
+    assert.deepEqual(details.modifiedFiles, []);
+    const render = tool.renderResult;
+    assert(render);
+    for (const width of [120, 32]) {
+      const lines = render(
+        result,
+        { expanded: true, isPartial: false },
+        theme,
+        renderContext(directory, result.isError),
+      ).render(width);
+      for (const line of lines) {
+        assert(visibleWidth(line) <= width);
+      }
+      const text = stripTerminalSequences(lines.join("")).replace(/\s+/g, "");
+      assert(!text.includes("unreached(create;plannedpreview)"), lines.join("\n"));
+      for (const label of labels) {
+        assert(text.includes(label.replace(/\s+/g, "")), lines.join("\n"));
+      }
+    }
+  }
+  assert.equal(await readFile(join(directory, "same"), "utf8"), "before\n");
+  assert.equal(await readFile(join(directory, "planned"), "utf8"), "before\n");
+  assert.deepEqual((await readdir(directory)).sort(), ["planned", "same"]);
 });
 
 test("tools return bounded preview text, full expanded diffs, and truthful receipts", async (t) => {
