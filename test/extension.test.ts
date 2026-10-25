@@ -455,7 +455,32 @@ test("tools return bounded preview text, full expanded diffs, and truthful recei
     preview.content[1]?.type === "text" ? preview.content[1].text : "",
     /Preview truncated/,
   );
+  assert.partialDeepStrictEqual(preview.structuredContent, {
+    summary: "Would create 1 file (+3001/-0): new. No files written.",
+    preview: true,
+    modifiedFiles: [],
+    previewDiffTruncated: true,
+  });
+  assert.match(JSON.stringify(preview.structuredContent), /Preview truncated/);
   assert.match(preview.details.files[0]?.diff ?? "", /FINAL-LINE/);
+  const omitted = await write.execute(
+    "omitted-preview",
+    {
+      files: [{ path: "omitted", content: "line\n".repeat(20_001), mode: "create" }],
+      preview: true,
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
+  assert.equal(omitted.isError, false);
+  assert.partialDeepStrictEqual(omitted.structuredContent, {
+    preview: true,
+    modifiedFiles: [],
+    previewDiffTruncated: true,
+  });
+  assert.match(JSON.stringify(omitted.structuredContent), /Diff omitted/);
+  assert.deepEqual(await readdir(directory), []);
   initTheme("dark", false);
   const theme = fixture.session.extensionRunner.getUIContext().theme;
   const expanded = renderWrite(
@@ -476,6 +501,24 @@ test("tools return bounded preview text, full expanded diffs, and truthful recei
   ).render(80);
   assert(!collapsed.some((line) => line.includes("FINAL-LINE")));
 
+  const written = await write.execute(
+    "create",
+    { files: [{ path: "new", content: body, mode: "create" }] },
+    undefined,
+    undefined,
+    ctx,
+  );
+  assert.equal(written.isError, false);
+  assert.equal(await readFile(join(directory, "new"), "utf8"), body);
+  assert.partialDeepStrictEqual(written.structuredContent, {
+    summary: "Created 1 file (+3001/-0): new.",
+    modifiedFiles: [join(directory, "new")],
+    files: [{ path: join(directory, "new"), status: "applied", addedLines: 3_001 }],
+  });
+  assert(Buffer.byteLength(JSON.stringify(written.structuredContent)) < 2_000);
+  assert.doesNotMatch(JSON.stringify(written.structuredContent), /FINAL-LINE/);
+  assert.match(written.details?.files[0]?.diff ?? "", /FINAL-LINE/);
+
   await writeFile(join(directory, "file"), "before\n");
   const result = await apply.execute("apply", { input: patch("file") }, undefined, undefined, ctx);
   assert.equal(await readFile(join(directory, "file"), "utf8"), "after\n");
@@ -491,7 +534,13 @@ test("tools return bounded preview text, full expanded diffs, and truthful recei
   assert(failed.details !== undefined);
   assert.notEqual(failed.details.error, undefined);
   assert.equal(failed.isError, true);
-  assert.deepEqual(failed.structuredContent, JSON.parse(JSON.stringify(failed.details)));
+  assert.partialDeepStrictEqual(failed.structuredContent, {
+    summary:
+      "Editing failed (0 verified committed paths). Inspect error and per-file outcomes before retrying.",
+    error: failed.details.error,
+    modifiedFiles: [],
+    files: [{ path: join(directory, "file"), status: "failed" }],
+  });
   assert.deepEqual(failed.details.modifiedFiles, []);
   const failureView = renderApply(
     failed,

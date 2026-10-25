@@ -157,9 +157,9 @@ Previews read current files and produce planned diffs without writes, staging,
 permission-to-write requirements, or publication probes. They are not cached plans
 or a guarantee that publication will succeed; applying re-reads and validates again.
 
-Model-facing preview diffs are capped at 50 KB or 2,000 lines. Complete generated
-diffs remain in structured details and the expanded TUI. Applied calls return a
-compact summary; expanding their TUI result shows the retained evidence. Entry-only
+Model-facing preview diffs are capped at 50 KB or 2,000 lines. Direct tool calls retain
+complete generated diffs in `details` and the expanded TUI. Applied calls return a
+compact summary; expanding a direct call's TUI result shows its evidence. Entry-only
 moves/deletes have operation evidence rather than a text diff.
 
 Expanded previews distinguish `planned preview`, `unchanged`, `failed preview`, and
@@ -176,9 +176,19 @@ Every executed editing call returns:
   or `uncertain`. Planned preview changes are `unattempted` and marked read-only.
 - `details.preview: true` for read-only calls; `details.error` when the call failed.
 
-Tools return native `isError` and expose the same receipt as `structuredContent`
-with an `outputSchema`, so nested callers retain failure data without depending on
-a result hook. Input validation and approval hooks still run for nested calls. Compaction retains committed
+Tools return native `isError` and a compact `structuredContent` receipt with an
+`outputSchema`, so nested callers retain failure data without depending on a result
+hook or receiving a second copy of the edited text. It includes `summary`,
+`modifiedFiles`, per-file paths, operations, statuses, available line counts,
+warnings, and optional `preview` and `error`. Previews with text diffs also include `previewDiff`,
+capped at the same 50 KB or 2,000 lines as model-facing text;
+`previewDiffTruncated: true` means display or generation limits omitted diff evidence.
+Full diffs and matching evidence remain in direct calls' `details`, journal results,
+and expanded TUI, not in the compact receipt. Native codemode and other nested callers
+do not persist raw nested results: they receive only the compact receipt and bounded
+preview. Narrow a truncated nested preview to inspect more detail; do not expect its
+full diff in the parent call's journal or expanded TUI.
+Input validation and approval hooks still run for nested calls. Compaction retains committed
 paths even from partial errors. Consumers should use `modifiedFiles`, never infer
 completed writes from a successful tool name, patch text, or intended file list.
 Syntax/schema/policy failures before execution remain native Pi errors.
