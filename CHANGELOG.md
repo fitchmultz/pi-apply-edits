@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Return compact tool receipts with summaries and publication facts instead of echoing full applied diffs into nested calls. Keep bounded previews in both text and structured results, and complete evidence in direct tool details and the expanded TUI. State nested-result retention limits explicitly.
 - Enforce strict type-aware Oxlint, Oxfmt, compiler, suppression, language-scope, and declaration-isolation checks in local development, editors, and CI.
 - Separate patch interpretation, editing phases, and filesystem publication into focused owners while preserving public APIs, mutable result receipts, ordering, cancellation, metadata, and guarded cleanup.
 - Reproducibly correct the pinned development checker’s declaration matching and readonly-container handling without weakening Promise or application-input checks.

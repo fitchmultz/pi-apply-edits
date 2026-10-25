@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
+  createCodemodeExtension,
   DefaultResourceLoader,
   isToolCallEventType,
   ModelRuntime,
@@ -108,6 +109,91 @@ function scriptCalls(session: AgentSession, steps: readonly (readonly ScriptedCa
 }
 
 // Only the provider response is scripted: loading, validation, policy, execution, and settlement are real Pi.
+test(
+  "native codemode receives compact receipts and bounded previews",
+  { timeout: 30_000 },
+  async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "pi-edit-codemode-"));
+    const cwd = join(root, "project");
+    await mkdir(cwd);
+    const runtime = await offlineRuntime(root);
+    const settings = SettingsManager.inMemory({
+      compaction: { enabled: false },
+      retry: { enabled: false },
+    });
+    const manager = SessionManager.create(cwd, join(root, "sessions"));
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir: join(root, "agent"),
+      settingsManager: settings,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      additionalExtensionPaths: [
+        fileURLToPath(new URL("../extensions/apply-edits.ts", import.meta.url)),
+      ],
+      extensionFactories: [createCodemodeExtension({ models: false })],
+    });
+    await loader.reload({ resolveProjectTrust: async () => false });
+    assert.deepEqual(loader.getExtensions().errors, []);
+    const { session } = await createAgentSession({
+      cwd,
+      agentDir: join(root, "agent"),
+      resourceLoader: loader,
+      modelRuntime: runtime,
+      model: runtime.getModel("offline-test", "scripted"),
+      tools: ["codemode", "write_files"],
+      sessionManager: manager,
+      settingsManager: settings,
+    });
+    t.after(async () => {
+      session.dispose();
+      await rm(root, { recursive: true, force: true });
+    });
+    await session.bindExtensions({ mode: "print" });
+    const code =
+      'text(await tools.write_files({ files: [{ path: "new.txt", mode: "create", content: "line\\n".repeat(3000) + "NESTED-TAIL\\n" }]';
+    scriptCalls(session, [
+      [call("nested-preview", { code: `${code}, preview: true }));` }, "codemode")],
+      [call("nested-apply", { code: `${code} }));` }, "codemode")],
+    ]);
+    await session.prompt("Run the local codemode receipt flow.");
+    await session.waitForIdle();
+    const results = session.messages.filter((message) => message.role === "toolResult");
+    assert.equal(results.length, 2);
+    const preview = results.at(0);
+    const applied = results.at(1);
+    assert(preview);
+    assert(applied);
+    assert.equal(preview.isError, false, contentText(preview.content));
+    assert.equal(applied.isError, false, contentText(applied.content));
+    const previewText = contentText(preview.content);
+    const appliedText = contentText(applied.content);
+    assert.match(previewText, /"previewDiffTruncated":true/);
+    assert.match(previewText, /Preview truncated.*only in direct tool results/);
+    assert.doesNotMatch(previewText, /\+NESTED-TAIL/);
+    assert.match(appliedText, /Created 1 file/);
+    assert.match(appliedText, /"status":"applied"/);
+    assert(Buffer.byteLength(appliedText) < 2_000);
+    assert.doesNotMatch(appliedText, /NESTED-TAIL/);
+    assert.equal(
+      await readFile(join(cwd, "new.txt"), "utf8"),
+      "line\n".repeat(3_000) + "NESTED-TAIL\n",
+    );
+    const journalPath = manager.getSessionFile();
+    assert(journalPath !== undefined);
+    const restored = SessionManager.open(journalPath).buildSessionContext().messages;
+    assert.deepEqual(
+      restored
+        .filter((message) => message.role === "toolResult")
+        .map((message) => contentText(message.content)),
+      [previewText, appliedText],
+    );
+  },
+);
+
 test(
   "native loader executes focused tools with policy, errors, previews, and ordered publication",
   { timeout: 30_000 },
