@@ -9,6 +9,7 @@ interface RenderedFile {
   readonly operation: string;
   readonly status: string;
   readonly diff: string;
+  readonly preview?: true;
 }
 
 function outcomeStyle(
@@ -52,9 +53,19 @@ function renderDiff(diff: string, theme: Theme): string {
   return lines.length === 0 ? "" : `\n${lines.join("\n")}`;
 }
 
+function renderFileStatus(file: RenderedFile, preview: boolean): string {
+  if (!preview || file.status === "unchanged") {
+    return file.status;
+  }
+  if (file.status === "unattempted" && file.preview === true) {
+    return "planned preview";
+  }
+  return `${file.status} preview`;
+}
+
 function renderFile(file: RenderedFile, preview: boolean, theme: Theme): string {
   const destination = file.moveTo === undefined ? "" : ` → ${file.moveTo}`;
-  const status = preview ? "preview" : file.status;
+  const status = renderFileStatus(file, preview);
   let text = `\n${theme.fg("muted", `${file.path}${destination} (${file.operation}; ${status})`)}`;
   // Failed/unattempted diffs are plans, never evidence that those bytes were published.
   if (
