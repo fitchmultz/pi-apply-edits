@@ -9,7 +9,7 @@ import {
   type Replacement,
   type MatchStrategy,
 } from "./contracts.ts";
-import { findMatch, toReplacement } from "./matching.ts";
+import { findMatch, toReplacement, type MatchAttempt } from "./matching.ts";
 import { missingEditMessage } from "./diagnostics.ts";
 import { hasFinalLineEnding } from "./text.ts";
 import { applyReplacements, hasOverlaps } from "./replacements.ts";
@@ -91,19 +91,15 @@ function assertUniqueRange(
     `edits[${location.index}].${field} matched ${match.replacements.length} locations in ${location.path} (lines ${lines.join(", ")}${suffix}). Add enough surrounding text to make the range ${direction} unique. ${allNote}No changes were written.`,
   );
 }
-function rangeMatch(
-  content: string,
-  edit: TargetedEdit,
-  location: EditLocation,
-): MatchResult | undefined {
+function rangeMatch(content: string, edit: TargetedEdit, location: EditLocation): MatchAttempt {
   const startMatch = findMatch(content, {
     oldText: edit.oldText,
     newText: edit.newText,
     applyAll: false,
     maxResultLength: Number.MAX_SAFE_INTEGER,
   });
-  if (startMatch === undefined) {
-    return;
+  if (startMatch.strategy === "missing") {
+    return startMatch;
   }
   assertUniqueRange(startMatch, location, "oldText");
   const endText = required(edit.endText);
@@ -114,9 +110,15 @@ function rangeMatch(
     maxResultLength: Number.MAX_SAFE_INTEGER,
     field: "endText",
   });
-  if (endMatch === undefined) {
+  if (endMatch.strategy === "missing") {
     throw new Error(
-      missingEditMessage(content, { ...location, oldText: endText, newText: "", field: "endText" }),
+      missingEditMessage(content, {
+        ...location,
+        oldText: endText,
+        newText: "",
+        field: "endText",
+        correctionSkipped: endMatch.correctionSkipped,
+      }),
     );
   }
   assertUniqueRange(endMatch, location, "endText");
@@ -218,9 +220,14 @@ export function applyTargetedEdits(
             maxResultLength,
           })
         : rangeMatch(current, edit, location);
-    if (match === undefined) {
+    if (match.strategy === "missing") {
       throw new Error(
-        missingEditMessage(current, { ...location, oldText: edit.oldText, newText: edit.newText }),
+        missingEditMessage(current, {
+          ...location,
+          oldText: edit.oldText,
+          newText: edit.newText,
+          correctionSkipped: match.correctionSkipped,
+        }),
       );
     }
     const effective = effectiveReplacements(current, match, edit, location);
