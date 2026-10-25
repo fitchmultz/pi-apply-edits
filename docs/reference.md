@@ -164,7 +164,7 @@ Tools return native `isError` and a compact `structuredContent` receipt with an
 `outputSchema`, so nested callers retain failure data without depending on a result
 hook or receiving a second copy of the edited text. It includes `summary`,
 `modifiedFiles`, per-file paths, operations, statuses, available line counts,
-warnings, and optional `preview` and `error`. Previews also include `previewDiff`,
+warnings, and optional `preview` and `error`. Previews with text diffs also include `previewDiff`,
 capped at the same 50 KB or 2,000 lines as model-facing text;
 `previewDiffTruncated: true` means display or generation limits omitted diff evidence.
 Full diffs and matching evidence remain in direct calls' `details`, journal results,
