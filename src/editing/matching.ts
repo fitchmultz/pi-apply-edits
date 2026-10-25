@@ -87,44 +87,60 @@ function exactMatches(content: string, search: EditSearch): Replacement[] {
     ),
   );
 }
-export function findMatch(content: string, search: EditSearch): MatchResult | undefined {
+interface MatchFailure {
+  readonly strategy: "missing";
+  readonly correctionSkipped: boolean;
+}
+export type MatchAttempt = MatchResult | MatchFailure;
+interface SearchLines {
+  readonly content: readonly TextLine[];
+  readonly search: readonly TextLine[];
+}
+const NO_MATCH: MatchFailure = { strategy: "missing", correctionSkipped: false };
+const CORRECTION_LIMIT: MatchFailure = { strategy: "missing", correctionSkipped: true };
+
+export function findMatch(content: string, search: EditSearch): MatchAttempt {
   const exact = exactMatches(content, search);
   if (exact.length > 0) {
     return { strategy: "exact", replacements: exact };
   }
-  const normalized = lineBlockMatches(content, search, false);
+  const lines = searchableLines(content, search.oldText);
+  if ("strategy" in lines) {
+    return lines;
+  }
+  const normalized = lineBlockMatches(content, search, lines, false);
   if (normalized.length > 0) {
     return { strategy: "normalized", replacements: normalized };
   }
-  const indentation = lineBlockMatches(content, search, true);
+  const indentation = lineBlockMatches(content, search, lines, true);
   if (indentation.length > 0) {
     return { strategy: "indent-normalized", replacements: indentation };
   }
-  return;
+  return NO_MATCH;
 }
-function searchableLines(
-  content: string,
-  search: string,
-): { readonly content: readonly TextLine[]; readonly search: readonly TextLine[] } | undefined {
+function searchableLines(content: string, search: string): SearchLines | MatchFailure {
   if (Buffer.byteLength(search) > 64 * 1024) {
-    return;
+    return CORRECTION_LIMIT;
   }
   const searchLines = splitLines(search);
-  if (searchLines.length === 0 || searchLines.length > 200) {
-    return;
+  if (searchLines.length > 200) {
+    return CORRECTION_LIMIT;
+  }
+  if (searchLines.length === 0) {
+    return NO_MATCH;
   }
   if (
     content.length > 1_000_000 ||
     countTextLines(content) > 50_000 ||
     content.length * searchLines.length > 2_000_000
   ) {
-    return;
+    return CORRECTION_LIMIT;
   }
   const contentLines = splitLines(content);
   if (contentLines.length >= searchLines.length) {
     return { content: contentLines, search: searchLines };
   }
-  return;
+  return NO_MATCH;
 }
 interface BlockSearch {
   readonly lines: readonly TextLine[];
@@ -180,12 +196,9 @@ function windowReplacement(block: BlockSearch, window: readonly TextLine[]): Rep
 function lineBlockMatches(
   content: string,
   search: EditSearch,
+  lines: SearchLines,
   ignoreBaseIndent: boolean,
 ): Replacement[] {
-  const lines = searchableLines(content, search.oldText);
-  if (lines === undefined) {
-    return [];
-  }
   const block = prepareBlockSearch(content, search, ignoreBaseIndent, lines);
   return collectBlockMatches(content, search, block);
 }
@@ -193,7 +206,7 @@ function prepareBlockSearch(
   content: string,
   search: EditSearch,
   ignoreBaseIndent: boolean,
-  lines: { readonly content: readonly TextLine[]; readonly search: readonly TextLine[] },
+  lines: SearchLines,
 ): BlockSearch {
   const bodies = lines.search.map((line) => line.body);
   const block: BlockSearch = {

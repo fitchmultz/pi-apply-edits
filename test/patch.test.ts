@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { isAbsolute, resolve } from "node:path";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
+import { applyPatchToFiles } from "../src/apply-edits.ts";
 import { applyPatchUpdate, bindPatchPaths, parsePatch, type PatchOperation } from "../src/patch.ts";
 
 const wrap = (body: string) => `*** Begin Patch\n${body}\n*** End Patch`;
@@ -256,6 +259,108 @@ test("unique full context or suffix anchors disambiguate without guessed languag
   assert.equal(apply(original, "@@ second\n-old\n+new").text, "first\nold\nsecond\nnew\n");
   // A first-section anchor does not invent a scope ending at the next section.
   assert.throws(() => apply(original, "@@ first\n-old\n+new"), /Ambiguous context/);
+});
+
+for (const fixture of [
+  {
+    name: "missing context shows only the remaining original-source suffix",
+    original: "outside-only\nconst answer = 41;\nfunction run() {\n  const answer = 42;\n}\n",
+    body: "@@ function run() {\n-const answer = 40;\n+  const answer = 43;",
+    preview: false,
+    expected: [
+      /Could not find context in chunk 1/,
+      /Requested text:\nconst answer = 40;/,
+      /original source lines 4-5/,
+      /Current scoped context.*\n  const answer = 42;/,
+    ],
+    forbidden: [/outside-only/, /const answer = 41;/],
+  },
+  {
+    name: "numeric unified hunk header explains literal anchor syntax",
+    original: "const value = 1;\n",
+    body: "@@ -1 +1 @@\n-const value = 1;\n+const value = 2;",
+    preview: true,
+    expected: [
+      /Could not find anchor in chunk 1/,
+      /Requested text:\n-1 \+1 @@/,
+      /numeric.*hunk headers.*not supported/i,
+      /bare @@.*literal source line/i,
+      /Current scoped context.*\nconst value = 1;/,
+    ],
+    forbidden: [],
+  },
+  {
+    name: "EOF context is limited to the actual tail",
+    original: "outside-only\nwanted\nactual tail\n",
+    body: "@@\n-wanted\n+new\n*** End of File",
+    preview: false,
+    expected: [
+      /Could not find context in chunk 1 at end of file/,
+      /original source lines 3-3/,
+      /Current scoped context.*\nactual tail/,
+    ],
+    forbidden: [/outside-only/],
+  },
+  {
+    name: "consumed source reports an empty search scope",
+    original: "anchor\n",
+    body: "@@ anchor\n-absent\n+new",
+    preview: false,
+    expected: [/Requested text:\nabsent/, /search scope is empty/i],
+    forbidden: [/original source lines 2-1/],
+  },
+  {
+    name: "long Unicode request and current context are explicitly clipped",
+    original: `${"🙂".repeat(1000)}actual\n`,
+    body: `@@\n-${"🙂".repeat(1000)}missing\n+new`,
+    preview: false,
+    expected: [/Requested text:/, /Current scoped context/, /excerpt truncated/i],
+    forbidden: [/\uFFFD/],
+  },
+]) {
+  test(`patch recovery: ${fixture.name}`, async (t) => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-recovery-")));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    const path = join(cwd, "file.txt");
+    await writeFile(path, fixture.original);
+    const result = await applyPatchToFiles(
+      wrap(`*** Update File: file.txt\n${fixture.body}`),
+      cwd,
+      fixture.preview,
+    );
+    const message = result.details.error ?? "";
+    for (const expected of fixture.expected) {
+      assert.match(message, expected);
+    }
+    for (const forbidden of fixture.forbidden) {
+      assert.doesNotMatch(message, forbidden);
+    }
+    assert.ok(message.isWellFormed());
+    assert.ok(Buffer.byteLength(message) < 3_200);
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.deepEqual(
+      result.details.files.map((file) => [file.path, file.status]),
+      [[path, "failed"]],
+    );
+    assert.equal(result.details.preview, fixture.preview ? true : undefined);
+    assert.equal(await readFile(path, "utf8"), fixture.original);
+    assert.deepEqual(await readdir(cwd), ["file.txt"]);
+  });
+}
+
+test("patch recovery does not reject a numeric-looking literal source anchor", async (t) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-recovery-")));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const path = join(cwd, "file.txt");
+  await writeFile(path, "-1 +1 @@\nold\n");
+  const result = await applyPatchToFiles(
+    wrap("*** Update File: file.txt\n@@ -1 +1 @@\n-old\n+new"),
+    cwd,
+  );
+  assert.equal(result.details.error, undefined, result.summary);
+  assert.deepEqual(result.details.modifiedFiles, [path]);
+  assert.equal(result.details.files[0]?.status, "applied");
+  assert.equal(await readFile(path, "utf8"), "-1 +1 @@\nnew\n");
 });
 
 test("matching prioritizes exact, trailing-whitespace, trimmed, then punctuation", () => {

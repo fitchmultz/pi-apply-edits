@@ -378,17 +378,38 @@ test("replace-all amplification is rejected under a bounded heap", () => {
   assert.equal(result.stdout.match(/expand the result/g)?.length, 3, result.stdout);
 });
 
-test("normalized matching fails fast when candidate work exceeds its safety budget", () => {
-  const content = `${"filler\n".repeat(60_000)}    alpha\n    beta\n    gamma\n    delta\n    epsilon\n`;
-  assert.throws(
-    () =>
-      applyTargetedEdits(
-        content,
-        [{ oldText: "alpha\nbeta\ngamma\ndelta\nepsilon", newText: "done" }],
-        "large.txt",
-      ),
-    /Could not find/,
-  );
+test("normalized matching reports its correction budget and supports an exact retry", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "large.txt");
+    const rows = Array.from({ length: 10 }, (_, index) => `const item_${index} = ${index};`);
+    const actual = rows.map((row) => `  ${row}`).join("\n");
+    const padding = ("// filler ".padEnd(100, "x") + "\n").repeat(2100);
+    const content = `${padding}${actual}\n`;
+    await writeFile(path, content);
+    const result = await replaceTextInFiles(
+      { files: [{ path, edits: [{ oldText: rows.join("\n"), newText: "done" }] }] },
+      directory,
+    );
+    assert.match(result.details.error ?? "", /corrected matching was skipped.*budget/i);
+    assert.match(result.details.error ?? "", /use exact oldText/i);
+    assert.match(result.details.error ?? "", /100% similar/);
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.deepEqual(
+      result.details.files.map((file) => [file.path, file.status]),
+      [[path, "failed"]],
+    );
+    assert.equal(await readFile(path, "utf8"), content);
+
+    const retry = await replaceTextInFiles(
+      { files: [{ path, edits: [{ oldText: actual, newText: "  done" }] }] },
+      directory,
+    );
+    assert.equal(retry.details.error, undefined, retry.summary);
+    assert.deepEqual(retry.details.modifiedFiles, [await realpath(path)]);
+    assert.equal(retry.details.files[0]?.status, "applied");
+    assert.equal(retry.details.files[0]?.matches[0]?.strategy, "exact");
+    assert.equal(await readFile(path, "utf8"), `${padding}  done\n`);
+  });
 });
 
 test("failed-match diagnostics stay bounded under a 64 MB heap", () => {
@@ -624,23 +645,75 @@ test("overlapping normalized all-matches are rejected", () => {
   );
 });
 
-test("missing text reports a bounded nearby block and possible idempotence", () => {
-  assert.throws(
-    () =>
-      applyTargetedEdits(
-        "alpha\nconst answer = 42;\nomega\n",
-        [{ oldText: "const answer = 41;", newText: "const answer = 42;" }],
-        "file.ts",
-      ),
-    (error: unknown) => {
-      assert(error instanceof Error);
-      assert.match(error.message, /replacement text already appears at line 2/i);
-      assert.match(error.message, /Closest block is lines 2-2/);
-      assert.match(error.message, /No changes were written/);
-      return true;
-    },
-  );
-});
+const longDiagnosticBlock = Array.from(
+  { length: 15 },
+  (_, index) => `const label_${index} = "${"abcdefgh".repeat(12)}";`,
+).join("\n");
+for (const fixture of [
+  {
+    name: "complete nearby block and possible idempotence",
+    original: "alpha\nconst answer = 42;\nomega\n",
+    edits: [{ oldText: "const answer = 41;", newText: "const answer = 42;" }],
+    expected: [
+      /replacement text already appears at line 2/i,
+      /Closest block is lines 2-2/,
+      /Use the actual block above as oldText/,
+    ],
+    forbidden: [/truncated/i, /in-memory/i],
+  },
+  {
+    name: "clipped nearby block is not a complete retry anchor",
+    original: `${longDiagnosticBlock}\n`,
+    edits: [{ oldText: longDiagnosticBlock.replace("label_14", "label_X"), newText: "fixed" }],
+    expected: [/Closest block is lines 1-15/, /excerpt truncated/i, /read.*lines 1-15/i],
+    forbidden: [/Use the actual block above/],
+  },
+  {
+    name: "preceding edits are identified as unpublished intermediate state",
+    original: "const value = 1;\nreturn value;\n",
+    edits: [
+      { oldText: "const value = 1;", newText: "const value = 2;" },
+      {
+        oldText: "const value = 0;\nreturn value;",
+        newText: "const value = 3;\nreturn value;",
+      },
+    ],
+    expected: [
+      /in-memory.*preceding edits/i,
+      /not.*written.*disk/i,
+      /keep.*preceding edits.*retry/i,
+      /const value = 2;\nreturn value;/,
+    ],
+    forbidden: [],
+  },
+]) {
+  test(`missing text recovery: ${fixture.name}`, async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const path = join(directory, "file.ts");
+      await writeFile(path, fixture.original);
+      const result = await replaceTextInFiles(
+        { files: [{ path, edits: fixture.edits }] },
+        directory,
+      );
+      const message = result.details.error ?? "";
+      for (const expected of fixture.expected) {
+        assert.match(message, expected);
+      }
+      for (const forbidden of fixture.forbidden) {
+        assert.doesNotMatch(message, forbidden);
+      }
+      assert.match(message, /No changes were written/);
+      assert.ok(Buffer.byteLength(message) < 2_000);
+      assert.deepEqual(result.details.modifiedFiles, []);
+      assert.deepEqual(
+        result.details.files.map((file) => [file.path, file.status]),
+        [[path, "failed"]],
+      );
+      assert.equal(await readFile(path, "utf8"), fixture.original);
+      assert.deepEqual(await readdir(directory), ["file.ts"]);
+    });
+  });
+}
 
 test("all must be a boolean even through the core API", () => {
   assert.throws(() => {
