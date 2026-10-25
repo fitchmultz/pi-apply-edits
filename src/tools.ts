@@ -1,5 +1,5 @@
-import { StringEnum, type JsonValue } from "@earendil-works/pi-ai";
-import { truncateHead, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static, type TSchema } from "typebox";
 import {
@@ -13,8 +13,7 @@ import {
 } from "./apply-edits.ts";
 import { bindPatchPaths, parsePatch, PATCH_GRAMMAR } from "./patch.ts";
 import { editingResultRenderer } from "./tool-rendering.ts";
-import type { ReadonlyEditingExecution } from "./editing/contracts.ts";
-import { mutableDetails } from "./editing/receipts.ts";
+import { receiptSchema, toolResult } from "./tool-results.ts";
 
 export const EDITING_TOOL_NAMES = [
   "apply_patch",
@@ -116,23 +115,6 @@ export type PatchParameters = Static<typeof patchSchema>;
 export type ReplaceTextParameters = Static<typeof replaceTextSchema>;
 export type WriteFilesParameters = Static<typeof writeFilesSchema>;
 type Details = ApplyEditsBatchDetails | undefined;
-
-// The existing receipt, not a second machine-only outcome. Additional diff/match
-// fields remain available alongside the publication facts required by callers.
-const receiptSchema = Type.Object({
-  modifiedFiles: Type.Array(Type.String()),
-  files: Type.Array(
-    Type.Object({
-      path: Type.String(),
-      operation: StringEnum(["edit", "rewrite", "create", "patch", "delete", "move", "no_change"]),
-      status: StringEnum(["applied", "unchanged", "failed", "unattempted", "uncertain"]),
-      moveTo: Type.Optional(Type.String()),
-      warnings: Type.Array(Type.String()),
-    }),
-  ),
-  preview: Type.Optional(Type.Literal(true)),
-  error: Type.Optional(Type.String()),
-});
 
 type PatchTool = ToolDefinition<typeof patchSchema, Details, unknown>;
 type ReplaceTool = ToolDefinition<typeof replaceTextSchema, Details, unknown>;
@@ -349,59 +331,6 @@ function structuredCallLabel(args: {
     .slice(0, 3)
     .map((file) => file.path ?? "…")
     .join(", ")}${files.length > 3 ? `, … ${files.length - 3} more` : ""}`;
-}
-
-function toolResult(result: ReadonlyEditingExecution): {
-  content: { type: "text"; text: string }[];
-  details: ApplyEditsBatchDetails;
-  structuredContent: JsonValue;
-  isError: boolean;
-} {
-  const content: { type: "text"; text: string }[] = [{ type: "text", text: result.summary }];
-  if (result.details.preview === true) {
-    const diffs = result.details.files
-      .filter((file) => file.diff.length > 0)
-      .map((file) => `${file.path}\n${file.diff}`)
-      .join("\n");
-    if (diffs.length > 0) {
-      const preview = truncateHead(diffs);
-      content.push({
-        type: "text",
-        text:
-          preview.content +
-          (preview.truncated
-            ? "\n[Preview truncated. Full generated diffs remain in tool details and the expanded TUI result.]"
-            : ""),
-      });
-    }
-  }
-  // The adapter consumes a read view and returns independently owned mutable SDK details.
-  const details = mutableDetails(result.details);
-  const structuredContent: unknown = JSON.parse(JSON.stringify(details));
-  if (!isJsonValue(structuredContent)) {
-    throw new Error("Editing receipt is not JSON-compatible");
-  }
-  return {
-    content,
-    details,
-    structuredContent,
-    isError: result.details.error !== undefined,
-  };
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (
-    value === null ||
-    typeof value === "boolean" ||
-    typeof value === "number" ||
-    typeof value === "string"
-  ) {
-    return true;
-  }
-  if (Array.isArray(value)) {
-    return value.every((item: unknown) => isJsonValue(item));
-  }
-  return isRecord(value) && Object.values(value).every(isJsonValue);
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
