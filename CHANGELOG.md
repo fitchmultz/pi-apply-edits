@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Preserve per-file outcomes in expanded previews: distinguish planned changes, unchanged files, failed previews, and unreached operations without changing publication receipts.
+- Make matching recovery explicit: mark clipped candidate excerpts, explain skipped correction budgets and unpublished ordered-edit state, and show bounded patch search context with numeric-header guidance.
 - Enforce strict type-aware Oxlint, Oxfmt, compiler, suppression, language-scope, and declaration-isolation checks in local development, editors, and CI.
 - Separate patch interpretation, editing phases, and filesystem publication into focused owners while preserving public APIs, mutable result receipts, ordering, cancellation, metadata, and guarded cleanup.
 - Reproducibly correct the pinned development checker’s declaration matching and readonly-container handling without weakening Promise or application-input checks.

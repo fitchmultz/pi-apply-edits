@@ -1,4 +1,5 @@
 import type { MatchStrategy, PatchMatch } from "./source.ts";
+import { missingPatchMessage } from "./diagnostics.ts";
 
 // Corrected-match ceilings mirror targeted edits; exact matching has no size ceiling.
 const FUZZY_PATTERN_BYTES = 64 * 1024;
@@ -109,11 +110,7 @@ export class PatchMatcher {
         return { line: candidates[0] + 1, strategy: pass.strategy, includesBom };
       }
     }
-    const location = scope.eof ? " at end of file" : " after the preceding chunk/anchor";
-    const budget = fuzzyAllowed
-      ? ""
-      : " Corrected matching exceeded its work budget; use exact context.";
-    throw new Error(`Could not find ${scope.label}${location}.${budget}`);
+    throw new Error(missingPatchMessage(this.#source, pattern, scope, fuzzyAllowed));
   }
 
   private fuzzyAllowed(pattern: readonly string[], scope: MatchScope): boolean {
