@@ -14,6 +14,7 @@ interface MissingEdit {
   readonly path: string;
   readonly index: number;
   readonly field?: "oldText" | "endText";
+  readonly correctionSkipped?: boolean;
 }
 export function missingEditMessage(content: string, edit: MissingEdit): string {
   const offsets = edit.newText.length > 0 ? findOccurrences(content, edit.newText, 7) : [];
@@ -25,12 +26,23 @@ export function missingEditMessage(content: string, edit: MissingEdit): string {
       : "";
   const closest = findClosestBlock(content, edit.oldText);
   const field = edit.field ?? "oldText";
-  const label = closest?.sampled === true ? "Similar sampled block" : "Closest block";
-  const hint =
-    closest === undefined
-      ? fileHeadHint(content)
-      : `\n${label} is lines ${closest.startLine}-${closest.endLine} (${Math.round(closest.score * 100)}% similar):\n${closest.excerpt}\nUse the actual block above as ${field} and retry.`;
-  return `Could not find edits[${edit.index}].${field} in ${edit.path}.${alreadyPresent}${hint}\nNo changes were written.`;
+  const state =
+    edit.index > 0
+      ? "\nExcerpts and line numbers below describe the in-memory state after preceding edits; this state has not been written to disk. Keep preceding edits when retrying the complete ordered request."
+      : "";
+  const budget =
+    edit.correctionSkipped === true
+      ? `\nCorrected matching was skipped because its size or work budget was exceeded. Use exact ${field} or a smaller search block.`
+      : "";
+  const hint = closest === undefined ? fileHeadHint(content) : closestBlockHint(closest, field);
+  return `Could not find edits[${edit.index}].${field} in ${edit.path}.${state}${budget}${alreadyPresent}${hint}\nNo changes were written.`;
+}
+function closestBlockHint(block: SimilarBlock, field: "oldText" | "endText"): string {
+  const label = block.sampled ? "Similar sampled block" : "Closest block";
+  const retry = block.truncated
+    ? `[Excerpt truncated.] Read or reconstruct the full block for lines ${block.startLine}-${block.endLine} before retrying; do not use this partial excerpt as ${field}.`
+    : `Use the actual block above as ${field} and retry.`;
+  return `\n${label} is lines ${block.startLine}-${block.endLine} (${Math.round(block.score * 100)}% similar):\n${block.excerpt}\n${retry}`;
 }
 function fileHeadHint(content: string): string {
   if (content.length === 0) {
@@ -54,6 +66,7 @@ interface SimilarBlock {
   readonly score: number;
   readonly excerpt: string;
   readonly sampled: boolean;
+  readonly truncated: boolean;
 }
 function diagnosticLines(
   content: string,
@@ -109,12 +122,14 @@ function findClosestBlock(content: string, search: string): SimilarBlock | undef
   if (best === undefined || best.score < 0.35) {
     return;
   }
+  const excerpt = truncateUtf8(best.text, 1_200);
   return {
     startLine: best.start + 1,
     endLine: best.start + lines.search.length,
     score: best.score,
-    excerpt: truncateUtf8(best.text, 1_200).text,
+    excerpt: excerpt.text,
     sampled: windows < totalWindows,
+    truncated: excerpt.truncated,
   };
 }
 function normalizeForSimilarity(value: string): string {

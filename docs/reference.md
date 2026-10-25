@@ -75,6 +75,12 @@ inserts after its anchor (EOF explicitly appends). Chunks refer to the original
 file in order. Deleting an unterminated tail transfers its missing final newline
 to the retained last line.
 
+Missing-match errors show bounded requested text, the original-source search
+scope, and its first lines (or actual tail for EOF matching). Clipped excerpts are
+marked. Numeric unified-diff headers such as `@@ -1 +1 @@` are not line selectors;
+use bare `@@` or `@@ literal source line`. A numeric-looking literal source anchor
+can still match normally.
+
 Parser portions are covered by [Apache-2.0](../LICENSE-codex). Strict envelopes,
 ambiguity rejection, stacked anchors, anchored insertion, and byte-format
 preservation are part of the parser's behavior. Blank
@@ -120,6 +126,12 @@ Unicode typography, trailing whitespace, or a uniform indentation shift. Every
 correction is reported. Replacement indentation follows that shift; inserts retain
 literal indentation. Ambiguous matches, overlapping matches, and unrepresentable
 tab corrections fail before publication.
+
+Missing-match errors explain when size or work limits skipped corrective matching;
+retry with exact text rather than assuming correction ran. Clipped nearby blocks
+are marked and must not be reused as complete anchors. For later ordered edits,
+diagnostic excerpts and line numbers describe the unpublished in-memory state
+after preceding edits. Keep those preceding edits when retrying the ordered request.
 
 ### Complete files
 

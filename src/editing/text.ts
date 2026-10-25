@@ -197,7 +197,8 @@ export function truncateUtf8(
   value: string,
   maxBytes: number,
 ): { readonly text: string; readonly truncated: boolean } {
-  const bytes = Buffer.from(value);
+  // A UTF-8 prefix cannot contain more UTF-16 units than its byte budget.
+  const bytes = Buffer.from(value.slice(0, maxBytes + 1));
   if (bytes.length <= maxBytes) {
     return { text: value, truncated: false };
   }
