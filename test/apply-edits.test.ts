@@ -4264,6 +4264,20 @@ test("nested discard is idempotent and later prepared groups can still be cleane
   });
 });
 
+test("nested discard leaves the container untouched when cleanupBlocked names a path", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const plan = await planNewFile(join(directory, "missing", "child.txt"));
+    const prepared = await preparePlannedNestedFiles([{ plan, bytes: Buffer.from("staged\n") }]);
+    // As in v1.1.0, the public field holds the path whose ownership blocks cleanup.
+    prepared.cleanupBlocked = prepared.staging;
+
+    await assert.rejects(discardPreparedNestedFiles(prepared), {
+      message: `Staging cleanup was skipped because ${prepared.staging} is not owned by this user; the staging container was left untouched at ${prepared.container}`,
+    });
+    assert.equal(await readFile(join(prepared.staging, "child.txt"), "utf8"), "staged\n");
+  });
+});
+
 test("planned nested create rejects staged symbolic links", async () => {
   await inTemporaryDirectory(async (directory) => {
     const inputPath = join(directory, "missing", "nested", "child.txt");
