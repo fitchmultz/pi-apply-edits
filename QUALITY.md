@@ -83,9 +83,9 @@ without structural metrics.
 Function parameters use readonly types. Editing, patch execution, and filesystem
 publication read caller-owned inputs through explicit readonly views. Public
 named request, plan, and result types remain mutable; retained references keep
-the caller's input type. Some signature-derived inputs and hook payloads remain
-readonly as described in the changelog. Completed receipts transfer ownership
-to the caller. Native parameter types are exempt only by verified declaration
+the caller's input type. Literal inputs can narrow the returned alias, and some
+signature-derived inputs, results, and hook payloads remain readonly as described
+in the changelog. Completed receipts transfer ownership to the caller. Native parameter types are exempt only by verified declaration
 origin; `Promise` input permission never permits floating work.
 Generic containers are not blanket-allowlisted, and internal lifecycle owners
 stay explicit.
