@@ -662,6 +662,13 @@ for (const fixture of [
     forbidden: [/truncated/i, /in-memory/i],
   },
   {
+    name: "similar neighboring lines do not change the closest block or its score",
+    original: "const first = 1;\nconst answer = 42;\nconst answers = [answer, answer];\n",
+    edits: [{ oldText: "const answer = 41;", newText: "const answer = 43;" }],
+    expected: [/Closest block is lines 2-2 \(88% similar\):\nconst answer = 42;\n/],
+    forbidden: [],
+  },
+  {
     name: "clipped nearby block is not a complete retry anchor",
     original: `${longDiagnosticBlock}\n`,
     edits: [{ oldText: longDiagnosticBlock.replace("label_14", "label_X"), newText: "fixed" }],

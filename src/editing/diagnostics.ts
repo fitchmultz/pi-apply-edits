@@ -97,6 +97,7 @@ function findClosestBlock(content: string, search: string): SimilarBlock | undef
   if (wanted.length === 0) {
     return;
   }
+  const similarity = diceSimilarityTo(wanted);
   const totalWindows = lines.content.length - lines.search.length + 1;
   const windows = Math.min(totalWindows, Math.max(1, Math.floor(2_000_000 / wanted.length)));
   let best: { start: number; score: number; text: string } | undefined;
@@ -114,7 +115,7 @@ function findClosestBlock(content: string, search: string): SimilarBlock | undef
       .slice(start, start + lines.search.length)
       .map((line) => line.body)
       .join("\n");
-    const score = diceSimilarity(wanted, normalizeForSimilarity(text));
+    const score = similarity(normalizeForSimilarity(text));
     if (best === undefined || score > best.score) {
       best = { start, score, text };
     }
@@ -135,26 +136,29 @@ function findClosestBlock(content: string, search: string): SimilarBlock | undef
 function normalizeForSimilarity(value: string): string {
   return normalizeTypography(value).replace(/\s+/g, " ").trim();
 }
-function diceSimilarity(left: string, right: string): number {
-  if (left === right) {
-    return 1;
-  }
-  if (left.length < 2 || right.length < 2) {
-    return 0;
-  }
-  const counts = new Map<string, number>();
+function diceSimilarityTo(left: string): (right: string) => number {
+  const available = new Map<string, number>();
   for (let index = 0; index < left.length - 1; index++) {
     const pair = left.slice(index, index + 2);
-    counts.set(pair, (counts.get(pair) ?? 0) + 1);
+    available.set(pair, (available.get(pair) ?? 0) + 1);
   }
-  let overlap = 0;
-  for (let index = 0; index < right.length - 1; index++) {
-    const pair = right.slice(index, index + 2);
-    const count = counts.get(pair) ?? 0;
-    if (count > 0) {
-      overlap++;
-      counts.set(pair, count - 1);
+  return (right) => {
+    if (left === right) {
+      return 1;
     }
-  }
-  return (2 * overlap) / (left.length + right.length - 2);
+    if (left.length < 2 || right.length < 2) {
+      return 0;
+    }
+    const matched = new Map<string, number>();
+    let overlap = 0;
+    for (let index = 0; index < right.length - 1; index++) {
+      const pair = right.slice(index, index + 2);
+      const count = matched.get(pair) ?? 0;
+      if (count < (available.get(pair) ?? 0)) {
+        overlap++;
+        matched.set(pair, count + 1);
+      }
+    }
+    return (2 * overlap) / (left.length + right.length - 2);
+  };
 }
