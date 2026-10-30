@@ -1,7 +1,11 @@
 import type { BigIntStats } from "node:fs";
 import { link, lstat, mkdir, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { NewFilePlan, NewFilePublishHooks, ReplacementSupport } from "./contracts.ts";
+import type {
+  ReadonlyNewFilePlan,
+  ReadonlyNewFilePublishHooks,
+  ReplacementSupport,
+} from "./contracts.ts";
 import {
   assertCreatedDirectoryOwner,
   rmdirOwnedPath,
@@ -30,20 +34,20 @@ import { movePreparedFileNoReplace, replacementSupportInfo, transferMacosAcl } f
 import { preparePrivatePublicationFile } from "./preparation.ts";
 
 export async function publishSingleNewFile(
-  plan: NewFilePlan,
+  plan: ReadonlyNewFilePlan,
   bytes: Buffer,
   signal?: AbortSignal,
-  hooks?: NewFilePublishHooks,
+  hooks?: ReadonlyNewFilePublishHooks,
 ): Promise<string[]> {
   return new SingleCreation(plan, bytes, signal, hooks).run();
 }
 
 /** Owns a single create's private source and commit/verification/cleanup state. */
 class SingleCreation {
-  private readonly plan: NewFilePlan;
+  private readonly plan: ReadonlyNewFilePlan;
   private readonly bytes: Buffer;
   private readonly signal: AbortSignal | undefined;
-  private readonly hooks: NewFilePublishHooks | undefined;
+  private readonly hooks: ReadonlyNewFilePublishHooks | undefined;
   private readonly directory: string;
   private readonly temporaryDirectory: string;
   private readonly temporary: string;
@@ -58,7 +62,12 @@ class SingleCreation {
   private temporaryCleanupFailed = false;
   private readonly warnings: string[] = [];
 
-  constructor(plan: NewFilePlan, bytes: Buffer, signal?: AbortSignal, hooks?: NewFilePublishHooks) {
+  constructor(
+    plan: ReadonlyNewFilePlan,
+    bytes: Buffer,
+    signal?: AbortSignal,
+    hooks?: ReadonlyNewFilePublishHooks,
+  ) {
     this.plan = plan;
     this.bytes = bytes;
     this.signal = signal;

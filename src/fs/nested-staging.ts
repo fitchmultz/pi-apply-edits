@@ -4,10 +4,12 @@ import { lstat, mkdir, open, rename, rm, rmdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { assertEntryMovePathBudget } from "../path-budget.ts";
 import type {
-  NewFilePlan,
   NewFilePublishHooks,
-  PlannedNewFile,
   PreparedNestedFiles,
+  ReadonlyNewFilePlan,
+  ReadonlyNewFilePublishHooks,
+  ReadonlyPlannedNewFile,
+  ReadonlyPreparedNestedFiles,
 } from "./contracts.ts";
 import {
   assertCreatedDirectoryOwner,
@@ -22,36 +24,39 @@ import { assertMoveSnapshot, prepareMoveReplacement } from "./preparation.ts";
 import { assertEntryCurrent } from "./snapshot.ts";
 import { inspectPreparedTree } from "./staged-tree.ts";
 
-export function preparedOwner(prepared: PreparedNestedFiles): NestedStaging {
+export function preparedOwner(prepared: ReadonlyPreparedNestedFiles): NestedStaging {
   if (!(prepared instanceof NestedStaging)) {
     throw new Error("Nested create publication requires its original prepared staging owner");
   }
   return prepared;
 }
 
-export async function preparePlannedNestedFiles(
-  entries: readonly PlannedNewFile[],
+export async function preparePlannedNestedFiles<
+  Entries extends readonly ReadonlyPlannedNewFile[],
+  Hooks extends ReadonlyNewFilePublishHooks = NewFilePublishHooks,
+>(
+  entries: Entries,
   signal?: AbortSignal,
-  hooks?: NewFilePublishHooks,
-): Promise<PreparedNestedFiles> {
-  const owner = new NestedStaging(entries, hooks);
-  return owner.prepare(signal);
+  hooks?: Hooks,
+): Promise<PreparedNestedFiles<Entries, Hooks>> {
+  return new PreparedStaging(entries, hooks).prepare(signal);
 }
 
-export async function discardPreparedNestedFiles(prepared: PreparedNestedFiles): Promise<void> {
+export async function discardPreparedNestedFiles(
+  prepared: ReadonlyPreparedNestedFiles,
+): Promise<void> {
   await preparedOwner(prepared).discard();
 }
 
-/** Owns private staging resources. Callers receive the readonly publication descriptor. */
-class NestedStaging implements PreparedNestedFiles {
-  readonly entries: readonly PlannedNewFile[];
-  readonly firstPlan: NewFilePlan;
+/** Owns private staging resources; the prepared subclass holds the caller's own values. */
+abstract class NestedStaging {
+  abstract readonly entries: readonly ReadonlyPlannedNewFile[];
+  abstract readonly firstPlan: ReadonlyNewFilePlan;
   readonly publishRoot: string;
   readonly container: string;
   readonly staging: string;
   readonly quarantine: string;
   readonly warnings: string[] = [];
-  readonly hooks: NewFilePublishHooks | undefined;
   published = false;
   discardAttempted = false;
   containerStats: BigIntStats | undefined;
@@ -62,7 +67,7 @@ class NestedStaging implements PreparedNestedFiles {
   readonly #stagedDirectories = new Set<string>();
   #handle: Awaited<ReturnType<typeof open>> | undefined;
 
-  constructor(entries: readonly PlannedNewFile[], hooks?: NewFilePublishHooks) {
+  constructor(entries: readonly ReadonlyPlannedNewFile[]) {
     const first = entries.at(0)?.plan;
     const missing = first?.missingDirectories.at(0);
     if (!first || missing === undefined || missing.length === 0 || entries.length === 0) {
@@ -73,16 +78,13 @@ class NestedStaging implements PreparedNestedFiles {
         throw new Error("Nested create publication plans must share one missing root");
       }
     }
-    this.entries = entries;
-    this.firstPlan = first;
     this.publishRoot = join(first.ancestorPath, missing);
     this.container = join(first.ancestorPath, `.pi-apply-edits-${randomUUID()}.tmpdir`);
     this.staging = join(this.container, "publish");
     this.quarantine = join(this.container, "q");
-    this.hooks = hooks;
   }
 
-  async prepare(signal?: AbortSignal): Promise<PreparedNestedFiles> {
+  async prepare(signal?: AbortSignal): Promise<this> {
     try {
       throwIfAborted(signal);
       for (const entry of this.entries) {
@@ -125,7 +127,7 @@ class NestedStaging implements PreparedNestedFiles {
     }
   }
 
-  private async validateEntry(entry: PlannedNewFile): Promise<void> {
+  private async validateEntry(entry: ReadonlyPlannedNewFile): Promise<void> {
     await assertNewFilePlanCurrent(entry.plan);
     if (entry.move) {
       assertEntryMovePathBudget(
@@ -177,7 +179,7 @@ class NestedStaging implements PreparedNestedFiles {
     }
   }
 
-  private async stageEntry(entry: PlannedNewFile, signal?: AbortSignal): Promise<void> {
+  private async stageEntry(entry: ReadonlyPlannedNewFile, signal?: AbortSignal): Promise<void> {
     throwIfAborted(signal);
     const directory = join(this.staging, ...entry.plan.missingDirectories.slice(1));
     if (directory !== this.staging) {
@@ -349,4 +351,29 @@ class NestedStaging implements PreparedNestedFiles {
     }
     this.containerStats = undefined;
   }
+}
+
+/** Types the descriptor with the caller's own entries and hooks, which it keeps referencing. */
+class PreparedStaging<
+  Entries extends readonly ReadonlyPlannedNewFile[],
+  Hooks extends ReadonlyNewFilePublishHooks,
+>
+  extends NestedStaging
+  implements PreparedNestedFiles<Entries, Hooks>
+{
+  readonly entries: Entries;
+  readonly firstPlan: Entries[number]["plan"];
+  readonly hooks: Hooks | undefined;
+
+  constructor(entries: Entries, hooks?: Hooks) {
+    super(entries);
+    this.entries = entries;
+    this.firstPlan = member(member(entries, 0), "plan");
+    this.hooks = hooks;
+  }
+}
+
+/** A generic key keeps the caller's element and plan types instead of their readonly bounds. */
+function member<Value, Key extends keyof Value>(value: Value, key: Key): Value[Key] {
+  return value[key];
 }

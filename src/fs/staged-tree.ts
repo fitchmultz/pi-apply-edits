@@ -1,10 +1,10 @@
 import type { BigIntStats } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { PlannedNewFile } from "./contracts.ts";
+import type { ReadonlyPlannedNewFile } from "./contracts.ts";
 
 interface StagedTreeView {
-  readonly entries: readonly PlannedNewFile[];
+  readonly entries: readonly ReadonlyPlannedNewFile[];
   readonly staging: string;
 }
 import { readStableFile, sameSnapshotStats } from "./observation.ts";

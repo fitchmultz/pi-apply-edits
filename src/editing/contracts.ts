@@ -1,5 +1,10 @@
 import { inspect } from "node:util";
-import type { FileSnapshot, NewFilePlan, EntrySnapshot, EntryMovePlan } from "../file-system.ts";
+import type {
+  ReadonlyEntryMovePlan,
+  ReadonlyEntrySnapshot,
+  ReadonlyFileSnapshot,
+  ReadonlyNewFilePlan,
+} from "../fs/contracts.ts";
 import type { ReadonlyPatchUpdate } from "../patch/source.ts";
 
 export type InsertPosition = "before" | "after";
@@ -124,7 +129,7 @@ export interface MutationInput extends ReadonlyApplyEditsInput {
 export interface PlannedMutation {
   readonly inputPath: string;
   readonly displayPath: string;
-  readonly snapshot: FileSnapshot | undefined;
+  readonly snapshot: ReadonlyFileSnapshot | undefined;
   readonly nextBytes: Buffer;
   readonly originalText: string;
   readonly nextText: string;
@@ -132,10 +137,10 @@ export interface PlannedMutation {
   readonly operation: ApplyEditsDetails["operation"];
   readonly editsRequested: number;
   readonly needsWrite: boolean;
-  readonly createPlan?: NewFilePlan;
+  readonly createPlan?: ReadonlyNewFilePlan;
   readonly lockKey?: string;
-  readonly entry?: EntrySnapshot;
-  readonly movePlan?: EntryMovePlan;
+  readonly entry?: ReadonlyEntrySnapshot;
+  readonly movePlan?: ReadonlyEntryMovePlan;
 }
 export interface TextEditResult {
   text: string;

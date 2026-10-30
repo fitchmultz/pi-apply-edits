@@ -2,7 +2,7 @@ import type { BigIntStats } from "node:fs";
 import { lstat, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { assertEntryDeletePathBudget } from "../path-budget.ts";
-import type { EntrySnapshot, EntryPublishHooks } from "./contracts.ts";
+import type { ReadonlyEntrySnapshot, ReadonlyEntryPublishHooks } from "./contracts.ts";
 import {
   assertCreatedDirectoryOwner,
   rmdirOwnedPath,
@@ -14,18 +14,18 @@ import { lstatIfExists, samePublishedState, syncDirectory } from "./observation.
 import { assertEntryCurrent, assertEntryParentCurrent } from "./snapshot.ts";
 
 export async function publishEntryDelete(
-  entry: EntrySnapshot,
+  entry: ReadonlyEntrySnapshot,
   signal?: AbortSignal,
-  hooks?: EntryPublishHooks,
+  hooks?: ReadonlyEntryPublishHooks,
 ): Promise<string[]> {
   return new EntryDeletion(entry, signal, hooks).run();
 }
 
 /** Owns the retained entry until its deletion is verified and identity-checked cleanup finishes. */
 class EntryDeletion {
-  private readonly entry: EntrySnapshot;
+  private readonly entry: ReadonlyEntrySnapshot;
   private readonly signal: AbortSignal | undefined;
-  private readonly hooks: EntryPublishHooks | undefined;
+  private readonly hooks: ReadonlyEntryPublishHooks | undefined;
   private readonly directory: string;
   private readonly retained: string;
   private directoryStats: BigIntStats | undefined;
@@ -33,7 +33,11 @@ class EntryDeletion {
   private verified = false;
   private readonly warnings: string[] = [];
 
-  constructor(entry: EntrySnapshot, signal?: AbortSignal, hooks?: EntryPublishHooks) {
+  constructor(
+    entry: ReadonlyEntrySnapshot,
+    signal?: AbortSignal,
+    hooks?: ReadonlyEntryPublishHooks,
+  ) {
     this.entry = entry;
     this.signal = signal;
     this.hooks = hooks;

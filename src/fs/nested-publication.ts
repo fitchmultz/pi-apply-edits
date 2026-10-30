@@ -1,7 +1,11 @@
 import type { BigIntStats } from "node:fs";
 import { lstat, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { PlannedNewFile, PreparedNestedFiles, ReplacementSupport } from "./contracts.ts";
+import type {
+  ReadonlyPlannedNewFile,
+  ReadonlyPreparedNestedFiles,
+  ReplacementSupport,
+} from "./contracts.ts";
 import {
   assertCreatedDirectoryOwner,
   assertPublishedDirectoriesCurrent,
@@ -25,7 +29,7 @@ import { cloneWithMetadata, replacementSupportInfo } from "./platform.ts";
 import { inspectPreparedTree } from "./staged-tree.ts";
 
 export async function publishPreparedNestedFiles(
-  prepared: PreparedNestedFiles,
+  prepared: ReadonlyPreparedNestedFiles,
   signal?: AbortSignal,
 ): Promise<string[]> {
   return new NestedPublication(prepared, signal).run();
@@ -33,7 +37,7 @@ export async function publishPreparedNestedFiles(
 
 /** Owns root reservation and ordered publication, while private staging retains its cleanup owner. */
 class NestedPublication {
-  private readonly prepared: PreparedNestedFiles;
+  private readonly prepared: ReadonlyPreparedNestedFiles;
   private readonly stagingOwner: ReturnType<typeof preparedOwner>;
   private readonly signal: AbortSignal | undefined;
   private readonly directories = new Map<string, BigIntStats>();
@@ -43,7 +47,7 @@ class NestedPublication {
   private readonly verifiedFiles: string[] = [];
   private readonly uncertainFiles: string[] = [];
 
-  constructor(prepared: PreparedNestedFiles, signal?: AbortSignal) {
+  constructor(prepared: ReadonlyPreparedNestedFiles, signal?: AbortSignal) {
     this.prepared = prepared;
     this.stagingOwner = preparedOwner(prepared);
     this.signal = signal;
@@ -82,16 +86,16 @@ class NestedPublication {
 
   private async validateBeforeReservation(): Promise<void> {
     const { firstPlan, staging, publishRoot } = this.prepared;
-    const paths = { staging, target: publishRoot };
-    await this.prepared.hooks?.beforeDirectoryPublish?.(paths);
+    // Observers receive their own payloads, so one observer's edits never reach the next.
+    await this.prepared.hooks?.beforeDirectoryPublish?.({ staging, target: publishRoot });
     throwIfAborted(this.signal);
     await this.assertPlansCurrent();
-    await this.prepared.hooks?.beforeDirectoryCommit?.(paths);
+    await this.prepared.hooks?.beforeDirectoryCommit?.({ staging, target: publishRoot });
     throwIfAborted(this.signal);
     await this.assertPlansCurrent();
     await inspectPreparedTree(this.prepared, this.prepared.stagedIdentities);
     await assertNewFilePlanCurrent(firstPlan);
-    await this.prepared.hooks?.beforeRootReserve?.(paths);
+    await this.prepared.hooks?.beforeRootReserve?.({ staging, target: publishRoot });
     throwIfAborted(this.signal);
     await assertNewFilePlanCurrent(firstPlan);
     throwIfAborted(this.signal);
@@ -100,7 +104,6 @@ class NestedPublication {
   private async reserveRoot(): Promise<void> {
     await this.validateBeforeReservation();
     const { firstPlan, staging, publishRoot } = this.prepared;
-    const paths = { staging, target: publishRoot };
     await this.traversal.publish(
       this.prepared.entries.map(({ plan }) => plan),
       this.signal,
@@ -125,7 +128,7 @@ class NestedPublication {
     assertCreatedDirectoryOwner(stats, publishRoot);
     this.directories.set(publishRoot, stats);
     await assertNewFilePlanCurrent(firstPlan);
-    await this.prepared.hooks?.afterRootReserve?.(paths);
+    await this.prepared.hooks?.afterRootReserve?.({ staging, target: publishRoot });
     throwIfAborted(this.signal);
     await assertNewFilePlanCurrent(firstPlan);
   }
@@ -179,7 +182,10 @@ class NestedPublication {
     this.directories.set(path, stats);
   }
 
-  private async publishEntry(entry: PlannedNewFile, support: ReplacementSupport): Promise<void> {
+  private async publishEntry(
+    entry: ReadonlyPlannedNewFile,
+    support: ReplacementSupport,
+  ): Promise<void> {
     throwIfAborted(this.signal);
     const relative = join(
       ...entry.plan.missingDirectories.slice(1),
@@ -230,7 +236,7 @@ class NestedPublication {
   }
 
   private async publishMove(
-    entry: PlannedNewFile,
+    entry: ReadonlyPlannedNewFile,
     relative: string,
     source: string,
     identity: BigIntStats | undefined,

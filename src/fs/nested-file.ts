@@ -1,6 +1,10 @@
 import type { BigIntStats } from "node:fs";
 import { link, lstat, open } from "node:fs/promises";
-import type { NewFilePublishHooks, PlannedNewFile, ReplacementSupport } from "./contracts.ts";
+import type {
+  ReadonlyNewFilePublishHooks,
+  ReadonlyPlannedNewFile,
+  ReplacementSupport,
+} from "./contracts.ts";
 import { assertPublishedDirectoriesCurrent, unlinkOwnedPath } from "./cleanup.ts";
 import {
   AtomicMoveUncertainError,
@@ -25,13 +29,13 @@ export interface NestedFileDestination {
   readonly candidate: string;
   readonly stagedIdentity: BigIntStats | undefined;
   readonly directories: ReadonlyMap<string, BigIntStats>;
-  readonly hooks?: NewFilePublishHooks;
+  readonly hooks?: ReadonlyNewFilePublishHooks;
   readonly rememberStaging: (stats: BigIntStats) => void;
   readonly warn: (message: string) => void;
 }
 
 export async function publishNestedFile(
-  entry: PlannedNewFile,
+  entry: ReadonlyPlannedNewFile,
   destination: NestedFileDestination,
   support: ReplacementSupport,
   signal?: AbortSignal,
@@ -41,7 +45,7 @@ export async function publishNestedFile(
 
 /** Owns one staged file's link/move/copy transition and its identity-checked rollback. */
 class NestedFilePublication {
-  private readonly entry: PlannedNewFile;
+  private readonly entry: ReadonlyPlannedNewFile;
   private readonly destination: NestedFileDestination;
   private readonly support: ReplacementSupport;
   private readonly signal: AbortSignal | undefined;
@@ -52,7 +56,7 @@ class NestedFilePublication {
   private verified = false;
 
   constructor(
-    entry: PlannedNewFile,
+    entry: ReadonlyPlannedNewFile,
     destination: NestedFileDestination,
     support: ReplacementSupport,
     signal?: AbortSignal,

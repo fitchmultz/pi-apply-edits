@@ -9,9 +9,10 @@
 - Return compact model-facing summaries and bounded previews while preserving generated diffs and match details for direct and nested callers. Scripts can output selected receipt fields or the full receipt.
 - Make matching recovery explicit: mark clipped candidate excerpts, explain skipped correction budgets and unpublished ordered-edit state, and show bounded patch search context with numeric-header guidance.
 - Enforce strict type-aware Oxlint, Oxfmt, compiler, suppression, language-scope, and declaration-isolation checks in local development, editors, and CI.
-- Separate patch interpretation, editing phases, and filesystem publication into focused owners while preserving public APIs, mutable result receipts, ordering, cancellation, metadata, and guarded cleanup.
+- Separate patch interpretation, editing phases, and filesystem publication into focused owners while retaining mutable result receipts, ordering, cancellation, metadata, and guarded cleanup.
 - Reproducibly correct the pinned development checker’s declaration matching and readonly-container handling without weakening Promise or application-input checks.
 - Reject foreign-owned delete and content-move staging directories before adopting cleanup state, leaving those directories untouched. Preserve original publication failures through `Error.cause`.
+- Accept readonly filesystem publication inputs while restoring the mutable fields of v1.1.0's named snapshot, plan, prepared-create, move-plan, and hook types, except for readonly hook payload properties. Prepared creates and move plans keep referencing the caller's own entries, hooks, and entry snapshot, so readonly inputs stay readonly there. Signature-derived inputs and some `ReturnType` results remain readonly; literal arguments can narrow the returned alias's type, and implementations accepting only the former mutable inputs may no longer satisfy those function types. Hooks declared with v1.1.0's mutable payload types remain assignable. Publishing or discarding a prepared nested create requires the original prepared object; unlike v1.1.0, a shallow copy is rejected.
 
 ## 1.1.0 — 2026-10-01
 

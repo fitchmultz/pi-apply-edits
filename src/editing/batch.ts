@@ -1,13 +1,12 @@
 import { dirname, sep } from "node:path";
 import {
   discardPreparedNestedFiles,
-  MacosAclSession,
   preparePlannedNestedFiles,
   publishPreparedNestedFiles,
   throwIfAborted,
-  type PreparedNestedFiles,
-  type PlannedNewFile,
 } from "../file-system.ts";
+import type { ReadonlyPlannedNewFile, ReadonlyPreparedNestedFiles } from "../fs/contracts.ts";
+import { MacosAclSession } from "../fs/macos-acl.ts";
 import {
   registerMutation,
   withMutationLocks,
@@ -73,7 +72,7 @@ function overlapsRoot(
       directory.startsWith(`${root}${sep}`))
   );
 }
-function preparedEntry(plan: PlannedMutation): PlannedNewFile {
+function preparedEntry(plan: PlannedMutation): ReadonlyPlannedNewFile {
   const create = { plan: required(plan.createPlan), bytes: plan.nextBytes };
   if (plan.movePlan === undefined) {
     return create;
@@ -88,7 +87,7 @@ class EditingBatch {
   private resolved: ResolvedBatch = { resolved: [], targets: [] };
   private readonly plans: PlannedMutation[] = [];
   private readonly groups = new Map<string, number[]>();
-  private readonly prepared = new Map<string, PreparedNestedFiles>();
+  private readonly prepared = new Map<string, ReadonlyPreparedNestedFiles>();
   // Preparation and publication share one ACL helper; progress callbacks stay outside its scope.
   private readonly acl = new MacosAclSession();
   constructor(files: readonly MutationInput[], options: ExecutionOptions) {

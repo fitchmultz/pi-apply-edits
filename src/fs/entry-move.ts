@@ -5,9 +5,10 @@ import { assertEntryMovePathBudget, assertPlannedPathBudget } from "../path-budg
 import { operationPath } from "../native-path.ts";
 import type {
   EntryMovePlan,
-  EntryPublishHooks,
-  EntrySnapshot,
   MoveReplacement,
+  ReadonlyEntryMovePlan,
+  ReadonlyEntryPublishHooks,
+  ReadonlyEntrySnapshot,
 } from "./contracts.ts";
 import {
   assertCreatedDirectoryOwner,
@@ -48,12 +49,12 @@ import {
 } from "./snapshot.ts";
 import { publishEntryDelete } from "./entry-delete.ts";
 
-export async function planEntryMove(
-  entry: EntrySnapshot,
+export async function planEntryMove<Entry extends ReadonlyEntrySnapshot>(
+  entry: Entry,
   destinationPath: string,
   signal?: AbortSignal,
   preview = false,
-): Promise<EntryMovePlan> {
+): Promise<EntryMovePlan<Entry>> {
   throwIfAborted(signal);
   await assertEntryCurrent(entry);
   assertPlannedPathBudget(destinationPath, [operationPath(destinationPath)]);
@@ -92,7 +93,7 @@ export async function planEntryMove(
 }
 
 async function probeEntryLink(
-  entry: EntrySnapshot,
+  entry: ReadonlyEntrySnapshot,
   ancestorPath: string,
   label: string,
 ): Promise<void> {
@@ -132,11 +133,11 @@ export interface MoveCandidate {
   readonly path: string;
   readonly stats: BigIntStats;
   readonly replacement?: MoveReplacement;
-  readonly hooks?: EntryPublishHooks;
+  readonly hooks?: ReadonlyEntryPublishHooks;
 }
 
 export async function publishMoveDestination(
-  plan: EntryMovePlan,
+  plan: ReadonlyEntryMovePlan,
   candidate: MoveCandidate,
   signal?: AbortSignal,
 ): Promise<string[]> {
@@ -144,7 +145,7 @@ export async function publishMoveDestination(
 }
 
 class DestinationMove {
-  private readonly plan: EntryMovePlan;
+  private readonly plan: ReadonlyEntryMovePlan;
   private readonly candidate: MoveCandidate;
   private readonly signal: AbortSignal | undefined;
   private readonly modified: string[] = [];
@@ -152,7 +153,7 @@ class DestinationMove {
   private readonly atomicMove = process.platform === "android";
   private started = false;
 
-  constructor(plan: EntryMovePlan, candidate: MoveCandidate, signal?: AbortSignal) {
+  constructor(plan: ReadonlyEntryMovePlan, candidate: MoveCandidate, signal?: AbortSignal) {
     this.plan = plan;
     this.candidate = candidate;
     this.signal = signal;
@@ -336,10 +337,10 @@ class DestinationMove {
 }
 
 export async function publishDirectEntryMove(
-  plan: EntryMovePlan,
+  plan: ReadonlyEntryMovePlan,
   replacement?: MoveReplacement,
   signal?: AbortSignal,
-  hooks?: EntryPublishHooks,
+  hooks?: ReadonlyEntryPublishHooks,
 ): Promise<string[]> {
   if (!replacement) {
     return publishMoveDestination(
@@ -352,10 +353,10 @@ export async function publishDirectEntryMove(
 }
 
 class ReplacementMove {
-  private readonly plan: EntryMovePlan;
+  private readonly plan: ReadonlyEntryMovePlan;
   private readonly replacement: MoveReplacement;
   private readonly signal: AbortSignal | undefined;
-  private readonly hooks: EntryPublishHooks | undefined;
+  private readonly hooks: ReadonlyEntryPublishHooks | undefined;
   private readonly directory: string;
   private readonly candidate: string;
   private directoryStats: BigIntStats | undefined;
@@ -363,10 +364,10 @@ class ReplacementMove {
   private readonly warnings: string[] = [];
 
   constructor(
-    plan: EntryMovePlan,
+    plan: ReadonlyEntryMovePlan,
     replacement: MoveReplacement,
     signal?: AbortSignal,
-    hooks?: EntryPublishHooks,
+    hooks?: ReadonlyEntryPublishHooks,
   ) {
     this.plan = plan;
     this.replacement = replacement;

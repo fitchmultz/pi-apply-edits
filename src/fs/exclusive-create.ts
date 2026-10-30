@@ -1,6 +1,6 @@
 import type { BigIntStats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import type { NewFilePlan } from "./contracts.ts";
+import type { ReadonlyNewFilePlan } from "./contracts.ts";
 import { unlinkOwnedPath } from "./cleanup.ts";
 import { errorMessage, isCode, throwIfAborted } from "./errors.ts";
 import { readStableRegularEntry, sameIdentity, samePublishedState } from "./observation.ts";
@@ -15,7 +15,7 @@ export interface ExclusiveCreateOutcome {
 
 /** Owns the exclusive-create descriptor and incomplete-file recovery when hard linking is unavailable. */
 export async function publishExclusiveCreate(
-  plan: NewFilePlan,
+  plan: ReadonlyNewFilePlan,
   bytes: Buffer,
   temporary: string,
   signal?: AbortSignal,
@@ -24,7 +24,7 @@ export async function publishExclusiveCreate(
 }
 
 class ExclusiveCreation {
-  private readonly plan: NewFilePlan;
+  private readonly plan: ReadonlyNewFilePlan;
   private readonly bytes: Buffer;
   private readonly temporary: string;
   private readonly signal: AbortSignal | undefined;
@@ -35,7 +35,7 @@ class ExclusiveCreation {
   private publicationStarted = false;
   private retainTemporary = false;
 
-  constructor(plan: NewFilePlan, bytes: Buffer, temporary: string, signal?: AbortSignal) {
+  constructor(plan: ReadonlyNewFilePlan, bytes: Buffer, temporary: string, signal?: AbortSignal) {
     this.plan = plan;
     this.bytes = bytes;
     this.temporary = temporary;
