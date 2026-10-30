@@ -7,7 +7,7 @@ import {
   operationPath,
   discoverProspectiveDirectory,
 } from "../native-path.ts";
-import type { NewFilePlan } from "./contracts.ts";
+import type { NewFilePlan, ReadonlyNewFilePlan } from "./contracts.ts";
 import {
   assertCreatedDirectoryOwner,
   assertPublishedDirectoriesCurrent,
@@ -61,7 +61,7 @@ async function captureTraversalParents(
   missing: ReadonlySet<string>,
   requireWritable: boolean,
   targetPath: string,
-): Promise<ReadonlyMap<string, BigIntStats>> {
+): Promise<Map<string, BigIntStats>> {
   const parents = new Map<string, BigIntStats>();
   for (const path of paths) {
     const parent = dirname(path);
@@ -85,7 +85,7 @@ async function findCreateAncestor(
 ): Promise<{
   readonly path: string;
   readonly stats: BigIntStats;
-  readonly missing: readonly string[];
+  readonly missing: string[];
 }> {
   const missing: string[] = [];
   let current = parent;
@@ -171,7 +171,7 @@ export async function assertDirectoryWritableForPublish(
   }
 }
 
-export async function assertNewFilePlanCurrent(plan: NewFilePlan): Promise<void> {
+export async function assertNewFilePlanCurrent(plan: ReadonlyNewFilePlan): Promise<void> {
   const ancestor = await stat(plan.ancestorPath, { bigint: true });
   if (
     !ancestor.isDirectory() ||
@@ -204,7 +204,7 @@ export async function assertNewFilePlanCurrent(plan: NewFilePlan): Promise<void>
   }
 }
 
-export function stagedTraversalDirectories(plan: NewFilePlan): string[] {
+export function stagedTraversalDirectories(plan: ReadonlyNewFilePlan): string[] {
   const first = plan.missingDirectories.at(0);
   if (first === undefined) {
     return [];
@@ -220,7 +220,7 @@ export class TraversalDirectories {
   private readonly created = new Map<string, BigIntStats>();
 
   async publish(
-    plans: readonly NewFilePlan[],
+    plans: readonly ReadonlyNewFilePlan[],
     signal?: AbortSignal,
     stagedRoot?: string,
   ): Promise<void> {

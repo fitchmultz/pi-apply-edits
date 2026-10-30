@@ -1,7 +1,11 @@
 import { constants, type BigIntStats } from "node:fs";
 import { link, lstat, mkdir, open, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { FileSnapshot, FileState, ReplacementPublishHooks } from "./contracts.ts";
+import type {
+  FileState,
+  ReadonlyFileSnapshot,
+  ReadonlyReplacementPublishHooks,
+} from "./contracts.ts";
 import {
   assertCreatedDirectoryOwner,
   rmdirOwnedPath,
@@ -38,20 +42,20 @@ import {
 } from "./snapshot.ts";
 
 export async function publishReplacement(
-  snapshot: FileSnapshot,
+  snapshot: ReadonlyFileSnapshot,
   bytes: Buffer,
   signal?: AbortSignal,
-  hooks?: ReplacementPublishHooks,
+  hooks?: ReadonlyReplacementPublishHooks,
 ): Promise<string[]> {
   return new ReplacementPublication(snapshot, bytes, signal, hooks).run();
 }
 
 /** Owns the private replacement, recovery link, and truthful commit/cleanup receipt. */
 class ReplacementPublication {
-  private readonly snapshot: FileSnapshot;
+  private readonly snapshot: ReadonlyFileSnapshot;
   private readonly bytes: Buffer;
   private readonly signal: AbortSignal | undefined;
-  private readonly hooks: ReplacementPublishHooks | undefined;
+  private readonly hooks: ReadonlyReplacementPublishHooks | undefined;
   private readonly directory: string;
   private readonly temporaryDirectory: string;
   private readonly temporary: string;
@@ -68,10 +72,10 @@ class ReplacementPublication {
   private readonly warnings: string[] = [];
 
   constructor(
-    snapshot: FileSnapshot,
+    snapshot: ReadonlyFileSnapshot,
     bytes: Buffer,
     signal?: AbortSignal,
-    hooks?: ReplacementPublishHooks,
+    hooks?: ReadonlyReplacementPublishHooks,
   ) {
     this.snapshot = snapshot;
     this.bytes = bytes;

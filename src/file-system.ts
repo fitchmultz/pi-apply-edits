@@ -1,11 +1,11 @@
 import { assertEntryMovePathBudget } from "./path-budget.ts";
 import type {
-  EntryMovePlan,
-  EntryPublishHooks,
   MoveReplacement,
-  NewFilePlan,
-  NewFilePublishHooks,
-  PlannedNewFile,
+  ReadonlyEntryMovePlan,
+  ReadonlyEntryPublishHooks,
+  ReadonlyNewFilePlan,
+  ReadonlyNewFilePublishHooks,
+  ReadonlyPlannedNewFile,
 } from "./fs/contracts.ts";
 import { throwIfAborted } from "./fs/errors.ts";
 import { publishDirectEntryMove } from "./fs/entry-move.ts";
@@ -40,14 +40,13 @@ export { publishReplacement } from "./fs/replacement.ts";
 export { preparePlannedNestedFiles, discardPreparedNestedFiles } from "./fs/nested-staging.ts";
 export { publishPreparedNestedFiles } from "./fs/nested-publication.ts";
 export { supportsExistingFileReplacement } from "./fs/platform.ts";
-export { MacosAclSession } from "./fs/macos-acl.ts";
 
 /** Keep the existing filesystem API; owners in fs/ implement each publication lifecycle. */
 export async function publishEntryMove(
-  plan: EntryMovePlan,
+  plan: ReadonlyEntryMovePlan,
   replacement?: MoveReplacement,
   signal?: AbortSignal,
-  hooks?: EntryPublishHooks,
+  hooks?: ReadonlyEntryPublishHooks,
 ): Promise<string[]> {
   assertMoveSnapshot(plan.entry, replacement?.snapshot);
   assertEntryMovePathBudget(plan.entry.actualPath, plan.destination, plan.entry.inputPath);
@@ -67,9 +66,9 @@ export async function publishEntryMove(
 }
 
 export async function publishPlannedNestedFiles(
-  entries: readonly PlannedNewFile[],
+  entries: readonly ReadonlyPlannedNewFile[],
   signal?: AbortSignal,
-  hooks?: NewFilePublishHooks,
+  hooks?: ReadonlyNewFilePublishHooks,
 ): Promise<string[]> {
   const prepared = await preparePlannedNestedFiles(entries, signal, hooks);
   return publishPreparedNestedFiles(prepared, signal);
@@ -80,8 +79,8 @@ export async function publishNewFile(
   inputTargetPath: string,
   bytes: Buffer,
   signal?: AbortSignal,
-  plan?: NewFilePlan,
-  hooks?: NewFilePublishHooks,
+  plan?: ReadonlyNewFilePlan,
+  hooks?: ReadonlyNewFilePublishHooks,
 ): Promise<string[]> {
   throwIfAborted(signal);
   const resolvedPlan = plan ?? (await planNewFile(inputTargetPath));

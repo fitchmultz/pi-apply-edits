@@ -3,7 +3,12 @@ import { access, lstat, open, readlink, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { assertFileAddress, nativeRealpath, operationPath } from "../native-path.ts";
 import { assertEntryDeletePathBudget, assertPlannedPathBudget } from "../path-budget.ts";
-import type { EntrySnapshot, FileSnapshot } from "./contracts.ts";
+import type {
+  EntrySnapshot,
+  FileSnapshot,
+  ReadonlyEntrySnapshot,
+  ReadonlyFileSnapshot,
+} from "./contracts.ts";
 import { assertDirectoryWritableForPublish } from "./planning.ts";
 import { isCode } from "./errors.ts";
 import {
@@ -20,7 +25,7 @@ import {
 
 const androidMetadataBySnapshot = new WeakMap<FileSnapshot, string>();
 
-export function androidMetadataForSnapshot(snapshot: FileSnapshot): string | undefined {
+export function androidMetadataForSnapshot(snapshot: ReadonlyFileSnapshot): string | undefined {
   return androidMetadataBySnapshot.get(snapshot);
 }
 
@@ -64,7 +69,7 @@ export async function captureEntrySnapshot(
   return entry;
 }
 
-export async function assertEntryParentCurrent(entry: EntrySnapshot): Promise<void> {
+export async function assertEntryParentCurrent(entry: ReadonlyEntrySnapshot): Promise<void> {
   const parent = await stat(entry.parentPath, { bigint: true });
   if (
     !sameIdentity(entry.parentStats, parent) ||
@@ -74,7 +79,7 @@ export async function assertEntryParentCurrent(entry: EntrySnapshot): Promise<vo
   }
 }
 
-export async function assertEntryCurrent(entry: EntrySnapshot): Promise<void> {
+export async function assertEntryCurrent(entry: ReadonlyEntrySnapshot): Promise<void> {
   await assertEntryParentCurrent(entry);
   const current = await lstat(entry.actualPath, { bigint: true });
   if (
@@ -178,7 +183,7 @@ async function tryReadSnapshot(
 
 /** Run deterministic replacement refusals during planning, before any member of a batch writes. */
 export async function assertSafeToReplace(
-  snapshot: FileSnapshot,
+  snapshot: ReadonlyFileSnapshot,
   signal?: AbortSignal,
 ): Promise<void> {
   if ((snapshot.stats.mode & 0o6000n) !== 0n) {
@@ -206,7 +211,7 @@ export async function assertSafeToReplace(
   }
 }
 
-export async function assertSnapshotCurrent(snapshot: FileSnapshot): Promise<void> {
+export async function assertSnapshotCurrent(snapshot: ReadonlyFileSnapshot): Promise<void> {
   let currentInput: BigIntStats;
   try {
     currentInput = await lstat(snapshot.inputPath, { bigint: true });
@@ -246,7 +251,7 @@ export async function assertSnapshotCurrent(snapshot: FileSnapshot): Promise<voi
 }
 
 export async function assertLinkedTargetCurrent(
-  snapshot: FileSnapshot,
+  snapshot: ReadonlyFileSnapshot,
   linkedBaseline?: BigIntStats,
 ): Promise<BigIntStats> {
   await assertLinkedInputCurrent(snapshot);
@@ -255,7 +260,7 @@ export async function assertLinkedTargetCurrent(
   return current;
 }
 
-async function assertLinkedInputCurrent(snapshot: FileSnapshot): Promise<void> {
+async function assertLinkedInputCurrent(snapshot: ReadonlyFileSnapshot): Promise<void> {
   const currentInput = await lstat(snapshot.inputPath, { bigint: true }).catch(() => {
     // Missing or inaccessible entries fail the following identity guard closed.
   });
@@ -272,7 +277,7 @@ async function assertLinkedInputCurrent(snapshot: FileSnapshot): Promise<void> {
 }
 
 async function assertLinkedActualCurrent(
-  snapshot: FileSnapshot,
+  snapshot: ReadonlyFileSnapshot,
   linkedBaseline?: BigIntStats,
 ): Promise<BigIntStats> {
   const pathStats = await lstat(snapshot.actualPath, { bigint: true }).catch(() => {

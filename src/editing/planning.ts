@@ -11,8 +11,8 @@ import {
   publishReplacement,
   publishNewFile,
   throwIfAborted,
-  type FileSnapshot,
 } from "../file-system.ts";
+import type { ReadonlyFileSnapshot } from "../fs/contracts.ts";
 import {
   assertPlannedPathBudget,
   assertReplacementPathBudget,
@@ -115,7 +115,7 @@ async function entryContent(
 }
 function assertSourceMode(
   input: MutationInput,
-  snapshot: FileSnapshot | undefined,
+  snapshot: ReadonlyFileSnapshot | undefined,
   displayPath: string,
 ): void {
   if (snapshot !== undefined && input.requireMissing === true) {

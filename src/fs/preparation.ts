@@ -1,6 +1,6 @@
 import { constants, type BigIntStats } from "node:fs";
 import { open } from "node:fs/promises";
-import type { EntrySnapshot, FileSnapshot } from "./contracts.ts";
+import type { ReadonlyEntrySnapshot, ReadonlyFileSnapshot } from "./contracts.ts";
 import { unlinkOwnedPath } from "./cleanup.ts";
 import { errorMessage } from "./errors.ts";
 import { readStableRegularEntry, samePreservedMetadata, sameSnapshotStats } from "./observation.ts";
@@ -11,7 +11,10 @@ import {
   assertSnapshotCurrent,
 } from "./snapshot.ts";
 
-export function assertMoveSnapshot(entry: EntrySnapshot, snapshot?: FileSnapshot): void {
+export function assertMoveSnapshot(
+  entry: ReadonlyEntrySnapshot,
+  snapshot?: ReadonlyFileSnapshot,
+): void {
   if (!snapshot) {
     return;
   }
@@ -25,7 +28,7 @@ export function assertMoveSnapshot(entry: EntrySnapshot, snapshot?: FileSnapshot
 
 export async function prepareMoveReplacement(
   path: string,
-  snapshot: FileSnapshot,
+  snapshot: ReadonlyFileSnapshot,
   bytes: Buffer,
   signal?: AbortSignal,
 ): Promise<BigIntStats> {
