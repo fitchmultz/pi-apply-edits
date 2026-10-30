@@ -16,7 +16,7 @@ import {
   currentOwnedPath,
   removeEmptyOwnedDirectory,
 } from "./cleanup.ts";
-import { errorMessage, isCode, throwIfAborted } from "./errors.ts";
+import { errorMessage, isCode, PrivateEntryChangedError, throwIfAborted } from "./errors.ts";
 import { sameIdentity, syncDirectory } from "./observation.ts";
 import { assertNewFilePlanCurrent, stagedTraversalDirectories } from "./planning.ts";
 import { transferMacosAcl } from "./platform.ts";
@@ -163,7 +163,7 @@ abstract class NestedStaging {
     try {
       assertCreatedDirectoryOwner(stats, path);
     } catch (error) {
-      this.cleanupBlocked = path;
+      this.cleanupBlocked = `${path} is not owned by this user`;
       throw error;
     }
   }
@@ -195,7 +195,15 @@ abstract class NestedStaging {
     }
     const target = join(directory, basename(entry.plan.targetPath));
     if (entry.move?.snapshot) {
-      await prepareMoveReplacement(target, entry.move.snapshot, entry.bytes, signal);
+      try {
+        await prepareMoveReplacement({ path: target }, entry.move.snapshot, entry.bytes, signal);
+      } catch (error) {
+        if (error instanceof PrivateEntryChangedError) {
+          // Recursive discard does not verify entries; keep the whole tree when a check detects one.
+          this.cleanupBlocked = `${target} no longer names the private copy staged by this call`;
+        }
+        throw error;
+      }
       return;
     }
     this.#handle = await open(target, "wx", 0o666);
@@ -212,7 +220,7 @@ abstract class NestedStaging {
     this.discardAttempted = true;
     if (this.cleanupBlocked !== undefined) {
       throw new Error(
-        `Staging cleanup was skipped because ${this.cleanupBlocked} is not owned by this user; the staging container was left untouched at ${this.container}`,
+        `Staging cleanup was skipped because ${this.cleanupBlocked}; the staging container was left untouched at ${this.container}`,
       );
     }
     if (this.stagingStats) {

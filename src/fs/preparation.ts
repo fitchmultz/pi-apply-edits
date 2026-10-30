@@ -2,9 +2,14 @@ import { constants, type BigIntStats } from "node:fs";
 import { open } from "node:fs/promises";
 import type { ReadonlyEntrySnapshot, ReadonlyFileSnapshot } from "./contracts.ts";
 import { unlinkOwnedPath } from "./cleanup.ts";
-import { errorMessage } from "./errors.ts";
-import { readStableRegularEntry, samePreservedMetadata, sameSnapshotStats } from "./observation.ts";
-import { assertNoLinuxCapabilities, cloneWithMetadata } from "./platform.ts";
+import { errorMessage, PrivateEntryChangedError } from "./errors.ts";
+import {
+  readStableRegularEntry,
+  sameIdentity,
+  samePreservedMetadata,
+  sameSnapshotStats,
+} from "./observation.ts";
+import { assertNoLinuxCapabilities, clonePrivateFile, type PrivateCopyTarget } from "./platform.ts";
 import {
   androidMetadataForSnapshot,
   assertSafeToReplace,
@@ -27,17 +32,25 @@ export function assertMoveSnapshot(
 }
 
 export async function prepareMoveReplacement(
-  path: string,
+  target: PrivateCopyTarget,
   snapshot: ReadonlyFileSnapshot,
   bytes: Buffer,
   signal?: AbortSignal,
 ): Promise<BigIntStats> {
   await assertSafeToReplace(snapshot, signal);
   await assertSnapshotCurrent(snapshot);
-  await cloneWithMetadata(snapshot.actualPath, path, signal, androidMetadataForSnapshot(snapshot));
-  const handle = await open(path, constants.O_RDWR | constants.O_NOFOLLOW);
+  const created = await clonePrivateFile(
+    snapshot.actualPath,
+    target,
+    signal,
+    androidMetadataForSnapshot(snapshot),
+  );
+  const handle = await open(target.path, constants.O_RDWR | constants.O_NOFOLLOW);
   try {
     const cloned = await handle.stat({ bigint: true });
+    if (!sameIdentity(created, cloned)) {
+      throw new PrivateEntryChangedError(`Prepared move file changed identity: ${target.path}`);
+    }
     if (!cloned.isFile() || cloned.nlink !== 1n || !samePreservedMetadata(snapshot.stats, cloned)) {
       throw new Error(`Could not preserve source metadata for move: ${snapshot.inputPath}`);
     }
@@ -49,7 +62,7 @@ export async function prepareMoveReplacement(
       throw new Error(`Move metadata changed: ${snapshot.inputPath}`);
     }
     if (process.platform === "linux") {
-      await assertNoLinuxCapabilities(path, signal);
+      await assertNoLinuxCapabilities(target.path, signal);
     }
     return prepared;
   } finally {
