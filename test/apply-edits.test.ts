@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback, spawnSync } from "node:child_process";
+import nodeChildProcess, { execFile as execFileCallback, spawnSync } from "node:child_process";
 import nodeFs from "node:fs";
 import {
   chmod,
@@ -1481,11 +1481,15 @@ test(
       await execFile("/usr/bin/xattr", ["-w", attribute, "retained", path]);
       await execFile("/bin/chmod", ["+a", acl, path]);
 
-      await replaceTextInFiles(
+      const result = await replaceTextInFiles(
         { files: [{ path, edits: [{ oldText: "before", newText: "after" }] }] },
         directory,
       );
 
+      assert.equal(result.details.error, undefined, result.summary);
+      assert.equal(result.details.files[0]?.status, "applied");
+      assert.deepEqual(result.details.modifiedFiles, [await realpath(path)]);
+      assert.equal(await readFile(path, "utf8"), "after\n");
       const { stdout } = await execFile("/usr/bin/xattr", ["-p", attribute, path]);
       const { stdout: listing } = await execFile("/bin/ls", ["-le", path]);
       assert.equal(stdout.trim(), "retained");
@@ -1540,7 +1544,7 @@ test(
           await writeFile(join(parent, "native.txt"), "native\n");
           await mkdir(join(parent, "native", "child"), { recursive: true });
           await writeFile(join(parent, "native", "child", "file.txt"), "native\n");
-          await writeFiles(
+          const result = await writeFiles(
             {
               files: [
                 { path: join(parent, "tool.txt"), content: "tool\n", mode: "create" },
@@ -1553,6 +1557,18 @@ test(
             },
             directory,
           );
+          const canonicalParent = await realpath(parent);
+          assert.equal(result.details.error, undefined, result.summary);
+          assert.deepEqual(
+            result.details.files.map(({ status }) => status),
+            ["applied", "applied"],
+          );
+          assert.deepEqual(result.details.modifiedFiles, [
+            join(canonicalParent, "tool.txt"),
+            join(canonicalParent, "tool", "child", "file.txt"),
+          ]);
+          assert.equal(await readFile(join(parent, "tool.txt"), "utf8"), "tool\n");
+          assert.equal(await readFile(join(parent, "tool", "child", "file.txt"), "utf8"), "tool\n");
           await Promise.all(
             [".txt", "", "/child", "/child/file.txt"].map(async (suffix) => {
               const native = join(parent, `native${suffix}`);
@@ -1585,17 +1601,36 @@ test(
       await writeFile(inherited, "before\n");
       const inheritedAcl = await acl(inherited);
       assert.match(inheritedAcl, /inherited deny read/);
-      await writeFiles(
-        { files: [{ path: plain, content: "after\n", mode: "replace" }] },
-        directory,
-      );
-      assert.equal(await acl(plain), "");
+      // Staging copies inherit this different current rule; one call must still restore each
+      // source ACL exactly, including clearing it for the plain file after an inherited one.
       await execFile("/bin/chmod", ["-N", directory]);
-      await writeFiles(
-        { files: [{ path: inherited, content: "after\n", mode: "replace" }] },
+      await execFile("/bin/chmod", [
+        "+a",
+        "user:_www deny write,file_inherit,directory_inherit,only_inherit",
+        directory,
+      ]);
+      const result = await writeFiles(
+        {
+          files: [
+            { path: inherited, content: "after\n", mode: "replace" },
+            { path: plain, content: "after\n", mode: "replace" },
+          ],
+        },
         directory,
       );
+      assert.equal(result.details.error, undefined, result.summary);
+      assert.deepEqual(
+        result.details.files.map(({ status }) => status),
+        ["applied", "applied"],
+      );
+      assert.deepEqual(result.details.modifiedFiles, [
+        await realpath(inherited),
+        await realpath(plain),
+      ]);
+      assert.equal(await readFile(inherited, "utf8"), "after\n");
+      assert.equal(await readFile(plain, "utf8"), "after\n");
       assert.equal(await acl(inherited), inheritedAcl);
+      assert.equal(await acl(plain), "");
     });
   },
 );
@@ -1620,6 +1655,151 @@ test(
         /EACCES/,
       );
       assert.deepEqual(await readdir(directory), ["native.txt"]);
+    });
+  },
+);
+
+test(
+  "macOS cancellation after private create preparation leaves no targets or private files",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const originalLstat = nodeFs.promises.lstat;
+      const controller = new AbortController();
+      let armed = true;
+      await execFile("/bin/chmod", ["+a", "user:_www allow read,file_inherit", directory]);
+
+      await withRacingEditing(
+        (mock) => {
+          mock.method(
+            nodeFs.promises,
+            "lstat",
+            async (...args: Readonly<Parameters<typeof originalLstat>>) => {
+              const stats = await originalLstat(...args);
+              const name = basename(filePath(args[0]));
+              // Abort on the next event-loop turn after the first private directory is checked.
+              if (armed && name.startsWith(".pi-apply-edits-") && name.endsWith(".tmpdir")) {
+                armed = false;
+                setImmediate(() => {
+                  controller.abort();
+                });
+              }
+              return stats;
+            },
+          );
+        },
+        async (module) => {
+          const result = await module.writeFiles(
+            {
+              files: [
+                { path: "first.txt", content: "first\n", mode: "create" },
+                { path: "second.txt", content: "second\n", mode: "create" },
+              ],
+            },
+            directory,
+            controller.signal,
+          );
+          assert.match(
+            result.details.error ?? "",
+            /files\[0\] \(first\.txt\).*Operation aborted before file content was committed/s,
+          );
+          assert.deepEqual(
+            result.details.files.map(({ status }) => status),
+            ["failed", "unattempted"],
+          );
+          assert.deepEqual(result.details.modifiedFiles, []);
+        },
+      );
+      assert.equal(armed, false);
+      assert.deepEqual(await readdir(directory), []);
+    });
+  },
+);
+
+test(
+  "macOS cancellation as an ACL reply arrives waits for the helper to exit before cleanup",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const originalSpawn = nodeChildProcess.spawn;
+      const originalRmdir = nodeFs.promises.rmdir;
+      const originalUnlink = nodeFs.promises.unlink;
+      const controller = new AbortController();
+      const events: string[] = [];
+      const recordCleanup = (operation: string, path: unknown): void => {
+        if (filePath(path).includes(".pi-apply-edits-")) {
+          events.push(`cleanup ${operation}`);
+        }
+      };
+      await execFile("/bin/chmod", ["+a", "user:_www allow read,file_inherit", directory]);
+
+      await withRacingEditing(
+        (mock) => {
+          mock.method(
+            nodeChildProcess,
+            "spawn",
+            (...args: Readonly<[string, readonly string[]]>) => {
+              const child = originalSpawn(...args);
+              if (args[0] === "/usr/bin/osascript") {
+                // Abort as the helper's real reply reaches its stdout reader, before it is parsed.
+                child.stdout.prependOnceListener("data", () => {
+                  events.push("abort");
+                  controller.abort();
+                });
+                child.once("close", () => {
+                  events.push("close");
+                });
+              }
+              return child;
+            },
+          );
+          mock.method(
+            nodeFs.promises,
+            "rmdir",
+            async (...args: Readonly<Parameters<typeof originalRmdir>>) => {
+              recordCleanup("rmdir", args[0]);
+              await originalRmdir(...args);
+            },
+          );
+          mock.method(
+            nodeFs.promises,
+            "unlink",
+            async (...args: Readonly<Parameters<typeof originalUnlink>>) => {
+              recordCleanup("unlink", args[0]);
+              await originalUnlink(...args);
+            },
+          );
+        },
+        async (module) => {
+          const result = await module.writeFiles(
+            {
+              files: [
+                { path: "first.txt", content: "first\n", mode: "create" },
+                { path: "second.txt", content: "second\n", mode: "create" },
+              ],
+            },
+            directory,
+            controller.signal,
+          );
+          assert.match(
+            result.details.error ?? "",
+            /files\[0\] \(first\.txt\).*Operation aborted before file content was committed/s,
+          );
+          assert.deepEqual(
+            result.details.files.map(({ status }) => status),
+            ["failed", "unattempted"],
+          );
+          assert.deepEqual(result.details.modifiedFiles, []);
+        },
+      );
+      // The reply received after cancellation settled nothing: private cleanup began after close.
+      assert.deepEqual(events.slice(0, 2), ["abort", "close"], events.join(", "));
+      assert.ok(events.length > 2, events.join(", "));
+      assert.ok(
+        events.slice(2).every((event) => event.startsWith("cleanup ")),
+        events.join(", "),
+      );
+      assert.deepEqual(await readdir(directory), []);
     });
   },
 );

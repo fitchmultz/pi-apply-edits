@@ -40,6 +40,7 @@ export { publishReplacement } from "./fs/replacement.ts";
 export { preparePlannedNestedFiles, discardPreparedNestedFiles } from "./fs/nested-staging.ts";
 export { publishPreparedNestedFiles } from "./fs/nested-publication.ts";
 export { supportsExistingFileReplacement } from "./fs/platform.ts";
+export { MacosAclSession } from "./fs/macos-acl.ts";
 
 /** Keep the existing filesystem API; owners in fs/ implement each publication lifecycle. */
 export async function publishEntryMove(

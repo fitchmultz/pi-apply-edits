@@ -3,9 +3,9 @@ import { constants, type BigIntStats } from "node:fs";
 import { access, mkdtemp, readFile, rm, unlink, writeFile, link } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AndroidReplacementSupport, ReplacementSupport } from "./contracts.ts";
 import { AtomicMoveUncertainError, errorMessage } from "./errors.ts";
+import { currentMacosAclSession, macosAclScript } from "./macos-acl.ts";
 import { lstatIfExists, sameIdentity, sameSnapshotStats } from "./observation.ts";
 
 export function execText(
@@ -196,16 +196,14 @@ export async function transferMacosAcl(
   if (process.platform !== "darwin") {
     return;
   }
+  const session = currentMacosAclSession();
+  if (session !== undefined) {
+    await session.transfer(mode, source, target, signal);
+    return;
+  }
   await execText(
     "/usr/bin/osascript",
-    [
-      "-l",
-      "JavaScript",
-      fileURLToPath(new URL("../macos-acl.js", import.meta.url)),
-      mode,
-      source,
-      target,
-    ],
+    ["-l", "JavaScript", macosAclScript, mode, source, target],
     signal,
   );
 }
