@@ -1,6 +1,6 @@
 import { inspect } from "node:util";
 import type { FileSnapshot, NewFilePlan, EntrySnapshot, EntryMovePlan } from "../file-system.ts";
-import type { PatchOperation } from "../patch.ts";
+import type { ReadonlyPatchUpdate } from "../patch/source.ts";
 
 export type InsertPosition = "before" | "after";
 export type MatchStrategy =
@@ -15,21 +15,21 @@ export const MAX_EDIT_EXPANSION_CHARS = 8 * 1024 * 1024;
 export const MAX_REPLACEMENTS = 10_000;
 
 export interface TargetedEdit {
-  readonly oldText: string;
-  readonly newText: string;
+  oldText: string;
+  newText: string;
   /** Replace through the inclusive end anchor. */
-  readonly endText?: string;
-  readonly all?: boolean;
+  endText?: string;
+  all?: boolean;
   /** Keep the matched anchor; insert with no implicit separator. */
-  readonly insert?: InsertPosition;
+  insert?: InsertPosition;
 }
 export interface ApplyEditsInput {
-  readonly path: string;
-  readonly edits?: readonly TargetedEdit[];
-  readonly rewrite?: string;
-  readonly onMissing?: "error" | "create";
-  readonly requireMissing?: boolean;
-  readonly preserveFormatting?: boolean;
+  path: string;
+  edits?: TargetedEdit[];
+  rewrite?: string;
+  onMissing?: "error" | "create";
+  requireMissing?: boolean;
+  preserveFormatting?: boolean;
 }
 export interface AppliedEditDetail {
   index: number;
@@ -91,20 +91,34 @@ export type ReadonlyEditingExecution = Readonly<Omit<EditingExecution, "details"
   readonly details: ReadonlyApplyEditsBatchDetails;
 };
 export interface ReplaceTextRequest {
-  readonly files: readonly { readonly path: string; readonly edits: readonly TargetedEdit[] }[];
-  readonly preview?: boolean;
+  files: Array<{ path: string; edits: TargetedEdit[] }>;
+  preview?: boolean;
 }
 export interface WriteFilesRequest {
-  readonly files: readonly {
-    readonly path: string;
-    readonly content: string;
-    readonly mode: "create" | "replace";
-    readonly preserveFormatting?: boolean;
-  }[];
-  readonly preview?: boolean;
+  files: Array<{
+    path: string;
+    content: string;
+    mode: "create" | "replace";
+    preserveFormatting?: boolean;
+  }>;
+  preview?: boolean;
 }
-export interface MutationInput extends ApplyEditsInput {
-  readonly patch?: Extract<PatchOperation, { kind: "update" }>;
+/** Read views of caller-owned inputs; the editing pipeline only reads them. */
+export type ReadonlyTargetedEdit = Readonly<TargetedEdit>;
+export type ReadonlyApplyEditsInput = Readonly<Omit<ApplyEditsInput, "edits">> & {
+  readonly edits?: readonly ReadonlyTargetedEdit[];
+};
+type ReadonlyReplaceTextFile = Readonly<Omit<ReplaceTextRequest["files"][number], "edits">> & {
+  readonly edits: readonly ReadonlyTargetedEdit[];
+};
+export type ReadonlyReplaceTextRequest = Readonly<Omit<ReplaceTextRequest, "files">> & {
+  readonly files: readonly ReadonlyReplaceTextFile[];
+};
+export type ReadonlyWriteFilesRequest = Readonly<Omit<WriteFilesRequest, "files">> & {
+  readonly files: readonly Readonly<WriteFilesRequest["files"][number]>[];
+};
+export interface MutationInput extends ReadonlyApplyEditsInput {
+  readonly patch?: ReadonlyPatchUpdate;
   readonly delete?: true;
 }
 export interface PlannedMutation {

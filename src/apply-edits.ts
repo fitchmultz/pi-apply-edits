@@ -1,9 +1,10 @@
-import { parsePatch, type PatchOperation } from "./patch.ts";
+import { parsePatch } from "./patch.ts";
+import type { ReadonlyPatchOperation } from "./patch/source.ts";
 import { executeFileBatch } from "./editing/batch.ts";
 import { failedExecution } from "./editing/receipts.ts";
 import type {
-  WriteFilesRequest,
-  ReplaceTextRequest,
+  ReadonlyWriteFilesRequest,
+  ReadonlyReplaceTextRequest,
   EditingExecution,
   MutationInput,
 } from "./editing/contracts.ts";
@@ -27,7 +28,7 @@ export type {
 } from "./editing/contracts.ts";
 
 export async function replaceTextInFiles(
-  input: ReplaceTextRequest,
+  input: ReadonlyReplaceTextRequest,
   cwd: string,
   signal?: AbortSignal,
   onProgress?: (summary: string) => void,
@@ -39,7 +40,7 @@ export async function replaceTextInFiles(
     onProgress,
   });
 }
-function writeMutation(file: WriteFilesRequest["files"][number]): MutationInput {
+function writeMutation(file: ReadonlyWriteFilesRequest["files"][number]): MutationInput {
   const mode: unknown = file.mode;
   if (mode !== "create" && mode !== "replace") {
     throw new Error('mode must be "create" or "replace"');
@@ -56,7 +57,7 @@ function writeMutation(file: WriteFilesRequest["files"][number]): MutationInput 
   };
 }
 export async function writeFiles(
-  input: WriteFilesRequest,
+  input: ReadonlyWriteFilesRequest,
   cwd: string,
   signal?: AbortSignal,
   onProgress?: (summary: string) => void,
@@ -72,7 +73,7 @@ export async function writeFiles(
     return failedExecution(error, input.preview === true);
   }
 }
-function patchMutation(operation: PatchOperation): MutationInput {
+function patchMutation(operation: ReadonlyPatchOperation): MutationInput {
   switch (operation.kind) {
     case "add":
       return {

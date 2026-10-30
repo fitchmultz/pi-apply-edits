@@ -32,13 +32,14 @@ NL: /\r\n|\n|\r/
 `;
 
 interface PathSpan {
-  readonly start: number;
-  readonly end: number;
-  readonly path: string;
+  start: number;
+  end: number;
+  path: string;
 }
+/** Each parse allocates fresh operations and spans; ownership transfers to the caller. */
 export interface ParsedPatch {
-  readonly operations: readonly PatchOperation[];
-  readonly paths: readonly PathSpan[];
+  operations: PatchOperation[];
+  paths: PathSpan[];
 }
 
 /** Owns the cursor and header spans; operation readers consume exactly their body. */

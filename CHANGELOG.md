@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Speed up multi-file macOS edits by starting one ACL helper per editing call instead of one `osascript` process per file. ACLs are still copied exactly through the native API, cancelling an in-flight transfer stops the helper and waits for it to exit before that transfer's private files are cleaned up, and no helper outlives its call.
+- Accept readonly editing and patch inputs while preserving mutable public request, parsed-patch, and result types from v1.1.0. Signature-derived input types are readonly; implementations that accept only the former mutable inputs no longer satisfy those function types.
 - Find Termux's atomic-edit tools independently of mise or other Node installations, including when `PREFIX` is unset.
 - Preserve per-file outcomes in expanded previews: distinguish planned changes, unchanged files, failed previews, and unreached operations without changing publication receipts.
 - Return compact model-facing summaries and bounded previews while preserving generated diffs and match details for direct and nested callers. Scripts can output selected receipt fields or the full receipt.
