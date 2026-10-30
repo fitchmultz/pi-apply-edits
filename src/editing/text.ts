@@ -102,7 +102,7 @@ export function lineNumbersAt(content: string, offsets: readonly number[]): numb
 }
 export function lineEndingsAt(content: string, offsets: readonly number[]): LineEnding[] {
   const endings: LineEnding[] = [];
-  const fallback = detectLineEnding(content);
+  const fallback = lazyLineEnding(content);
   let cursor = 0;
   for (const offset of offsets) {
     if (content[offset] === "\n" && content[offset - 1] === "\r") {
@@ -117,7 +117,7 @@ export function lineEndingsAt(content: string, offsets: readonly number[]): Line
     if (char === "\r") {
       endings.push(content[cursor + 1] === "\n" ? "\r\n" : "\r");
     } else {
-      endings.push(char === "\n" ? "\n" : fallback);
+      endings.push(char === "\n" ? "\n" : fallback());
     }
   }
   return endings;
@@ -164,6 +164,14 @@ export function detectLineEnding(text: string): LineEnding {
     return "\r\n";
   }
   return counts["\r"] > counts["\n"] && counts["\r"] > 0 ? "\r" : "\n";
+}
+export function lazyLineEnding(text: string): () => LineEnding {
+  // Detection scans the whole text, but only a match without a local line ending needs it.
+  let ending: LineEnding | undefined;
+  return () => {
+    ending ??= detectLineEnding(text);
+    return ending;
+  };
 }
 export function convertLineEndings(text: string, ending: LineEnding): string {
   return text.replace(/\r\n|\r|\n/g, ending);
