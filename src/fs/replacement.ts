@@ -16,12 +16,14 @@ import {
 import {
   AtomicMoveUncertainError,
   errorMessage,
+  PrivateEntryChangedError,
   PublicationError,
   throwIfAborted,
 } from "./errors.ts";
 import {
   assertPreparedFileCurrent,
   readStableFile,
+  sameIdentity,
   samePreservedMetadata,
   samePublishedState,
   sameSnapshotStats,
@@ -29,7 +31,7 @@ import {
 } from "./observation.ts";
 import {
   assertNoLinuxCapabilities,
-  cloneWithMetadata,
+  clonePrivateFile,
   exchangePreparedFiles,
   movePreparedFileNoReplace,
   replacementSupportInfo,
@@ -136,9 +138,14 @@ class ReplacementPublication {
       const created = await lstat(this.temporaryDirectory, { bigint: true });
       assertCreatedDirectoryOwner(created, this.temporaryDirectory);
       this.temporaryDirectoryStats = created;
-      await cloneWithMetadata(
+      await clonePrivateFile(
         this.snapshot.actualPath,
-        this.temporary,
+        {
+          path: this.temporary,
+          own: (identity) => {
+            this.temporaryIdentity = identity;
+          },
+        },
         this.signal,
         androidMetadataForSnapshot(this.snapshot),
       );
@@ -151,7 +158,11 @@ class ReplacementPublication {
     }
     this.handle = await open(this.temporary, constants.O_RDWR | constants.O_NOFOLLOW);
     const cloned = await this.handle.stat({ bigint: true });
-    this.temporaryIdentity = cloned;
+    if (!this.temporaryIdentity || !sameIdentity(this.temporaryIdentity, cloned)) {
+      throw new PrivateEntryChangedError(
+        `Temporary replacement changed identity while preparing ${this.snapshot.inputPath}. No changes were written.`,
+      );
+    }
     if (
       !cloned.isFile() ||
       cloned.nlink !== 1n ||

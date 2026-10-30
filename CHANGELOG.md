@@ -13,6 +13,7 @@
 - Reproducibly correct the pinned development checker’s declaration matching and readonly-container handling without weakening Promise or application-input checks.
 - Reject foreign-owned delete and content-move staging directories before adopting cleanup state, leaving those directories untouched. Preserve original publication failures through `Error.cause`.
 - Accept readonly filesystem publication inputs while restoring the mutable fields of v1.1.0's named snapshot, plan, prepared-create, move-plan, and hook types, except for readonly hook payload properties. Prepared creates and move plans keep referencing the caller's own entries, hooks, and entry snapshot, so readonly inputs stay readonly there. Signature-derived inputs and some `ReturnType` results remain readonly; literal arguments can narrow the returned alias's type, and implementations accepting only the former mutable inputs may no longer satisfy those function types. Hooks declared with v1.1.0's mutable payload types remain assignable. Publishing or discarding a prepared nested create requires the original prepared object; unlike v1.1.0, a shallow copy is rejected.
+- Remove private replacement and content-move copies when an edit is cancelled during the native copy or the copy fails, including Termux nested moves. Each copy is created exclusively by its editing call and cleaned up only after the copy process exits. If the post-copy identity check detects a substituted path, cleanup leaves that entry untouched and reports it.
 
 ## 1.1.0 — 2026-10-01
 

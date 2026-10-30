@@ -360,6 +360,7 @@ class ReplacementMove {
   private readonly directory: string;
   private readonly candidate: string;
   private directoryStats: BigIntStats | undefined;
+  private candidateIdentity: BigIntStats | undefined;
   private candidateStats: BigIntStats | undefined;
   private readonly warnings: string[] = [];
 
@@ -386,7 +387,12 @@ class ReplacementMove {
       assertCreatedDirectoryOwner(directoryStats, this.directory);
       this.directoryStats = directoryStats;
       this.candidateStats = await prepareMoveReplacement(
-        this.candidate,
+        {
+          path: this.candidate,
+          own: (identity) => {
+            this.candidateIdentity = identity;
+          },
+        },
         this.replacement.snapshot,
         this.replacement.bytes,
         this.signal,
@@ -416,8 +422,8 @@ class ReplacementMove {
       return;
     }
     try {
-      if (this.candidateStats) {
-        await unlinkOwnedPath(this.candidate, this.candidateStats, "Prepared move file");
+      if (this.candidateIdentity) {
+        await unlinkOwnedPath(this.candidate, this.candidateIdentity, "Prepared move file");
       }
       await rmdirOwnedPath(this.directory, this.directoryStats, "Move staging directory");
     } catch (error) {

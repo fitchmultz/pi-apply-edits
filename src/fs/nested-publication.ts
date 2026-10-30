@@ -2,6 +2,7 @@ import type { BigIntStats } from "node:fs";
 import { lstat, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type {
+  ReadonlyEntryMovePlan,
   ReadonlyPlannedNewFile,
   ReadonlyPreparedNestedFiles,
   ReplacementSupport,
@@ -12,21 +13,46 @@ import {
   chmodOwnedDirectory,
   currentOwnedPath,
   removeEmptyOwnedDirectory,
+  unlinkOwnedPath,
 } from "./cleanup.ts";
 import {
   errorMessage,
   isCode,
   PartialCreatePublishError,
+  PrivateEntryChangedError,
   PublicationError,
   throwIfAborted,
 } from "./errors.ts";
-import { publishMoveDestination } from "./entry-move.ts";
+import { publishMoveDestination, type MoveCandidate } from "./entry-move.ts";
 import { publishNestedFile } from "./nested-file.ts";
 import { preparedOwner } from "./nested-staging.ts";
-import { assertPreparedFileCurrent, readStableFile, syncDirectory } from "./observation.ts";
+import {
+  assertPreparedFileCurrent,
+  readStableFile,
+  sameIdentity,
+  syncDirectory,
+} from "./observation.ts";
 import { assertNewFilePlanCurrent, TraversalDirectories } from "./planning.ts";
-import { cloneWithMetadata, replacementSupportInfo } from "./platform.ts";
+import { clonePrivateFile, replacementSupportInfo } from "./platform.ts";
 import { inspectPreparedTree } from "./staged-tree.ts";
+
+async function discardOwnedCandidate(
+  path: string,
+  identity: BigIntStats,
+  failure: unknown,
+): Promise<void> {
+  try {
+    await unlinkOwnedPath(path, identity, "Atomic move candidate");
+  } catch (cleanupError) {
+    const outcome = failure instanceof PublicationError ? failure : undefined;
+    throw new PublicationError(
+      `${errorMessage(failure)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
+      outcome?.modifiedFiles,
+      outcome?.uncertainFiles,
+      failure,
+    );
+  }
+}
 
 export async function publishPreparedNestedFiles(
   prepared: ReadonlyPreparedNestedFiles,
@@ -245,32 +271,60 @@ class NestedPublication {
     if (!move) {
       throw new Error("Staged move source was not recorded");
     }
-    let candidate = move.snapshot ? source : move.entry.actualPath;
-    let stats = move.snapshot ? identity : move.entry.stats;
-    if (move.snapshot && process.platform === "android") {
-      candidate = join(this.prepared.container, "move");
-      await cloneWithMetadata(source, candidate, this.signal);
-      stats = await lstat(candidate, { bigint: true });
-    }
+    const replacement = move.snapshot ? { snapshot: move.snapshot, bytes: entry.bytes } : undefined;
+    const stats = replacement ? identity : move.entry.stats;
     if (!stats) {
       throw new Error("Staged move identity was not recorded");
     }
+    const plan = { entry: move.entry, destination: entry.plan };
+    const candidate = {
+      path: replacement ? source : move.entry.actualPath,
+      stats,
+      replacement,
+      hooks: move.hooks,
+    };
     this.stagingOwner.warnings.push(
-      ...(await publishMoveDestination(
-        { entry: move.entry, destination: entry.plan },
-        {
-          path: candidate,
-          stats,
-          replacement: move.snapshot ? { snapshot: move.snapshot, bytes: entry.bytes } : undefined,
-          hooks: move.hooks,
-        },
-        this.signal,
-      )),
+      ...(replacement && process.platform === "android"
+        ? await this.publishPrivateCopy(plan, candidate)
+        : await publishMoveDestination(plan, candidate, this.signal)),
     );
     this.publishedFiles.push(join(this.prepared.publishRoot, relative));
     this.verifiedFiles.push(join(this.prepared.publishRoot, relative), move.entry.actualPath);
     if (move.snapshot) {
       this.stagedAfterPublish.set(relative, (await readStableFile(source)).stats);
+    }
+  }
+
+  // Android publishes by atomic no-clobber rename, so a private copy keeps the staged file in
+  // place. After a failure, the copy is removed only while its path still names the created file;
+  // a published copy was renamed away, so the identity-guarded unlink leaves it alone.
+  private async publishPrivateCopy(
+    plan: ReadonlyEntryMovePlan,
+    staged: MoveCandidate,
+  ): Promise<string[]> {
+    const path = join(this.prepared.container, "move");
+    const owned: { identity?: BigIntStats } = {};
+    try {
+      const created = await clonePrivateFile(
+        staged.path,
+        {
+          path,
+          own: (identity) => {
+            owned.identity = identity;
+          },
+        },
+        this.signal,
+      );
+      const stats = await lstat(path, { bigint: true });
+      if (!sameIdentity(created, stats)) {
+        throw new PrivateEntryChangedError(`Atomic move candidate changed identity: ${path}`);
+      }
+      return await publishMoveDestination(plan, { ...staged, path, stats }, this.signal);
+    } catch (error) {
+      if (owned.identity) {
+        await discardOwnedCandidate(path, owned.identity, error);
+      }
+      throw error;
     }
   }
 

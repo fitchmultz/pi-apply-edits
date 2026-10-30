@@ -16,7 +16,7 @@ import {
   currentOwnedPath,
   removeEmptyOwnedDirectory,
 } from "./cleanup.ts";
-import { errorMessage, isCode, throwIfAborted } from "./errors.ts";
+import { errorMessage, isCode, PrivateEntryChangedError, throwIfAborted } from "./errors.ts";
 import { sameIdentity, syncDirectory } from "./observation.ts";
 import { assertNewFilePlanCurrent, stagedTraversalDirectories } from "./planning.ts";
 import { transferMacosAcl } from "./platform.ts";
@@ -63,6 +63,7 @@ abstract class NestedStaging {
   stagingStats: BigIntStats | undefined;
   quarantineStats: BigIntStats | undefined;
   cleanupBlocked: string | undefined;
+  #cleanupBlockedReason = "is not owned by this user";
   stagedIdentities: Map<string, BigIntStats> | undefined;
   readonly #stagedDirectories = new Set<string>();
   #handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -195,7 +196,16 @@ abstract class NestedStaging {
     }
     const target = join(directory, basename(entry.plan.targetPath));
     if (entry.move?.snapshot) {
-      await prepareMoveReplacement(target, entry.move.snapshot, entry.bytes, signal);
+      try {
+        await prepareMoveReplacement({ path: target }, entry.move.snapshot, entry.bytes, signal);
+      } catch (error) {
+        if (error instanceof PrivateEntryChangedError) {
+          // Recursive discard does not verify entries; keep the whole tree when a check detects one.
+          this.cleanupBlocked = target;
+          this.#cleanupBlockedReason = "no longer names the private copy staged by this call";
+        }
+        throw error;
+      }
       return;
     }
     this.#handle = await open(target, "wx", 0o666);
@@ -212,7 +222,7 @@ abstract class NestedStaging {
     this.discardAttempted = true;
     if (this.cleanupBlocked !== undefined) {
       throw new Error(
-        `Staging cleanup was skipped because ${this.cleanupBlocked} is not owned by this user; the staging container was left untouched at ${this.container}`,
+        `Staging cleanup was skipped because ${this.cleanupBlocked} ${this.#cleanupBlockedReason}; the staging container was left untouched at ${this.container}`,
       );
     }
     if (this.stagingStats) {
