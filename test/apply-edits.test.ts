@@ -1184,6 +1184,77 @@ test("CRLF anchors preserve supplied newlines and literal deletion boundaries", 
   });
 });
 
+test("edits to an unterminated last line add lines with that file's line ending", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const cases = [
+      { path: "exact-crlf.txt", ending: "\r\n", oldText: "second", strategy: "exact" },
+      { path: "exact-lf.txt", ending: "\n", oldText: "second", strategy: "exact" },
+      { path: "corrected-crlf.txt", ending: "\r\n", oldText: "second ", strategy: "normalized" },
+      { path: "corrected-lf.txt", ending: "\n", oldText: "second ", strategy: "normalized" },
+      {
+        path: "indented-crlf.txt",
+        ending: "\r\n",
+        oldText: "  second",
+        newText: "  second\n  third",
+        strategy: "indent-normalized",
+      },
+    ] as const;
+    await Promise.all(
+      cases.map((item) => writeFile(join(directory, item.path), `first${item.ending}second`)),
+    );
+    const result = await replaceTextInFiles(
+      {
+        files: cases.map((item) => ({
+          path: item.path,
+          edits: [
+            {
+              oldText: item.oldText,
+              newText: "newText" in item ? item.newText : "second\nthird",
+            },
+          ],
+        })),
+      },
+      directory,
+    );
+    assert.equal(result.details.error, undefined, result.summary);
+    assert.deepEqual(
+      result.details.modifiedFiles,
+      await Promise.all(cases.map((item) => realpath(join(directory, item.path)))),
+    );
+    assert.deepEqual(
+      result.details.files.map((file) => file.status),
+      cases.map(() => "applied"),
+    );
+    assert.deepEqual(
+      result.details.files.map((file) => file.matches.map((match) => match.strategy)),
+      cases.map((item) => [item.strategy]),
+    );
+    assert.deepEqual(
+      await Promise.all(cases.map((item) => readFile(join(directory, item.path), "utf8"))),
+      cases.map((item) => `first${item.ending}second${item.ending}third`),
+    );
+  });
+});
+
+test("replace-all uses local endings and the fallback on an unterminated last line", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "mixed.txt");
+    await writeFile(path, "old\r\nold\r\nold\nold");
+    const result = await replaceTextInFiles(
+      { files: [{ path, edits: [{ oldText: "old", newText: "new\nline", all: true }] }] },
+      directory,
+    );
+    assert.equal(result.details.error, undefined, result.summary);
+    assert.deepEqual(result.details.modifiedFiles, [await realpath(path)]);
+    assert.equal(result.details.files[0]?.status, "applied");
+    assert.equal(result.details.files[0]?.matches[0]?.replacements, 4);
+    assert.equal(
+      await readFile(path, "utf8"),
+      "new\r\nline\r\nnew\r\nline\r\nnew\nline\nnew\r\nline",
+    );
+  });
+});
+
 test("targeted edits reject newly leading U+FEFF without changing bytes", async () => {
   await inTemporaryDirectory(async (directory) => {
     const withBom = join(directory, "with-bom.txt");
