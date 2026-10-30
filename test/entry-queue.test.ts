@@ -149,17 +149,22 @@ test("partial move text exposes its verified destination even when source remova
   );
   syncBuiltinESMExports();
   try {
-    const result = await applyPatchToFiles(
-      "*** Begin Patch\n*** Update File: source\n*** Move to: destination\n*** End Patch",
-      cwd,
-    );
+    // Android moves an unchanged source atomically; a content move still removes the source separately.
+    const patch =
+      process.platform === "android"
+        ? "*** Begin Patch\n*** Update File: source\n*** Move to: destination\n@@\n-retained\n+changed\n*** End Patch"
+        : "*** Begin Patch\n*** Update File: source\n*** Move to: destination\n*** End Patch";
+    const result = await applyPatchToFiles(patch, cwd);
     assert(result.details.error !== undefined && result.details.error.length > 0);
     assert.deepEqual(result.details.modifiedFiles, [destination]);
     assert.equal(result.details.files[0]?.status, "failed");
     assert.match(result.summary, /after 1 verified path change/);
     assert(result.summary.includes(`Verified committed paths: ${destination}`));
     assert.equal(await readFile(source, "utf8"), "retained\n");
-    assert.equal(await readFile(destination, "utf8"), "retained\n");
+    assert.equal(
+      await readFile(destination, "utf8"),
+      process.platform === "android" ? "changed\n" : "retained\n",
+    );
   } finally {
     mock.mock.restore();
     syncBuiltinESMExports();

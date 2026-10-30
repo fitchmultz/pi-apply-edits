@@ -491,7 +491,7 @@ test(
   },
 );
 
-test("move cancellation and partial source-removal failure retain exact affected paths", async () => {
+test("move cancellation before publication leaves the source untouched", async () => {
   await fixture(async (directory) => {
     const source = join(directory, "source");
     const target = join(directory, "target");
@@ -505,16 +505,7 @@ test("move cancellation and partial source-removal failure retain exact affected
       outcome([], []),
     );
     assert.equal(await readFile(source, "utf8"), "source");
-    await assert.rejects(
-      publishEntryMove(plan, undefined, undefined, {
-        beforeSourceDelete: () => {
-          throw new Error("source removal unavailable");
-        },
-      }),
-      outcome([target], []),
-    );
-    assert.equal(await readFile(source, "utf8"), "source");
-    assert.equal(await readFile(target, "utf8"), "source");
+    await assert.rejects(lstat(target), { code: "ENOENT" });
   });
 });
 

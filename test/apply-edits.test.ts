@@ -1618,21 +1618,143 @@ test(
   },
 );
 
+for (const withoutPrefix of [false, true]) {
+  test(
+    `Android atomic replacement finds Termux tools ${withoutPrefix ? "without" : "with"} PREFIX`,
+    { skip: process.platform !== "android" },
+    async () => {
+      await inTemporaryDirectory(async (directory) => {
+        const paths = ["replace.txt", "write.txt", "patch.txt"].map((name) =>
+          join(directory, name),
+        );
+        await Promise.all(
+          paths.map(async (path) => {
+            await writeFile(path, "before\n");
+            await chmod(path, 0o640);
+          }),
+        );
+        const metadata = async (path: string) => ({
+          stats: await stat(path),
+          acl: (await execFile("getfacl", ["--absolute-names", "--omit-header", "--", path]))
+            .stdout,
+          xattrs: (
+            await execFile("getfattr", [
+              "--absolute-names",
+              "--dump",
+              "--encoding=hex",
+              "-m",
+              ".",
+              "--",
+              path,
+            ])
+          ).stdout,
+        });
+        const before = await Promise.all(paths.map(metadata));
+        const env = { ...process.env };
+        if (withoutPrefix) {
+          delete env.PREFIX;
+        }
+        const child = spawnSync(
+          process.execPath,
+          [
+            "--input-type=module",
+            "--eval",
+            `
+              import assert from "node:assert/strict";
+              import { join } from "node:path";
+              import { replaceTextInFiles, writeFiles, applyPatchToFiles } from ${JSON.stringify(new URL("../src/apply-edits.ts", import.meta.url).href)};
+              const directory = process.argv[1];
+              const paths = ["replace.txt", "write.txt", "patch.txt"].map((name) => join(directory, name));
+              const results = [
+                await replaceTextInFiles({ files: [{ path: paths[0], edits: [{ oldText: "before", newText: "after" }] }] }, directory),
+                await writeFiles({ files: [{ path: paths[1], content: "after\\n", mode: "replace" }] }, directory),
+                await applyPatchToFiles("*** Begin Patch\\n*** Update File: " + paths[2] + "\\n@@\\n-before\\n+after\\n*** End Patch", directory),
+              ];
+              assert.deepEqual(results.map(({ details }) => details.error), [undefined, undefined, undefined]);
+              for (const [index, result] of results.entries()) {
+                const path = paths[index];
+                assert.deepEqual(result.details.modifiedFiles, [path]);
+                assert.deepEqual(result.details.files.map(({ path, status }) => ({ path, status })), [{ path, status: "applied" }]);
+              }
+            `,
+            directory,
+          ],
+          { encoding: "utf8", env },
+        );
+        assert.equal(child.error, undefined);
+        assert.equal(child.status, 0, child.stderr);
+        await Promise.all(
+          paths.map(async (path, index) => {
+            assert.equal(await readFile(path, "utf8"), "after\n");
+            const after = await metadata(path);
+            assert.deepEqual(
+              [after.stats.uid, after.stats.gid, after.stats.mode],
+              [before[index].stats.uid, before[index].stats.gid, before[index].stats.mode],
+            );
+            assert.equal(after.acl, before[index].acl);
+            assert.equal(after.xattrs, before[index].xattrs);
+          }),
+        );
+      });
+    },
+  );
+}
+
+test(
+  "Android reports a missing tool without requiring one particular path",
+  { skip: process.platform !== "android" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const path = join(directory, "file.txt");
+      await writeFile(path, "before\n");
+      const prefix = process.env.PREFIX;
+      delete process.env.PREFIX;
+      try {
+        await withRacingEditing(
+          (mock) => {
+            const access = nodeFs.promises.access;
+            mock.method(
+              nodeFs.promises,
+              "access",
+              async (...args: Readonly<Parameters<typeof access>>) => {
+                if (basename(filePath(args[0])) === "getfattr") {
+                  throw Object.assign(new Error("getfattr unavailable"), { code: "ENOENT" });
+                }
+                return access(...args);
+              },
+            );
+          },
+          async (module) => {
+            const result = await module.replaceTextInFiles(
+              { files: [{ path, edits: [{ oldText: "before", newText: "after" }] }] },
+              directory,
+            );
+            assert.match(result.details.error ?? "", /requires executable getfattr\./);
+            assert.deepEqual(result.details.modifiedFiles, []);
+            assert.deepEqual(
+              result.details.files.map((file) => ({ path: file.path, status: file.status })),
+              [{ path, status: "failed" }],
+            );
+            assert.equal(await readFile(path, "utf8"), "before\n");
+          },
+        );
+      } finally {
+        if (prefix !== undefined) {
+          process.env.PREFIX = prefix;
+        }
+      }
+    });
+  },
+);
+
 test(
   "Android refuses extended metadata that Termux cp cannot preserve",
   { skip: process.platform !== "android" },
   async () => {
     await inTemporaryDirectory(async (directory) => {
       const path = join(directory, "metadata.txt");
-      const bin = dirname(process.execPath);
       await writeFile(path, "before\n");
-      await execFile(join(bin, "setfattr"), [
-        "-n",
-        "user.pi-apply-edits-test",
-        "-v",
-        "retained",
-        path,
-      ]);
+      await execFile("setfattr", ["-n", "user.pi-apply-edits-test", "-v", "retained", path]);
 
       await assertFailure(
         replaceTextInFiles(
@@ -1643,8 +1765,8 @@ test(
       );
       assert.equal(await readFile(path, "utf8"), "before\n");
 
-      await execFile(join(bin, "setfattr"), ["-x", "user.pi-apply-edits-test", path]);
-      await execFile(join(bin, "setfacl"), ["-m", `u:${userInfo().username}:rw`, path]);
+      await execFile("setfattr", ["-x", "user.pi-apply-edits-test", path]);
+      await execFile("setfacl", ["-m", `u:${userInfo().username}:rw`, path]);
       await assertFailure(
         replaceTextInFiles(
           { files: [{ path, edits: [{ oldText: "before", newText: "after" }] }] },

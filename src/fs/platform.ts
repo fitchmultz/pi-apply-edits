@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { constants, type BigIntStats } from "node:fs";
 import { access, mkdtemp, readFile, rm, unlink, writeFile, link } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AndroidReplacementSupport, ReplacementSupport } from "./contracts.ts";
 import { AtomicMoveUncertainError, errorMessage } from "./errors.ts";
@@ -106,22 +106,33 @@ async function detectLinuxReplacementSupport(): Promise<ReplacementSupport> {
   return { supported: true, strategy: "hard-link", cp: "/bin/cp", getcap };
 }
 
+function androidToolDirectories(): readonly string[] {
+  const prefix = process.env.PREFIX;
+  const nodeBin = dirname(process.execPath);
+  if (prefix === undefined || prefix.length === 0) {
+    const path = process.env.PATH;
+    return [nodeBin, ...(path === undefined ? [] : path.split(delimiter))];
+  }
+  return [join(prefix, "bin"), nodeBin];
+}
+
 async function detectAndroidReplacementSupport(): Promise<ReplacementSupport> {
-  const bin = dirname(process.execPath);
-  const cp = join(bin, "cp");
-  const mv = join(bin, "mv");
-  const getfacl = join(bin, "getfacl");
-  const getfattr = join(bin, "getfattr");
-  for (const executable of [cp, mv, getfacl, getfattr]) {
+  const bins = androidToolDirectories();
+  const executables: string[] = [];
+  for (const name of ["cp", "mv", "getfacl", "getfattr"]) {
+    const candidates = bins.map((directory) => resolvePath(directory, name));
     // Return the first missing capability in stable executable order.
     // oxlint-disable-next-line no-await-in-loop
-    if (!(await executableAvailable(executable))) {
+    const executable = await firstExecutable(candidates);
+    if (executable === undefined) {
       return {
         supported: false,
-        reason: `Atomic replacement on Android/Termux requires executable ${executable}`,
+        reason: `Atomic replacement on Android/Termux requires executable ${name}`,
       };
     }
+    executables.push(executable);
   }
+  const [cp, mv, getfacl, getfattr] = executables;
   try {
     const [cpVersion, mvVersion] = await Promise.all([
       execText(cp, ["--version"]),
