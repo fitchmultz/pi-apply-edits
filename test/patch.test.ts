@@ -97,6 +97,55 @@ test("parses add, empty add, delete, update, move and pure move", () => {
   );
 });
 
+test("parse and update results are fresh values that callers may revise", () => {
+  const original = "head\nold\nmiddle\nold\n";
+  const input = wrap("*** Update File: draft.txt\n@@ head\n-old\n+new");
+  const parsed = parsePatch(input);
+  parsed.paths[0].path = "final.txt";
+  parsed.operations.push({ kind: "delete", path: "draft.txt" });
+  const operation = parsed.operations[0];
+  assert.equal(operation.kind, "update");
+  operation.path = "final.txt";
+  // The added anchor disambiguates the repeated "old" context.
+  operation.chunks[0].anchors.push("middle");
+  operation.chunks[0].lines[1].text = "revised";
+  const result = applyPatchUpdate(original, operation);
+  // Rebasing a result into an enclosing document cannot leak into later results.
+  result.text = `preamble\n${result.text}`;
+  for (const match of result.matches) {
+    match.line += 1;
+  }
+  result.matches.unshift({ line: 1, strategy: "exact" });
+  assert.deepEqual(applyPatchUpdate(original, operation), {
+    text: "head\nold\nmiddle\nrevised\n",
+    matches: [
+      { line: 1, strategy: "exact" },
+      { line: 3, strategy: "exact" },
+      { line: 4, strategy: "exact" },
+    ],
+  });
+  const start = input.indexOf("draft.txt");
+  assert.deepEqual(parsePatch(input), {
+    operations: [
+      {
+        kind: "update",
+        path: "draft.txt",
+        chunks: [
+          {
+            anchors: ["head"],
+            lines: [
+              { kind: "delete", text: "old" },
+              { kind: "add", text: "new" },
+            ],
+            endOfFile: false,
+          },
+        ],
+      },
+    ],
+    paths: [{ start, end: start + "draft.txt".length, path: "draft.txt" }],
+  });
+});
+
 test("requires a strict envelope and rejects malformed or duplicate structural markers", () => {
   // Deliberate deviations: no heredoc wrapper, padded marker, empty patch,
   // environment ID, or unprefixed empty context line accepted by lenient Codex.

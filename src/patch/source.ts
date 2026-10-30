@@ -1,24 +1,30 @@
 export interface PatchChunk {
-  readonly anchors: readonly string[];
-  readonly lines: readonly { readonly kind: "context" | "add" | "delete"; readonly text: string }[];
-  readonly endOfFile: boolean;
+  anchors: string[];
+  lines: Array<{ kind: "context" | "add" | "delete"; text: string }>;
+  endOfFile: boolean;
 }
 
 export type PatchOperation =
-  | { readonly kind: "add"; readonly path: string; readonly content: string }
-  | { readonly kind: "delete"; readonly path: string }
-  | {
-      readonly kind: "update";
-      readonly path: string;
-      readonly moveTo?: string;
-      readonly chunks: readonly PatchChunk[];
-    };
+  | { kind: "add"; path: string; content: string }
+  | { kind: "delete"; path: string }
+  | { kind: "update"; path: string; moveTo?: string; chunks: PatchChunk[] };
 
 export type PatchUpdate = Extract<PatchOperation, { kind: "update" }>;
+/** Read views for patch internals; parsed values remain owned by the caller. */
+export type ReadonlyPatchChunk = Readonly<Omit<PatchChunk, "anchors" | "lines">> & {
+  readonly anchors: readonly string[];
+  readonly lines: readonly Readonly<PatchChunk["lines"][number]>[];
+};
+export type ReadonlyPatchUpdate = Readonly<Omit<PatchUpdate, "chunks">> & {
+  readonly chunks: readonly ReadonlyPatchChunk[];
+};
+export type ReadonlyPatchOperation =
+  | Readonly<Exclude<PatchOperation, PatchUpdate>>
+  | ReadonlyPatchUpdate;
 export type MatchStrategy = "exact" | "whitespace" | "typography";
 export interface PatchMatch {
-  readonly line: number;
-  readonly strategy: MatchStrategy;
+  line: number;
+  strategy: MatchStrategy;
 }
 
 export interface SourceLine {
