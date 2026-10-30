@@ -8,6 +8,8 @@ behavioral tests, package qualification, and review are separate gates.
 Use the declared npm version, Node 24.15 or newer for development, Git, Go
 1.26 or newer, and Rust 1.99.0. CI pins Go 1.27.1 and Rust 1.99.0. Go and Rust
 build the corrected **development checkers**, not the production extension.
+On macOS and Linux, the native Oxlint checker build also requires CMake for its
+mimalloc allocator; make `cmake` available on `PATH`.
 Install Rust's `llvm-tools` component as CI does to support native debug stripping:
 
 ```sh

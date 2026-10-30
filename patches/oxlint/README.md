@@ -43,8 +43,9 @@ node scripts/prepare-oxlint.ts --help
 ```
 
 Preparation needs Git, Rust **>=1.97** (qualified with **1.99.0**), Cargo, and `cc`.
-Rust's native host target must match Node's platform/architecture. macOS arm64 is
-locally qualified; other platform mappings are not evidence of qualification.
+On macOS and Linux, building the mimalloc allocator also requires CMake. Rust's native
+host target must match Node's platform/architecture. macOS arm64 is locally
+qualified; other platform mappings are not evidence of qualification.
 When using an isolated HOME, put a working physical Rust toolchain's `bin` on PATH
 first; a rustup shim with no default toolchain is not a usable Rust installation.
 

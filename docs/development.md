@@ -4,7 +4,8 @@ pi-apply-edits is distributed through Git/GitHub only. Publishing to npm is unsu
 
 Use Node 24.15 or later for the pinned npm 12 development toolchain. The extension's
 runtime floor remains Node 24.0. Development checker preparation also requires
-Git, Go 1.26 or later, and Rust 1.99.0; production installs do not build checkers.
+Git, Go 1.26 or later, and Rust 1.99.0. On macOS and Linux, native Oxlint checker
+builds also require CMake. Production installs do not build checkers.
 
 ```sh
 npm ci --ignore-scripts
