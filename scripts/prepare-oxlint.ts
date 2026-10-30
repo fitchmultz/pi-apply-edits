@@ -214,7 +214,7 @@ function main(): void {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) {
     console.log(
-      "Prepare the native Oxlint import-cycle correction. Requires Git, Rust >=1.97, Cargo and a C compiler.\n\nUsage: node scripts/prepare-oxlint.ts\n       npm run quality:prepare\n\nBuilds the exact locked upstream NAPI addon plus the repository patch, verifies an outside-repository cache, and atomically installs the addon used by raw Oxlint and its editor/LSP. Run after npm ci --ignore-scripts; restart existing language servers afterward.\n\nExit: 0 prepared/help/production skip; 1 invalid options, missing prerequisites, incompatible version, build or checksum failure.",
+      "Prepare the native Oxlint import-cycle correction. Requires Git, Rust >=1.97, Cargo and a C compiler.\nOn macOS and Linux, native Oxlint builds also require CMake; make cmake available on PATH.\n\nUsage: node scripts/prepare-oxlint.ts\n       npm run quality:prepare\n\nBuilds the exact locked upstream NAPI addon plus the repository patch, verifies an outside-repository cache, and atomically installs the addon used by raw Oxlint and its editor/LSP. Run after npm ci --ignore-scripts; restart existing language servers afterward.\n\nExit: 0 prepared/help/production skip; 1 invalid options, missing prerequisites, incompatible version, build or checksum failure.",
     );
     return;
   }
