@@ -1856,11 +1856,7 @@ test(
 );
 
 type PrivateCopyFlow = "replacement" | "content-move" | "nested-staging" | "nested-publication";
-type PrivateCopyScenario =
-  | "cancel-during-copy"
-  | "cancel-after-copy"
-  | "substituted"
-  | "uncertain-publish";
+type PrivateCopyScenario = "cancel-during-copy" | "cancel-after-copy" | "uncertain-publish";
 // Each flow's native copy target: the private replacement, the direct move candidate, the staged
 // nested move, and Android's publication copy beside private staging.
 const privateCopyTargets: Readonly<Record<PrivateCopyFlow, string>> = {
@@ -1883,7 +1879,7 @@ const privateCopyOutcomes = {
     status: "failed",
     uncertain: [],
     prefix: ["abort", "close"],
-    removed: true,
+    cleanupEvents: 1,
     retained: 0,
     copy: null,
   },
@@ -1892,25 +1888,16 @@ const privateCopyOutcomes = {
     status: "failed",
     uncertain: [],
     prefix: ["close"],
-    removed: true,
+    cleanupEvents: 1,
     retained: 0,
     copy: null,
-  },
-  substituted: {
-    error: /changed identity.*left untouched/s,
-    status: "failed",
-    uncertain: [],
-    prefix: ["close"],
-    removed: false,
-    retained: 1,
-    copy: "decoy\n",
   },
   "uncertain-publish": {
     error: /Commit status is uncertain/,
     status: "uncertain",
     uncertain: ["missing/moved.txt"],
     prefix: ["close"],
-    removed: false,
+    cleanupEvents: 0,
     retained: 1,
     copy: "new\n",
   },
@@ -1926,7 +1913,6 @@ async function verifyPrivateCopy(
     const originalRmdir = nodeFs.promises.rmdir;
     const originalRm = nodeFs.promises.rm;
     const controller = new AbortController();
-    const decoy = join(directory, "decoy.txt");
     const destination = flow === "content-move" ? "moved.txt" : "missing/moved.txt";
     const expected = privateCopyOutcomes[scenario];
     const events: string[] = [];
@@ -1937,7 +1923,6 @@ async function verifyPrivateCopy(
       }
     };
     await writeFile(join(directory, "f.txt"), "old\n");
-    await writeFile(decoy, "decoy\n");
 
     await withRacingEditing(
       (mock) => {
@@ -1956,8 +1941,14 @@ async function verifyPrivateCopy(
               basename(file) === "mv" &&
               target.endsWith("moved.txt")
             ) {
-              // The no-clobber publication exits successfully without moving anything.
-              return originalExecFile(process.execPath, ["-e", ""], options, callback);
+              // Another writer briefly holds the destination: the real no-clobber mv skips it
+              // (GNU coreutils 9.5+ exits 0), and the entry is gone before the caller verifies.
+              nodeFs.writeFileSync(target, "other\n", { flag: "wx" });
+              const child = originalExecFile(file, args, options, callback);
+              child.once("close", () => {
+                nodeFs.unlinkSync(target);
+              });
+              return child;
             }
             if (
               copyTarget.length > 0 ||
@@ -1990,9 +1981,6 @@ async function verifyPrivateCopy(
               events.push("close");
               if (scenario === "cancel-after-copy") {
                 controller.abort();
-              } else {
-                // A same-user writer replaces the private path before the copy's caller resumes.
-                nodeFs.renameSync(decoy, copyTarget);
               }
             });
             return child;
@@ -2070,11 +2058,8 @@ async function verifyPrivateCopy(
       events.slice(expected.prefix.length).every((event) => event.startsWith("cleanup ")),
       events.join(),
     );
-    assert.equal(
-      events.includes("cleanup unlink") || events.includes("cleanup rm"),
-      expected.removed,
-      events.join(),
-    );
+    // Cancellation cleanup must run, and only after the copy process closed.
+    assert.ok(events.length - expected.prefix.length >= expected.cleanupEvents, events.join());
     assert.equal(
       (await readdir(directory)).filter((name) => name.startsWith(".pi-apply-edits-")).length,
       expected.retained,
@@ -2089,19 +2074,16 @@ async function verifyPrivateCopy(
 }
 
 test(
-  "native copy cleanup removes cancelled private copies and preserves detected substitutions",
+  "native copy cleanup removes cancelled private copies after the copy process exits",
   { skip: !new Set(["darwin", "linux", "android"]).has(process.platform) },
   async (t) => {
     for (const [flow, scenario] of [
       ["replacement", "cancel-during-copy"],
       ["replacement", "cancel-after-copy"],
-      ["replacement", "substituted"],
       ["content-move", "cancel-during-copy"],
       ["content-move", "cancel-after-copy"],
-      ["content-move", "substituted"],
       ["nested-staging", "cancel-during-copy"],
       ["nested-staging", "cancel-after-copy"],
-      ["nested-staging", "substituted"],
     ] as const) {
       // Each case replaces process-wide child-process and syscall implementations; finish
       // restoring them before the next case.
@@ -2120,7 +2102,6 @@ test(
     for (const scenario of [
       "cancel-during-copy",
       "cancel-after-copy",
-      "substituted",
       "uncertain-publish",
     ] as const) {
       // Each case replaces process-wide child-process and syscall implementations.

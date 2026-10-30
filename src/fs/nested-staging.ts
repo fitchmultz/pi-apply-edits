@@ -63,6 +63,7 @@ abstract class NestedStaging {
   stagingStats: BigIntStats | undefined;
   quarantineStats: BigIntStats | undefined;
   cleanupBlocked: string | undefined;
+  #cleanupBlockedReason = "is not owned by this user";
   stagedIdentities: Map<string, BigIntStats> | undefined;
   readonly #stagedDirectories = new Set<string>();
   #handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -163,7 +164,7 @@ abstract class NestedStaging {
     try {
       assertCreatedDirectoryOwner(stats, path);
     } catch (error) {
-      this.cleanupBlocked = `${path} is not owned by this user`;
+      this.cleanupBlocked = path;
       throw error;
     }
   }
@@ -200,7 +201,8 @@ abstract class NestedStaging {
       } catch (error) {
         if (error instanceof PrivateEntryChangedError) {
           // Recursive discard does not verify entries; keep the whole tree when a check detects one.
-          this.cleanupBlocked = `${target} no longer names the private copy staged by this call`;
+          this.cleanupBlocked = target;
+          this.#cleanupBlockedReason = "no longer names the private copy staged by this call";
         }
         throw error;
       }
@@ -220,7 +222,7 @@ abstract class NestedStaging {
     this.discardAttempted = true;
     if (this.cleanupBlocked !== undefined) {
       throw new Error(
-        `Staging cleanup was skipped because ${this.cleanupBlocked}; the staging container was left untouched at ${this.container}`,
+        `Staging cleanup was skipped because ${this.cleanupBlocked} ${this.#cleanupBlockedReason}; the staging container was left untouched at ${this.container}`,
       );
     }
     if (this.stagingStats) {
