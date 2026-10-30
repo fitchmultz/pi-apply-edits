@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -110,12 +110,13 @@ function scriptCalls(session: AgentSession, steps: readonly (readonly ScriptedCa
 
 // Only the provider response is scripted: loading, validation, policy, execution, and settlement are real Pi.
 test(
-  "native codemode receives compact receipts and bounded previews",
+  "native codemode scripts read full receipts and output selected fields",
   { timeout: 30_000 },
   async (t) => {
-    const root = await mkdtemp(join(tmpdir(), "pi-edit-codemode-"));
+    const root = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-codemode-")));
     const cwd = join(root, "project");
     await mkdir(cwd);
+    await writeFile(join(cwd, "other.txt"), "other\n");
     const runtime = await offlineRuntime(root);
     const settings = SettingsManager.inMemory({
       compaction: { enabled: false },
@@ -144,7 +145,7 @@ test(
       resourceLoader: loader,
       modelRuntime: runtime,
       model: runtime.getModel("offline-test", "scripted"),
-      tools: ["codemode", "write_files"],
+      tools: ["codemode", "write_files", "replace_text"],
       sessionManager: manager,
       settingsManager: settings,
     });
@@ -153,35 +154,161 @@ test(
       await rm(root, { recursive: true, force: true });
     });
     await session.bindExtensions({ mode: "print" });
-    const code =
-      'text(await tools.write_files({ files: [{ path: "new.txt", mode: "create", content: "line\\n".repeat(3000) + "NESTED-TAIL\\n" }]';
-    scriptCalls(session, [
-      [call("nested-preview", { code: `${code}, preview: true }));` }, "codemode")],
-      [call("nested-apply", { code: `${code} }));` }, "codemode")],
-    ]);
+    const code = String.raw`
+const content = "line\n".repeat(3000) + "NESTED-TAIL\n";
+const preview = await tools.write_files({ files: [{ path: "new.txt", mode: "create", content }], preview: true });
+const created = await tools.write_files({ files: [{ path: "new.txt", mode: "create", content }] });
+const edited = await tools.replace_text({ files: [{ path: "new.txt", edits: [{ oldText: "NESTED-TAIL", newText: "EDITED" }] }] });
+const failed = await tools.replace_text({ files: [
+  { path: "new.txt", edits: [{ oldText: "EDITED", newText: "UNPUBLISHED" }] },
+  { path: "other.txt", edits: [{ oldText: "absent", newText: "unused" }] },
+] });
+const declaration = await describeTool("write_files");
+const select = ({ previewDiff, error, files, ...receipt }) => ({
+  ...receipt,
+  ...(error === undefined ? {} : { error: error.split("\n")[0], errorHasConclusion: error.endsWith("\nNo changes were written.") }),
+  ...(previewDiff === undefined ? {} : { previewShowsTail: previewDiff.includes("NESTED-TAIL") }),
+  files: files.map(({ diff, ...file }) => ({
+    ...file,
+    addedBodyLines: diff.split("\n").filter((line) => line === "+line").length,
+    changed: diff.split("\n").filter((line) => /^[-+][A-Z]/.test(line)),
+  })),
+});
+return [...[preview, created, edited, failed].map(select), {
+  hasDiff: declaration.includes("diff: string"),
+  hasMatches: declaration.includes("matches: Array<"),
+  hasError: declaration.includes("error?: string"),
+}];
+`;
+    scriptCalls(session, [[call("nested-receipts", { code }, "codemode")]]);
     await session.prompt("Run the local codemode receipt flow.");
     await session.waitForIdle();
     const results = session.messages.filter((message) => message.role === "toolResult");
-    assert.equal(results.length, 2);
-    const preview = results.at(0);
-    const applied = results.at(1);
-    assert(preview);
-    assert(applied);
-    assert.equal(preview.isError, false, contentText(preview.content));
-    assert.equal(applied.isError, false, contentText(applied.content));
-    const previewText = contentText(preview.content);
-    const appliedText = contentText(applied.content);
-    assert.match(previewText, /"previewDiffTruncated":true/);
-    assert.match(previewText, /Preview truncated.*only in direct tool results/);
-    assert.doesNotMatch(previewText, /\+NESTED-TAIL/);
-    assert.match(appliedText, /Created 1 file/);
-    assert.match(appliedText, /"status":"applied"/);
-    assert(Buffer.byteLength(appliedText) < 2_000);
-    assert.doesNotMatch(appliedText, /NESTED-TAIL/);
-    assert.equal(
-      await readFile(join(cwd, "new.txt"), "utf8"),
-      "line\n".repeat(3_000) + "NESTED-TAIL\n",
+    assert.equal(results.length, 1);
+    const script = results.at(0);
+    assert(script);
+    assert.equal(script.isError, false, contentText(script.content));
+    const output = script.content.at(-1);
+    assert(output?.type === "text");
+    assert.match(
+      session.systemPrompt,
+      /Nested editing calls, such as codemode's, return full receipts/,
     );
+    assert.match(
+      session.systemPrompt,
+      /on error include error, modifiedFiles, and each file's path and status/,
+    );
+    assert.equal((session.systemPrompt.match(/Nested editing calls/g) ?? []).length, 1);
+    // Count the full generated body inside the sandbox without emitting it to the model.
+    const file = join(cwd, "new.txt");
+    const createReceipt = { path: file, operation: "create", editsRequested: 1, matches: [] };
+    const exact = { index: 0, strategy: "exact", replacements: 1, lines: [3_001] };
+    const common = { diffTruncated: false, warnings: [] };
+    assert.deepStrictEqual(JSON.parse(output.text), [
+      {
+        summary: "Would create 1 file (+3001/-0): new.txt. No files written.",
+        modifiedFiles: [],
+        preview: true,
+        previewDiffTruncated: true,
+        previewShowsTail: false,
+        files: [
+          {
+            ...createReceipt,
+            ...common,
+            status: "unattempted",
+            preview: true,
+            editsApplied: 0,
+            bytesBefore: 0,
+            bytesAfter: 15_012,
+            addedLines: 3_001,
+            deletedLines: 0,
+            addedBodyLines: 3_000,
+            changed: ["+NESTED-TAIL"],
+          },
+        ],
+      },
+      {
+        summary: "Created 1 file (+3001/-0): new.txt.",
+        modifiedFiles: [file],
+        files: [
+          {
+            ...createReceipt,
+            ...common,
+            status: "applied",
+            editsApplied: 1,
+            bytesBefore: 0,
+            bytesAfter: 15_012,
+            addedLines: 3_001,
+            deletedLines: 0,
+            addedBodyLines: 3_000,
+            changed: ["+NESTED-TAIL"],
+          },
+        ],
+      },
+      {
+        summary: "Updated 1 file (+1/-1): new.txt.",
+        modifiedFiles: [file],
+        files: [
+          {
+            ...common,
+            path: file,
+            operation: "edit",
+            status: "applied",
+            editsRequested: 1,
+            editsApplied: 1,
+            matches: [exact],
+            bytesBefore: 15_012,
+            bytesAfter: 15_007,
+            addedLines: 1,
+            deletedLines: 1,
+            addedBodyLines: 0,
+            changed: ["-NESTED-TAIL", "+EDITED"],
+          },
+        ],
+      },
+      {
+        summary:
+          "Editing failed (0 verified committed paths). Inspect error and per-file outcomes before retrying.",
+        error: "files[1]: Could not find edits[0].oldText in other.txt.",
+        errorHasConclusion: true,
+        modifiedFiles: [],
+        files: [
+          {
+            ...common,
+            path: file,
+            operation: "edit",
+            status: "unattempted",
+            editsRequested: 1,
+            editsApplied: 0,
+            matches: [exact],
+            bytesBefore: 15_007,
+            bytesAfter: 15_012,
+            addedLines: 1,
+            deletedLines: 1,
+            addedBodyLines: 0,
+            changed: ["-EDITED", "+UNPUBLISHED"],
+          },
+          {
+            ...common,
+            path: join(cwd, "other.txt"),
+            operation: "edit",
+            status: "failed",
+            editsRequested: 0,
+            editsApplied: 0,
+            matches: [],
+            bytesBefore: 0,
+            bytesAfter: 0,
+            addedLines: 0,
+            deletedLines: 0,
+            addedBodyLines: 0,
+            changed: [],
+          },
+        ],
+      },
+      { hasDiff: true, hasMatches: true, hasError: true },
+    ]);
+    assert.equal(await readFile(file, "utf8"), "line\n".repeat(3_000) + "EDITED\n");
+    assert.equal(await readFile(join(cwd, "other.txt"), "utf8"), "other\n");
     const journalPath = manager.getSessionFile();
     assert(journalPath !== undefined);
     const restored = SessionManager.open(journalPath).buildSessionContext().messages;
@@ -189,7 +316,7 @@ test(
       restored
         .filter((message) => message.role === "toolResult")
         .map((message) => contentText(message.content)),
-      [previewText, appliedText],
+      [contentText(script.content)],
     );
   },
 );

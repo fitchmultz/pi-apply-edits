@@ -421,10 +421,19 @@ test("preview rendering preserves unchanged, planned, failed, and unattempted fi
   assert.deepEqual((await readdir(directory)).sort(), ["planned", "same"]);
 });
 
+function firstStructuredFile(receipt: unknown): object {
+  assert(receipt !== null && typeof receipt === "object");
+  assert("files" in receipt);
+  assert(Array.isArray(receipt.files));
+  const file: unknown = receipt.files[0];
+  assert(file !== null && typeof file === "object");
+  return file;
+}
+
 test("tools return bounded preview text, full expanded diffs, and truthful receipts", async (t) => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-tools-")));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const [apply, , write] = createEditingTools();
+  const [apply, replace, write] = createEditingTools();
   const fixture = await harness(
     t,
     ["read", "edit", "write", ...EDITING_TOOL_NAMES],
@@ -479,7 +488,14 @@ test("tools return bounded preview text, full expanded diffs, and truthful recei
     modifiedFiles: [],
     previewDiffTruncated: true,
   });
-  assert.match(JSON.stringify(omitted.structuredContent), /Diff omitted/);
+  const omittedFile = firstStructuredFile(omitted.structuredContent);
+  assert("diff" in omittedFile);
+  assert(typeof omittedFile.diff === "string");
+  assert.match(omittedFile.diff, /Diff omitted/);
+  assert("diffTruncated" in omittedFile);
+  assert.equal(omittedFile.diffTruncated, true);
+  assert.equal(Object.hasOwn(omittedFile, "addedLines"), false);
+  assert.equal(Object.hasOwn(omittedFile, "deletedLines"), false);
   assert.deepEqual(await readdir(directory), []);
   initTheme("dark", false);
   const theme = fixture.session.extensionRunner.getUIContext().theme;
@@ -515,8 +531,6 @@ test("tools return bounded preview text, full expanded diffs, and truthful recei
     modifiedFiles: [join(directory, "new")],
     files: [{ path: join(directory, "new"), status: "applied", addedLines: 3_001 }],
   });
-  assert(Buffer.byteLength(JSON.stringify(written.structuredContent)) < 2_000);
-  assert.doesNotMatch(JSON.stringify(written.structuredContent), /FINAL-LINE/);
   assert.match(written.details?.files[0]?.diff ?? "", /FINAL-LINE/);
 
   await writeFile(join(directory, "file"), "before\n");
@@ -524,6 +538,32 @@ test("tools return bounded preview text, full expanded diffs, and truthful recei
   assert.equal(await readFile(join(directory, "file"), "utf8"), "after\n");
   assert.deepEqual(result.details?.modifiedFiles, [join(directory, "file")]);
   assert.equal(result.details.files.at(0)?.status, "applied");
+  // A result hook may mutate details; the structured receipt must not share its arrays.
+  const fileReceipt = result.details.files.at(0);
+  const match = fileReceipt?.matches.at(0);
+  assert(fileReceipt);
+  assert(match);
+  const structured = JSON.stringify(result.structuredContent);
+  result.details.modifiedFiles.push("hook path");
+  match.lines.push(0);
+  fileReceipt.warnings.push("hook warning");
+  assert.equal(JSON.stringify(result.structuredContent), structured);
+  assert.match(structured, /"strategy":"exact"/);
+  await writeFile(join(directory, "targeted"), "before\n");
+  const targeted = await replace.execute(
+    "targeted",
+    { files: [{ path: "targeted", edits: [{ oldText: "before", newText: "after" }] }] },
+    undefined,
+    undefined,
+    ctx,
+  );
+  assert.equal(targeted.isError, false);
+  const structuredFile = firstStructuredFile(targeted.structuredContent);
+  assert("matches" in structuredFile);
+  assert(Array.isArray(structuredFile.matches));
+  const structuredMatch: unknown = structuredFile.matches[0];
+  assert(structuredMatch !== null && typeof structuredMatch === "object");
+  assert.equal(Object.hasOwn(structuredMatch, "linesTruncated"), false);
   const failed = await apply.execute(
     "fail",
     { input: patch("file", "missing") },

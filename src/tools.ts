@@ -121,12 +121,15 @@ type ReplaceTool = ToolDefinition<typeof replaceTextSchema, Details, unknown>;
 type WriteTool = ToolDefinition<typeof writeFilesSchema, Details, unknown>;
 export type EditingTools = [PatchTool, ReplaceTool, WriteTool, PatchTool];
 
+const nestedReceiptGuideline =
+  "Nested editing calls, such as codemode's, return full receipts with generated diffs in files[].diff. For compact output, emit the summary and needed fields; on error include error, modifiedFiles, and each file's path and status before retrying.";
 const shared: Pick<
   ToolDefinition<TSchema, Details, unknown>,
-  "executionMode" | "outputSchema" | "renderResult"
+  "executionMode" | "outputSchema" | "promptGuidelines" | "renderResult"
 > = {
   executionMode: "parallel",
   outputSchema: receiptSchema,
+  promptGuidelines: [nestedReceiptGuideline],
   renderResult: editingResultRenderer,
 };
 
@@ -150,12 +153,15 @@ function createPatchTool(preview: boolean, getCwd: (() => string) | undefined): 
     promptSnippet: preview
       ? "Read-only patch preview."
       : "Focused multi-file patches, creates, deletes, and moves.",
-    promptGuidelines: preview
-      ? undefined
-      : [
-          "Use apply_patch for focused edits, replace_text for repeated replacements or large anchored ranges, and write_files for complete files. Preview only when needed.",
-          "Inspect the verified, failed, uncertain, and unattempted paths in an error result before retrying. Never replay a whole partially applied batch.",
-        ],
+    promptGuidelines: [
+      ...(preview
+        ? []
+        : [
+            "Use apply_patch for focused edits, replace_text for repeated replacements or large anchored ranges, and write_files for complete files. Preview only when needed.",
+            "Inspect the verified, failed, uncertain, and unattempted paths in an error result before retrying. Never replay a whole partially applied batch.",
+          ]),
+      nestedReceiptGuideline,
+    ],
     parameters: patchSchema,
     constrainedSampling: { type: "grammar", variants: { openai_lark: PATCH_GRAMMAR } },
     prepareArguments(raw) {
