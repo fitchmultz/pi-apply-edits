@@ -1085,6 +1085,56 @@ test("preview shares ordered range, normalization, insertion, and create plannin
   });
 });
 
+test("callers may assemble and revise request objects between editing calls", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "note.txt");
+    await writeFile(path, "alpha\nbeta\n");
+    const committed = [await realpath(path)];
+    const outcome = (details: ReadonlyApplyEditsBatchDetails) => ({
+      modifiedFiles: details.modifiedFiles,
+      files: details.files.map((file) => [file.path, file.status]),
+    });
+    const edit: TargetedEdit = { oldText: "alpha", newText: "draft" };
+    const replace: ReplaceTextRequest = { files: [], preview: true };
+    replace.files.push({ path, edits: [edit] });
+    const preview = await replaceTextInFiles(replace, directory);
+    assert.equal(preview.details.error, undefined, preview.summary);
+    assert.deepEqual(outcome(preview.details), {
+      modifiedFiles: [],
+      files: [[path, "unattempted"]],
+    });
+    assert.match(preview.details.files[0]?.diff ?? "", /^\+draft$/m);
+    edit.newText = "final";
+    replace.files[0].edits.push({ oldText: "beta", newText: "gamma" });
+    replace.preview = false;
+    const applied = await replaceTextInFiles(replace, directory);
+    assert.equal(applied.details.error, undefined, applied.summary);
+    assert.deepEqual(outcome(applied.details), {
+      modifiedFiles: committed,
+      files: [[path, "applied"]],
+    });
+    assert.equal(await readFile(path, "utf8"), "final\ngamma\n");
+
+    const write: WriteFilesRequest = { files: [] };
+    write.files.push({ path, content: "exact\r\nbytes\r\n", mode: "create" });
+    const refused = await writeFiles(write, directory);
+    assert.match(refused.details.error ?? "", /Create mode refuses to overwrite/);
+    assert.deepEqual(outcome(refused.details), {
+      modifiedFiles: [],
+      files: [[path, "failed"]],
+    });
+    write.files[0].mode = "replace";
+    write.files[0].preserveFormatting = false;
+    const written = await writeFiles(write, directory);
+    assert.equal(written.details.error, undefined, written.summary);
+    assert.deepEqual(outcome(written.details), {
+      modifiedFiles: committed,
+      files: [[path, "applied"]],
+    });
+    assert.equal(await readFile(path, "utf8"), "exact\r\nbytes\r\n");
+  });
+});
+
 test("preview is advisory, allows read-only content, and never supplies a stale commit plan", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file");
@@ -1135,7 +1185,7 @@ test("CRLF anchors preserve supplied newlines and literal deletion boundaries", 
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "windows.txt");
     async function verifyCrlfReplacement(
-      edits: readonly TargetedEdit[],
+      edits: readonly Readonly<TargetedEdit>[],
       expected: string,
     ): Promise<void> {
       const original = "first\r\nsecond\r\n";

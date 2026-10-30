@@ -2,7 +2,7 @@ import {
   MAX_EDITS_PER_FILE,
   MAX_BATCH_FILES,
   errorMessage,
-  type ApplyEditsInput,
+  type ReadonlyApplyEditsInput,
   type MutationInput,
 } from "./contracts.ts";
 
@@ -11,7 +11,7 @@ function optionalBoolean(value: unknown, field: string): void {
     throw new Error(`${field} must be a boolean`);
   }
 }
-function validateRewriteMode(input: ApplyEditsInput): void {
+function validateRewriteMode(input: ReadonlyApplyEditsInput): void {
   optionalBoolean(input.preserveFormatting, "preserveFormatting");
   optionalBoolean(input.requireMissing, "requireMissing");
   const mode: unknown = input.onMissing;
@@ -22,7 +22,7 @@ function validateRewriteMode(input: ApplyEditsInput): void {
     throw new Error('requireMissing requires onMissing: "create"');
   }
 }
-function validateEditsMode(input: ApplyEditsInput): void {
+function validateEditsMode(input: ReadonlyApplyEditsInput): void {
   if (input.edits?.length === 0) {
     throw new Error("edits must contain at least one replacement");
   }
@@ -62,7 +62,7 @@ function validateRewrite(rewrite: unknown): void {
     throw new Error("rewrite must contain valid Unicode text");
   }
 }
-function validateInput(input: ApplyEditsInput): void {
+function validateInput(input: ReadonlyApplyEditsInput): void {
   assertInputObject(input);
   validatePath(input.path);
   const hasEdits = Array.isArray(input.edits);

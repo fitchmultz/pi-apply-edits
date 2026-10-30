@@ -4,9 +4,9 @@ import {
   MAX_CHUNKS,
   splitLines,
   validateText,
-  type PatchChunk,
   type PatchMatch,
-  type PatchUpdate,
+  type ReadonlyPatchChunk,
+  type ReadonlyPatchUpdate,
   type SourceLine,
 } from "./source.ts";
 
@@ -22,9 +22,10 @@ interface ReplacementRun {
   readonly added: readonly string[];
   readonly includesBom: boolean;
 }
+/** Each call allocates a fresh result; ownership transfers to the caller. */
 export interface PatchUpdateResult {
-  readonly text: string;
-  readonly matches: readonly PatchMatch[];
+  text: string;
+  matches: PatchMatch[];
 }
 
 /** Plans against original bytes; only this owner advances scope and expansion accounting. */
@@ -50,7 +51,7 @@ class PatchUpdater {
     this.#projectedLength = this.#body.length;
   }
 
-  apply(operation: PatchUpdate): PatchUpdateResult {
+  apply(operation: ReadonlyPatchUpdate): PatchUpdateResult {
     if (operation.chunks.length > MAX_CHUNKS) {
       throw new Error(`update cannot contain more than ${MAX_CHUNKS} chunks`);
     }
@@ -77,7 +78,7 @@ class PatchUpdater {
     });
   }
 
-  private applyChunk(chunk: PatchChunk, index: number): void {
+  private applyChunk(chunk: ReadonlyPatchChunk, index: number): void {
     for (const anchor of chunk.anchors) {
       const found = this.match([anchor], false, `anchor in chunk ${index + 1}`);
       this.#matches.push({ line: found.line, strategy: found.strategy });
@@ -104,7 +105,11 @@ class PatchUpdater {
     this.#cursor = position;
   }
 
-  private chunkStart(chunk: PatchChunk, context: readonly string[], index: number): ContextMatch {
+  private chunkStart(
+    chunk: ReadonlyPatchChunk,
+    context: readonly string[],
+    index: number,
+  ): ContextMatch {
     if (context.length > 0) {
       const found = this.match(context, chunk.endOfFile, `context in chunk ${index + 1}`);
       this.#matches.push({ line: found.line, strategy: found.strategy });
@@ -194,6 +199,9 @@ class PatchUpdater {
 }
 
 /** Anchors advance the original-source suffix; chunks cannot overlap consumed blocks. */
-export function applyPatchUpdate(original: string, operation: PatchUpdate): PatchUpdateResult {
+export function applyPatchUpdate(
+  original: string,
+  operation: ReadonlyPatchUpdate,
+): PatchUpdateResult {
   return new PatchUpdater(original).apply(operation);
 }

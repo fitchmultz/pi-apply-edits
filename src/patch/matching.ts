@@ -70,7 +70,7 @@ interface NormalizationPass {
   readonly normalize: (text: string) => string;
   readonly strategy: MatchStrategy;
 }
-export interface ContextMatch extends PatchMatch {
+export interface ContextMatch extends Readonly<PatchMatch> {
   readonly includesBom: boolean;
 }
 const passes: readonly NormalizationPass[] = [

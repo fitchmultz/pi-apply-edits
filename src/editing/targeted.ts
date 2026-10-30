@@ -2,7 +2,7 @@ import {
   MAX_EDITS_PER_FILE,
   MAX_EDIT_EXPANSION_CHARS,
   required,
-  type TargetedEdit,
+  type ReadonlyTargetedEdit,
   type AppliedEditDetail,
   type TextEditResult,
   type MatchResult,
@@ -14,7 +14,7 @@ import { missingEditMessage } from "./diagnostics.ts";
 import { hasFinalLineEnding } from "./text.ts";
 import { applyReplacements, hasOverlaps } from "./replacements.ts";
 
-function validateEditStrings(edit: TargetedEdit, index: number): void {
+function validateEditStrings(edit: ReadonlyTargetedEdit, index: number): void {
   if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
     throw new Error(`edits[${index}] must contain string oldText and newText fields`);
   }
@@ -35,7 +35,7 @@ function validateEditStrings(edit: TargetedEdit, index: number): void {
     throw new Error(`edits[${index}] must contain valid Unicode text`);
   }
 }
-function validateEdit(edit: TargetedEdit, index: number): void {
+function validateEdit(edit: ReadonlyTargetedEdit, index: number): void {
   validateEditStrings(edit, index);
   if (edit.all !== undefined && typeof edit.all !== "boolean") {
     throw new Error(`edits[${index}].all must be a boolean`);
@@ -47,7 +47,7 @@ function validateEdit(edit: TargetedEdit, index: number): void {
   validateRangeOptions(edit, index);
   validateEditChange(edit, index);
 }
-function validateRangeOptions(edit: TargetedEdit, index: number): void {
+function validateRangeOptions(edit: ReadonlyTargetedEdit, index: number): void {
   if (edit.endText !== undefined && edit.all === true) {
     throw new Error(`edits[${index}].all cannot be combined with endText`);
   }
@@ -55,7 +55,7 @@ function validateRangeOptions(edit: TargetedEdit, index: number): void {
     throw new Error(`edits[${index}].insert cannot be combined with endText`);
   }
 }
-function validateEditChange(edit: TargetedEdit, index: number): void {
+function validateEditChange(edit: ReadonlyTargetedEdit, index: number): void {
   if (edit.insert !== undefined && edit.newText.length === 0) {
     throw new Error(`edits[${index}].newText must not be empty when insert is set`);
   }
@@ -91,7 +91,11 @@ function assertUniqueRange(
     `edits[${location.index}].${field} matched ${match.replacements.length} locations in ${location.path} (lines ${lines.join(", ")}${suffix}). Add enough surrounding text to make the range ${direction} unique. ${allNote}No changes were written.`,
   );
 }
-function rangeMatch(content: string, edit: TargetedEdit, location: EditLocation): MatchAttempt {
+function rangeMatch(
+  content: string,
+  edit: ReadonlyTargetedEdit,
+  location: EditLocation,
+): MatchAttempt {
   const startMatch = findMatch(content, {
     oldText: edit.oldText,
     newText: edit.newText,
@@ -141,7 +145,11 @@ function rangeMatch(content: string, edit: TargetedEdit, location: EditLocation)
     ],
   };
 }
-function assertUnique(match: MatchResult, edit: TargetedEdit, location: EditLocation): void {
+function assertUnique(
+  match: MatchResult,
+  edit: ReadonlyTargetedEdit,
+  location: EditLocation,
+): void {
   if (edit.all === true || match.replacements.length <= 1) {
     return;
   }
@@ -151,7 +159,7 @@ function assertUnique(match: MatchResult, edit: TargetedEdit, location: EditLoca
     `edits[${location.index}].oldText matched ${match.replacements.length} locations in ${location.path} (lines ${lines.join(", ")}${suffix}). Add enough surrounding text to make it unique, or set all: true only when every match should change. No changes were written.`,
   );
 }
-function preserveCrLf(content: string, item: Replacement, edit: TargetedEdit): Replacement {
+function preserveCrLf(content: string, item: Replacement, edit: ReadonlyTargetedEdit): Replacement {
   // Consume an unmatched CRLF half only if replacement/insertion supplies a newline.
   const joinsStart = content[item.matchStart] === "\n" && content[item.matchStart - 1] === "\r";
   const joinsEnd = content[item.matchEnd - 1] === "\r" && content[item.matchEnd] === "\n";
@@ -168,7 +176,7 @@ function preserveCrLf(content: string, item: Replacement, edit: TargetedEdit): R
 function effectiveReplacements(
   content: string,
   match: MatchResult,
-  edit: TargetedEdit,
+  edit: ReadonlyTargetedEdit,
   location: EditLocation,
 ): readonly Replacement[] {
   assertUnique(match, edit, location);
@@ -192,7 +200,7 @@ function effectiveReplacements(
 }
 export function applyTargetedEdits(
   original: string,
-  edits: readonly TargetedEdit[],
+  edits: readonly ReadonlyTargetedEdit[],
   displayPath: string,
 ): TextEditResult {
   if (edits.length === 0) {
