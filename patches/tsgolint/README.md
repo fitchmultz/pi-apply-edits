@@ -16,6 +16,9 @@ strictness. No native binaries or upstream source trees are committed.
 - Go module inputs: upstream `go.mod`, `go.sum`, `go.work`, `go.work.sum`
 - Build: Git and **Go >=1.26**; qualified locally with **Go 1.27.1**, macOS arm64
 
+The preparation command also builds native Oxlint; its [prerequisites](../oxlint/README.md#reproducible-installation)
+include CMake on macOS and Linux.
+
 ```sh
 npm ci --ignore-scripts
 node scripts/prepare-checker.ts
