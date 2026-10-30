@@ -307,7 +307,11 @@ async function preserveCopiedMetadata(
 
 export interface PrivateCopyTarget {
   readonly path: string;
-  /** Receives the created file's identity before any native copy step can fail. */
+  /**
+   * Receives the created file's identity before any native copy step can fail, so cleanup after a
+   * rejected copy can still match it; success may use the returned identity instead. Omit it only
+   * when the caller's cleanup owns the entire private tree that contains the copy.
+   */
   readonly own?: (identity: BigIntStats) => void;
 }
 

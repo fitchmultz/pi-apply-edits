@@ -36,14 +36,7 @@ import { assertNewFilePlanCurrent, TraversalDirectories } from "./planning.ts";
 import { clonePrivateFile, replacementSupportInfo } from "./platform.ts";
 import { inspectPreparedTree } from "./staged-tree.ts";
 
-function publicationReached(error: unknown, target: string): boolean {
-  return (
-    error instanceof PublicationError &&
-    (error.modifiedFiles.includes(target) || error.uncertainFiles.includes(target))
-  );
-}
-
-async function discardUnpublishedCandidate(
+async function discardOwnedCandidate(
   path: string,
   identity: BigIntStats,
   failure: unknown,
@@ -303,7 +296,8 @@ class NestedPublication {
   }
 
   // Android publishes by atomic no-clobber rename, so a private copy keeps the staged file in
-  // place. The copy is owned from creation and removed only while publication never started.
+  // place. After a failure, the copy is removed only while its path still names the created file;
+  // a published copy was renamed away, so the identity-guarded unlink leaves it alone.
   private async publishPrivateCopy(
     plan: ReadonlyEntryMovePlan,
     staged: MoveCandidate,
@@ -327,8 +321,8 @@ class NestedPublication {
       }
       return await publishMoveDestination(plan, { ...staged, path, stats }, this.signal);
     } catch (error) {
-      if (owned.identity && !publicationReached(error, plan.destination.targetPath)) {
-        await discardUnpublishedCandidate(path, owned.identity, error);
+      if (owned.identity) {
+        await discardOwnedCandidate(path, owned.identity, error);
       }
       throw error;
     }

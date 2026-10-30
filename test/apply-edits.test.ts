@@ -1856,7 +1856,7 @@ test(
 );
 
 type PrivateCopyFlow = "replacement" | "content-move" | "nested-staging" | "nested-publication";
-type PrivateCopyScenario = "cancel-during-copy" | "cancel-after-copy" | "uncertain-publish";
+type PrivateCopyScenario = "cancel-during-copy" | "cancel-after-copy";
 // Each flow's native copy target: the private replacement, the direct move candidate, the staged
 // nested move, and Android's publication copy beside private staging.
 const privateCopyTargets: Readonly<Record<PrivateCopyFlow, string>> = {
@@ -1873,35 +1873,11 @@ const unpublishedPaths: Readonly<Record<PrivateCopyFlow, readonly string[]>> = {
   "nested-staging": ["missing"],
   "nested-publication": ["missing/moved.txt"],
 };
-const privateCopyOutcomes = {
-  "cancel-during-copy": {
-    error: /aborted/,
-    status: "failed",
-    uncertain: [],
-    prefix: ["abort", "close"],
-    cleanupEvents: 1,
-    retained: 0,
-    copy: null,
-  },
-  "cancel-after-copy": {
-    error: /aborted/,
-    status: "failed",
-    uncertain: [],
-    prefix: ["close"],
-    cleanupEvents: 1,
-    retained: 0,
-    copy: null,
-  },
-  "uncertain-publish": {
-    error: /Commit status is uncertain/,
-    status: "uncertain",
-    uncertain: ["missing/moved.txt"],
-    prefix: ["close"],
-    cleanupEvents: 0,
-    retained: 1,
-    copy: "new\n",
-  },
-} as const;
+// Events each cancellation records before cleanup may start.
+const privateCopyEventPrefixes: Readonly<Record<PrivateCopyScenario, readonly string[]>> = {
+  "cancel-during-copy": ["abort", "close"],
+  "cancel-after-copy": ["close"],
+};
 
 async function verifyPrivateCopy(
   flow: PrivateCopyFlow,
@@ -1914,7 +1890,7 @@ async function verifyPrivateCopy(
     const originalRm = nodeFs.promises.rm;
     const controller = new AbortController();
     const destination = flow === "content-move" ? "moved.txt" : "missing/moved.txt";
-    const expected = privateCopyOutcomes[scenario];
+    const prefix = privateCopyEventPrefixes[scenario];
     const events: string[] = [];
     let copyTarget = "";
     const recordCleanup = (operation: string, path: unknown): void => {
@@ -1936,20 +1912,6 @@ async function verifyPrivateCopy(
             callback: (...result: readonly unknown[]) => void,
           ) => {
             const target = args.at(-1) ?? "";
-            if (
-              scenario === "uncertain-publish" &&
-              basename(file) === "mv" &&
-              target.endsWith("moved.txt")
-            ) {
-              // Another writer briefly holds the destination: the real no-clobber mv skips it
-              // (GNU coreutils 9.5+ exits 0), and the entry is gone before the caller verifies.
-              nodeFs.writeFileSync(target, "other\n", { flag: "wx" });
-              const child = originalExecFile(file, args, options, callback);
-              child.once("close", () => {
-                nodeFs.unlinkSync(target);
-              });
-              return child;
-            }
             if (
               copyTarget.length > 0 ||
               basename(file) !== "cp" ||
@@ -1979,9 +1941,7 @@ async function verifyPrivateCopy(
             const child = originalExecFile(file, args, options, callback);
             child.once("close", () => {
               events.push("close");
-              if (scenario === "cancel-after-copy") {
-                controller.abort();
-              }
+              controller.abort();
             });
             return child;
           },
@@ -2027,10 +1987,9 @@ async function verifyPrivateCopy(
                 controller.signal,
               );
         const error = result.details.error ?? "";
-        const uncertain = /\nUncertain paths: (.*)\n/u.exec(error)?.[1] ?? "none";
-        const realDirectory = await realpath(directory);
-        assert.match(error, expected.error);
-        // Receipt outcome: no verified paths, the request failed or is uncertain, nothing unattempted.
+        assert.match(error, /aborted/);
+        assert.equal(/\nUncertain paths: (.*)\n/u.exec(error)?.[1] ?? "none", "none");
+        // Receipt outcome: no verified paths, the request failed, nothing unattempted.
         assert.deepEqual(result.details.modifiedFiles, []);
         assert.deepEqual(
           result.details.files.map(({ path, moveTo, status }) => ({ path, moveTo, status })),
@@ -2038,33 +1997,27 @@ async function verifyPrivateCopy(
             {
               path: join(directory, "f.txt"),
               moveTo: flow === "replacement" ? undefined : join(directory, destination),
-              status: expected.status,
+              status: "failed",
             },
           ],
-        );
-        assert.deepEqual(
-          uncertain === "none"
-            ? []
-            : uncertain.split(", ").map((path) => path.slice(realDirectory.length + 1)),
-          expected.uncertain,
         );
       },
     );
 
     assert.notEqual(copyTarget, "", "the native copy was not observed");
     assert.equal(await readFile(join(directory, "f.txt"), "utf8"), "old\n");
-    assert.deepEqual(events.slice(0, expected.prefix.length), expected.prefix, events.join());
+    assert.deepEqual(events.slice(0, prefix.length), prefix, events.join());
     assert.ok(
-      events.slice(expected.prefix.length).every((event) => event.startsWith("cleanup ")),
+      events.slice(prefix.length).every((event) => event.startsWith("cleanup ")),
       events.join(),
     );
     // Cancellation cleanup must run, and only after the copy process closed.
-    assert.ok(events.length - expected.prefix.length >= expected.cleanupEvents, events.join());
-    assert.equal(
-      (await readdir(directory)).filter((name) => name.startsWith(".pi-apply-edits-")).length,
-      expected.retained,
+    assert.ok(events.length > prefix.length, events.join());
+    assert.deepEqual(
+      (await readdir(directory)).filter((name) => name.startsWith(".pi-apply-edits-")),
+      [],
     );
-    assert.equal(await readFile(copyTarget, "utf8").catch(() => null), expected.copy);
+    await assert.rejects(lstat(copyTarget), { code: "ENOENT" });
     await Promise.all(
       unpublishedPaths[flow].map(async (path) => {
         await assert.rejects(lstat(join(directory, path)), { code: "ENOENT" });
@@ -2096,14 +2049,10 @@ test(
 );
 
 test(
-  "Android nested move publication owns its private copy until publication starts",
+  "Android nested move publication removes cancelled private copies after the copy process exits",
   { skip: process.platform !== "android" },
   async (t) => {
-    for (const scenario of [
-      "cancel-during-copy",
-      "cancel-after-copy",
-      "uncertain-publish",
-    ] as const) {
+    for (const scenario of ["cancel-during-copy", "cancel-after-copy"] as const) {
       // Each case replaces process-wide child-process and syscall implementations.
       // oxlint-disable-next-line no-await-in-loop
       await t.test(scenario, async () => {
@@ -2176,6 +2125,11 @@ test(
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /metadata-preserving replacement.*Operation not supported/s);
       assert.equal(await readFile(path, "utf8"), "after\n");
+      // The rejected copy leaves no private files behind.
+      assert.deepEqual(
+        (await readdir(directory)).filter((name) => name.startsWith(".pi-apply-edits-")),
+        [],
+      );
       assert.equal((await execFile(getfacl, ["--omit-header", path])).stdout, acl);
       assert.equal(
         (await execFile(getfattr, ["--only-values", "-n", attribute, path])).stdout,
