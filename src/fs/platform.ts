@@ -1,12 +1,14 @@
 import { execFile } from "node:child_process";
 import { constants, type BigIntStats } from "node:fs";
-import { access, mkdtemp, readFile, rm, unlink, writeFile, link } from "node:fs/promises";
+import { access, mkdtemp, open, readFile, rm, unlink, writeFile, link } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import type { AndroidReplacementSupport, ReplacementSupport } from "./contracts.ts";
-import { AtomicMoveUncertainError, errorMessage } from "./errors.ts";
+import { AtomicMoveUncertainError, errorMessage, PrivateEntryChangedError } from "./errors.ts";
 import { currentMacosAclSession, macosAclScript } from "./macos-acl.ts";
 import { lstatIfExists, sameIdentity, sameSnapshotStats } from "./observation.ts";
+
+type SupportedReplacement = Exclude<ReplacementSupport, { readonly supported: false }>;
 
 export function execText(
   executable: string,
@@ -14,14 +16,27 @@ export function execText(
   signal?: AbortSignal,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(executable, args, { encoding: "utf8", signal }, (error, stdout) => {
-      if (error instanceof Error) {
-        reject(error);
-      } else if (error !== null) {
-        reject(new Error(errorMessage(error), { cause: error }));
-      } else {
-        resolve(stdout);
+    let closed = false;
+    let settle: (() => void) | undefined;
+    const child = execFile(executable, args, { encoding: "utf8", signal }, (error, stdout) => {
+      settle = () => {
+        if (error instanceof Error) {
+          reject(error);
+        } else if (error !== null) {
+          reject(new Error(errorMessage(error), { cause: error }));
+        } else {
+          resolve(stdout);
+        }
+      };
+      if (closed) {
+        settle();
       }
+    });
+    // execFile reports aborts and spawn failures before its child closes. Settle only after the
+    // native process has exited, so a stopped writer cannot outlive its caller's cleanup.
+    child.once("close", () => {
+      closed = true;
+      settle?.();
     });
   });
 }
@@ -246,29 +261,39 @@ export async function readPreservableAndroidMetadata(
   return `${xattrs.sort((left, right) => (left < right ? -1 : Number(left > right))).join("\n")}\n${acl.join("\n")}`;
 }
 
-export async function cloneWithMetadata(
-  source: string,
-  target: string,
-  signal?: AbortSignal,
-  expectedAndroidMetadata?: string,
-): Promise<void> {
+async function supportedReplacement(): Promise<SupportedReplacement> {
   const support = await replacementSupportInfo();
   if (!support.supported) {
     throw new Error(support.reason);
   }
+  return support;
+}
+
+function nativeCopyArguments(source: string, target: string): string[] {
   // Explicit xattr routes Linux labels through strict native copying, unlike best-effort `all`.
-  const args =
-    process.platform === "darwin"
-      ? ["-p", source, target]
-      : [
-          process.platform === "linux"
-            ? "--preserve=mode,ownership,timestamps,links,xattr"
-            : "--preserve=all",
-          "--",
-          source,
-          target,
-        ];
-  await execText(support.cp, args, signal);
+  return process.platform === "darwin"
+    ? ["-p", source, target]
+    : [
+        process.platform === "linux"
+          ? "--preserve=mode,ownership,timestamps,links,xattr"
+          : "--preserve=all",
+        "--",
+        source,
+        target,
+      ];
+}
+
+interface CopiedFile {
+  readonly source: string;
+  readonly target: string;
+  readonly expectedAndroidMetadata?: string;
+}
+
+async function preserveCopiedMetadata(
+  support: SupportedReplacement,
+  { source, target, expectedAndroidMetadata }: CopiedFile,
+  signal?: AbortSignal,
+): Promise<void> {
   await transferMacosAcl(source, target, "copy", signal);
   if (support.strategy === "exchange") {
     const sourceMetadata =
@@ -277,6 +302,57 @@ export async function cloneWithMetadata(
     if (sourceMetadata !== targetMetadata) {
       throw new Error(`Termux could not preserve ACL or SELinux metadata for ${source}`);
     }
+  }
+}
+
+export interface PrivateCopyTarget {
+  readonly path: string;
+  /**
+   * Receives the created file's identity before any native copy step can fail, so cleanup after a
+   * rejected copy can still match it; success may use the returned identity instead. Omit it only
+   * when the caller's cleanup owns the entire private tree that contains the copy.
+   */
+  readonly own?: (identity: BigIntStats) => void;
+}
+
+/**
+ * Copies into a private file this call creates exclusively. Native cp overwrites that existing
+ * file in place; the copy is rejected when the post-copy identity check finds another entry at
+ * its path. The descriptor keeps the created inode allocated, so that identity cannot be reused.
+ */
+export async function clonePrivateFile(
+  source: string,
+  target: PrivateCopyTarget,
+  signal?: AbortSignal,
+  expectedAndroidMetadata?: string,
+): Promise<BigIntStats> {
+  const support = await supportedReplacement();
+  const handle = await open(
+    target.path,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    const created = await handle.stat({ bigint: true });
+    target.own?.(created);
+    await execText(support.cp, nativeCopyArguments(source, target.path), signal);
+    const copied = await lstatIfExists(target.path);
+    if (!copied || !sameIdentity(created, copied)) {
+      throw new PrivateEntryChangedError(
+        `Private copy changed identity during native copy: ${target.path}`,
+      );
+    }
+    await preserveCopiedMetadata(
+      support,
+      { source, target: target.path, expectedAndroidMetadata },
+      signal,
+    );
+    return created;
+  } finally {
+    await handle.close().catch(() => {
+      // Nothing is written through this pinning descriptor; closing it must not replace the
+      // copy outcome, including a substitution that cleanup has to preserve.
+    });
   }
 }
 

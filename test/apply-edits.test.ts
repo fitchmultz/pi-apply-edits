@@ -1855,6 +1855,213 @@ test(
   },
 );
 
+type PrivateCopyFlow = "replacement" | "content-move" | "nested-staging" | "nested-publication";
+type PrivateCopyScenario = "cancel-during-copy" | "cancel-after-copy";
+// Each flow's native copy target: the private replacement, the direct move candidate, the staged
+// nested move, and Android's publication copy beside private staging.
+const privateCopyTargets: Readonly<Record<PrivateCopyFlow, string>> = {
+  replacement: "/replacement",
+  "content-move": "/move",
+  "nested-staging": "/publish/moved.txt",
+  "nested-publication": "/move",
+};
+// No scenario publishes the moved file. Nested staging fails before publication creates the new
+// parent directory.
+const unpublishedPaths: Readonly<Record<PrivateCopyFlow, readonly string[]>> = {
+  replacement: [],
+  "content-move": ["moved.txt"],
+  "nested-staging": ["missing"],
+  "nested-publication": ["missing/moved.txt"],
+};
+// Events each cancellation records before cleanup may start.
+const privateCopyEventPrefixes: Readonly<Record<PrivateCopyScenario, readonly string[]>> = {
+  "cancel-during-copy": ["abort", "close"],
+  "cancel-after-copy": ["close"],
+};
+
+async function verifyPrivateCopy(
+  flow: PrivateCopyFlow,
+  scenario: PrivateCopyScenario,
+): Promise<void> {
+  await inTemporaryDirectory(async (directory) => {
+    const originalExecFile = nodeChildProcess.execFile;
+    const originalUnlink = nodeFs.promises.unlink;
+    const originalRmdir = nodeFs.promises.rmdir;
+    const originalRm = nodeFs.promises.rm;
+    const controller = new AbortController();
+    const destination = flow === "content-move" ? "moved.txt" : "missing/moved.txt";
+    const prefix = privateCopyEventPrefixes[scenario];
+    const events: string[] = [];
+    let copyTarget = "";
+    const recordCleanup = (operation: string, path: unknown): void => {
+      if (events.length > 0 && filePath(path).includes(".pi-apply-edits-")) {
+        events.push(`cleanup ${operation}`);
+      }
+    };
+    await writeFile(join(directory, "f.txt"), "old\n");
+
+    await withRacingEditing(
+      (mock) => {
+        mock.method(
+          nodeChildProcess,
+          "execFile",
+          (
+            file: string,
+            args: readonly string[],
+            options: Readonly<{ encoding: "utf8"; signal?: AbortSignal }>,
+            callback: (...result: readonly unknown[]) => void,
+          ) => {
+            const target = args.at(-1) ?? "";
+            if (
+              copyTarget.length > 0 ||
+              basename(file) !== "cp" ||
+              !target.endsWith(privateCopyTargets[flow])
+            ) {
+              return originalExecFile(file, args, options, callback);
+            }
+            copyTarget = target;
+            if (scenario === "cancel-during-copy") {
+              // The real copy ignores the abort's SIGTERM and finishes, so cleanup that does not
+              // wait for the copy process to exit overlaps a live copy. Abort once the handler is set.
+              const child = originalExecFile(
+                "sh",
+                ["-c", 'trap "" TERM; printf ready; sleep 0.05; exec "$0" "$@"', file, ...args],
+                options,
+                callback,
+              );
+              child.stdout?.once("data", () => {
+                events.push("abort");
+                controller.abort();
+              });
+              child.once("close", () => {
+                events.push("close");
+              });
+              return child;
+            }
+            const child = originalExecFile(file, args, options, callback);
+            child.once("close", () => {
+              events.push("close");
+              controller.abort();
+            });
+            return child;
+          },
+        );
+        mock.method(
+          nodeFs.promises,
+          "unlink",
+          async (...args: Readonly<Parameters<typeof originalUnlink>>) => {
+            recordCleanup("unlink", args[0]);
+            await originalUnlink(...args);
+          },
+        );
+        mock.method(
+          nodeFs.promises,
+          "rmdir",
+          async (...args: Readonly<Parameters<typeof originalRmdir>>) => {
+            recordCleanup("rmdir", args[0]);
+            await originalRmdir(...args);
+          },
+        );
+        // Nested staging discards its quarantined tree recursively.
+        mock.method(
+          nodeFs.promises,
+          "rm",
+          async (...args: Readonly<Parameters<typeof originalRm>>) => {
+            recordCleanup("rm", args[0]);
+            await originalRm(...args);
+          },
+        );
+      },
+      async (module) => {
+        const result =
+          flow === "replacement"
+            ? await module.replaceTextInFiles(
+                { files: [{ path: "f.txt", edits: [{ oldText: "old", newText: "new" }] }] },
+                directory,
+                controller.signal,
+              )
+            : await module.applyPatchToFiles(
+                `*** Begin Patch\n*** Update File: f.txt\n*** Move to: ${destination}\n@@\n-old\n+new\n*** End Patch\n`,
+                directory,
+                false,
+                controller.signal,
+              );
+        const error = result.details.error ?? "";
+        assert.match(error, /aborted/);
+        assert.equal(/\nUncertain paths: (.*)\n/u.exec(error)?.[1] ?? "none", "none");
+        // Receipt outcome: no verified paths, the request failed, nothing unattempted.
+        assert.deepEqual(result.details.modifiedFiles, []);
+        assert.deepEqual(
+          result.details.files.map(({ path, moveTo, status }) => ({ path, moveTo, status })),
+          [
+            {
+              path: join(directory, "f.txt"),
+              moveTo: flow === "replacement" ? undefined : join(directory, destination),
+              status: "failed",
+            },
+          ],
+        );
+      },
+    );
+
+    assert.notEqual(copyTarget, "", "the native copy was not observed");
+    assert.equal(await readFile(join(directory, "f.txt"), "utf8"), "old\n");
+    assert.deepEqual(events.slice(0, prefix.length), prefix, events.join());
+    assert.ok(
+      events.slice(prefix.length).every((event) => event.startsWith("cleanup ")),
+      events.join(),
+    );
+    // Cancellation cleanup must run, and only after the copy process closed.
+    assert.ok(events.length > prefix.length, events.join());
+    assert.deepEqual(
+      (await readdir(directory)).filter((name) => name.startsWith(".pi-apply-edits-")),
+      [],
+    );
+    await assert.rejects(lstat(copyTarget), { code: "ENOENT" });
+    await Promise.all(
+      unpublishedPaths[flow].map(async (path) => {
+        await assert.rejects(lstat(join(directory, path)), { code: "ENOENT" });
+      }),
+    );
+  });
+}
+
+test(
+  "native copy cleanup removes cancelled private copies after the copy process exits",
+  { skip: !new Set(["darwin", "linux", "android"]).has(process.platform) },
+  async (t) => {
+    for (const [flow, scenario] of [
+      ["replacement", "cancel-during-copy"],
+      ["replacement", "cancel-after-copy"],
+      ["content-move", "cancel-during-copy"],
+      ["content-move", "cancel-after-copy"],
+      ["nested-staging", "cancel-during-copy"],
+      ["nested-staging", "cancel-after-copy"],
+    ] as const) {
+      // Each case replaces process-wide child-process and syscall implementations; finish
+      // restoring them before the next case.
+      // oxlint-disable-next-line no-await-in-loop
+      await t.test(`${flow}: ${scenario}`, async () => {
+        await verifyPrivateCopy(flow, scenario);
+      });
+    }
+  },
+);
+
+test(
+  "Android nested move publication removes cancelled private copies after the copy process exits",
+  { skip: process.platform !== "android" },
+  async (t) => {
+    for (const scenario of ["cancel-during-copy", "cancel-after-copy"] as const) {
+      // Each case replaces process-wide child-process and syscall implementations.
+      // oxlint-disable-next-line no-await-in-loop
+      await t.test(scenario, async () => {
+        await verifyPrivateCopy("nested-publication", scenario);
+      });
+    }
+  },
+);
+
 test(
   "Linux native copy preserves ACLs/xattrs and rejects xattr failures before publishing",
   { skip: process.platform !== "linux" },
@@ -1918,6 +2125,11 @@ test(
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /metadata-preserving replacement.*Operation not supported/s);
       assert.equal(await readFile(path, "utf8"), "after\n");
+      // The rejected copy leaves no private files behind.
+      assert.deepEqual(
+        (await readdir(directory)).filter((name) => name.startsWith(".pi-apply-edits-")),
+        [],
+      );
       assert.equal((await execFile(getfacl, ["--omit-header", path])).stdout, acl);
       assert.equal(
         (await execFile(getfattr, ["--only-values", "-n", attribute, path])).stdout,
@@ -4049,6 +4261,20 @@ test("nested discard is idempotent and later prepared groups can still be cleane
 
     await assert.rejects(lstat(first.container), /ENOENT/);
     await assert.rejects(lstat(second.container), /ENOENT/);
+  });
+});
+
+test("nested discard leaves the container untouched when cleanupBlocked names a path", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const plan = await planNewFile(join(directory, "missing", "child.txt"));
+    const prepared = await preparePlannedNestedFiles([{ plan, bytes: Buffer.from("staged\n") }]);
+    // As in v1.1.0, the public field holds the path whose ownership blocks cleanup.
+    prepared.cleanupBlocked = prepared.staging;
+
+    await assert.rejects(discardPreparedNestedFiles(prepared), {
+      message: `Staging cleanup was skipped because ${prepared.staging} is not owned by this user; the staging container was left untouched at ${prepared.container}`,
+    });
+    assert.equal(await readFile(join(prepared.staging, "child.txt"), "utf8"), "staged\n");
   });
 });
 
