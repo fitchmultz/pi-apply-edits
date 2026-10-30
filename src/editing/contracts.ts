@@ -108,11 +108,11 @@ export type ReadonlyTargetedEdit = Readonly<TargetedEdit>;
 export type ReadonlyApplyEditsInput = Readonly<Omit<ApplyEditsInput, "edits">> & {
   readonly edits?: readonly ReadonlyTargetedEdit[];
 };
+type ReadonlyReplaceTextFile = Readonly<Omit<ReplaceTextRequest["files"][number], "edits">> & {
+  readonly edits: readonly ReadonlyTargetedEdit[];
+};
 export type ReadonlyReplaceTextRequest = Readonly<Omit<ReplaceTextRequest, "files">> & {
-  readonly files: readonly {
-    readonly path: string;
-    readonly edits: readonly ReadonlyTargetedEdit[];
-  }[];
+  readonly files: readonly ReadonlyReplaceTextFile[];
 };
 export type ReadonlyWriteFilesRequest = Readonly<Omit<WriteFilesRequest, "files">> & {
   readonly files: readonly Readonly<WriteFilesRequest["files"][number]>[];

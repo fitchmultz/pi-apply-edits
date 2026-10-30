@@ -80,12 +80,13 @@ approved test-only helpers retain complexity 15, depth 4, six parameters, but
 have no size/statement limits. Handwritten declarations retain type/API checks
 without structural metrics.
 
-Editing and patch execution read caller-owned inputs through explicit readonly
-views. Their public request and result types remain mutable for compatibility;
-completed receipts transfer ownership to the caller. Native inputs are allowed
-only by verified declaration origin; `Promise` input permission never permits
-floating work. Generic containers are not blanket-allowlisted, and internal
-lifecycle owners stay explicit.
+Function parameters use readonly types. Editing and patch execution read
+caller-owned inputs through explicit readonly views; their public request and
+result types remain mutable for compatibility, and completed receipts transfer
+ownership to the caller. Native parameter types are exempt only by verified
+declaration origin; `Promise` input permission never permits floating work.
+Generic containers are not blanket-allowlisted, and internal lifecycle owners
+stay explicit.
 
 - Qualified `node:test` registration is framework-owned. `context.test()` and
   ordinary asynchronous work still need handling.

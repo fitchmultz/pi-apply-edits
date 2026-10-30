@@ -1123,6 +1123,7 @@ test("callers may assemble and revise request objects between editing calls", as
       modifiedFiles: [],
       files: [[path, "failed"]],
     });
+    assert.equal(await readFile(path, "utf8"), "final\ngamma\n");
     write.files[0].mode = "replace";
     write.files[0].preserveFormatting = false;
     const written = await writeFiles(write, directory);
