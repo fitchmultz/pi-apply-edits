@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Find Termux's atomic-edit tools independently of mise or other Node installations, including when `PREFIX` is unset.
 - Preserve per-file outcomes in expanded previews: distinguish planned changes, unchanged files, failed previews, and unreached operations without changing publication receipts.
 - Return compact tool receipts with summaries and publication facts instead of echoing full applied diffs into nested calls. Keep bounded previews in both text and structured results, and complete evidence in direct tool details and the expanded TUI. State nested-result retention limits explicitly.
 - Make matching recovery explicit: mark clipped candidate excerpts, explain skipped correction budgets and unpublished ordered-edit state, and show bounded patch search context with numeric-header guidance.

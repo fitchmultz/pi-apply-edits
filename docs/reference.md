@@ -12,7 +12,10 @@ On Pi 1.0, `/reload` refreshes extension code. Restart after changing dependenci
 The extension entry remains `extensions/apply-edits.ts` for existing package filters.
 
 On Android/Termux, atomic publication also requires GNU `cp`/`mv`, `getfacl`, and
-`getfattr`: `pkg install coreutils attr libacl`.
+`getfattr`: `pkg install coreutils attr libacl`. The tool search prefers `$PREFIX/bin`
+independently of Node's installation and retains support for tools alongside Node.
+If `PREFIX` is unset, it also searches the inherited `PATH`; relative and empty
+entries resolve against the process working directory.
 
 All four tools are registered by default, subject to Pi's tool selections and
 exclusions. When an owned mutation tool is active and replacement is supported,
