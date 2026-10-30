@@ -1,6 +1,7 @@
 import { dirname, sep } from "node:path";
 import {
   discardPreparedNestedFiles,
+  MacosAclSession,
   preparePlannedNestedFiles,
   publishPreparedNestedFiles,
   throwIfAborted,
@@ -88,6 +89,8 @@ class EditingBatch {
   private readonly plans: PlannedMutation[] = [];
   private readonly groups = new Map<string, number[]>();
   private readonly prepared = new Map<string, PreparedNestedFiles>();
+  // Preparation and publication share one ACL helper; progress callbacks stay outside its scope.
+  private readonly acl = new MacosAclSession();
   constructor(files: readonly MutationInput[], options: ExecutionOptions) {
     this.files = files;
     this.options = options;
@@ -253,7 +256,9 @@ class EditingBatch {
         const entries = group.map((index) => preparedEntry(required(this.plans[index])));
         // Prepare every subtree before publishing any target; failure cleanup owns prior groups.
         // oxlint-disable-next-line no-await-in-loop
-        const prepared = await preparePlannedNestedFiles(entries, this.options.signal);
+        const prepared = await this.acl.run(() =>
+          preparePlannedNestedFiles(entries, this.options.signal),
+        );
         this.prepared.set(key, prepared);
       } catch (error) {
         this.receipts.fail(group);
@@ -271,10 +276,11 @@ class EditingBatch {
       this.options.onProgress?.(
         `Publishing ${names} (${this.receipts.completedCount()}/${this.plans.length} files complete).`,
       );
-      const warnings =
+      const warnings = await this.acl.run(() =>
         key === undefined
-          ? await commitPlannedMutation(plan, this.options.signal)
-          : await publishPreparedNestedFiles(required(this.prepared.get(key)), this.options.signal);
+          ? commitPlannedMutation(plan, this.options.signal)
+          : publishPreparedNestedFiles(required(this.prepared.get(key)), this.options.signal),
+      );
       this.receipts.warnings(required(group[0]), warnings);
       for (const item of group) {
         this.receipts.complete(item, required(this.plans[item]));
@@ -318,6 +324,8 @@ class EditingBatch {
       failure =
         error instanceof BatchPublicationError ? error : this.receipts.failure(errorMessage(error));
     }
+    // An interrupted in-flight transfer already awaited its helper's exit; this ends an idle one.
+    await this.acl.close();
     const cleanupFailures = await this.cleanup();
     if (cleanupFailures.length > 0) {
       failure = this.receipts.failure(

@@ -32,8 +32,7 @@ function readAcl(path) {
   throw new Error("Read ACL: " + $.strerror(readError));
 }
 
-function run(args) {
-  const [mode, source, target] = args;
+function transfer(mode, source, target) {
   let acl = readAcl(source);
   if (acl === undefined) {
     if (mode === "inherit") {
@@ -63,5 +62,47 @@ function run(args) {
     check($.acl_set_link_np(target, 0x100, acl), "Set staging ACL");
   } finally {
     $.acl_free(acl);
+  }
+}
+
+function reply(line) {
+  const request = JSON.parse(line);
+  try {
+    transfer(request.mode, request.source, request.target);
+    return { id: request.id };
+  } catch (error) {
+    return { id: request.id, error: String(error instanceof Error ? error.message : error) };
+  }
+}
+
+// One batch sends newline-delimited JSON requests and waits for each reply. A pipe read can
+// end inside a UTF-8 sequence, so bytes are decoded only once they form complete text.
+function serve() {
+  const input = $.NSFileHandle.fileHandleWithStandardInput;
+  const output = $.NSFileHandle.fileHandleWithStandardOutput;
+  let bytes = $.NSMutableData.data;
+  let text = "";
+  for (let chunk = input.availableData; Number(chunk.length) > 0; chunk = input.availableData) {
+    bytes.appendData(chunk);
+    const decoded = $.NSString.alloc.initWithDataEncoding(bytes, $.NSUTF8StringEncoding);
+    if (!decoded.isNil()) {
+      bytes = $.NSMutableData.data;
+      const lines = (text + ObjC.unwrap(decoded)).split("\n");
+      text = lines.pop();
+      for (const line of lines) {
+        const data = $(JSON.stringify(reply(line)) + "\n").dataUsingEncoding(
+          $.NSUTF8StringEncoding,
+        );
+        output.writeData(data);
+      }
+    }
+  }
+}
+
+function run(args) {
+  if (args.length === 0) {
+    serve();
+  } else {
+    transfer(args[0], args[1], args[2]);
   }
 }
