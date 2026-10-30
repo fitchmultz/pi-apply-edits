@@ -17,7 +17,7 @@ import {
   lineEndingsAt,
   normalizeLine,
   hasFinalLineEnding,
-  detectLineEnding,
+  lazyLineEnding,
   type LineEnding,
   type TextLine,
 } from "./text.ts";
@@ -149,7 +149,7 @@ interface BlockSearch {
   readonly normalized?: readonly string[];
   readonly bodies: readonly string[];
   readonly includeFinalEnding: boolean;
-  readonly fallbackEnding: LineEnding;
+  readonly fallbackEnding: () => LineEnding;
   readonly search: EditSearch;
   readonly replacement: (ending: LineEnding) => string;
 }
@@ -173,7 +173,7 @@ function windowReplacement(block: BlockSearch, window: readonly TextLine[]): Rep
   const last = required(window.at(-1));
   const ending = window.find((line) => line.ending !== "")?.ending;
   const local = block.replacement(
-    ending === undefined || ending === "" ? block.fallbackEnding : ending,
+    ending === undefined || ending === "" ? block.fallbackEnding() : ending,
   );
   const text =
     block.search.insert !== undefined || block.normalized !== undefined
@@ -218,7 +218,7 @@ function prepareBlockSearch(
       ? undefined
       : lines.content.map((line) => normalizeLine(line.body)),
     includeFinalEnding: hasFinalLineEnding(search.oldText),
-    fallbackEnding: detectLineEnding(content),
+    fallbackEnding: lazyLineEnding(content),
     search,
     replacement: convertedReplacements(search.newText),
   };
