@@ -161,12 +161,13 @@ Before: tool construction mixed schemas, path binding, execution, receipt
 adaptation and detailed result rendering in one module.
 
 After: `src/tools.ts` owns typed tool construction, argument validation and path
-binding, and execution. `src/tool-results.ts` adapts editing results to SDK details
-and compact structured receipts, including bounded previews. `src/tool-rendering.ts` owns
+binding, and execution. `src/tool-results.ts` adapts editing results to compact
+model-facing content with bounded previews, SDK details, and the complete generated
+receipt as native structured content. `src/tool-rendering.ts` owns
 presentation of previews and verified, failed or unattempted outcomes. The
 adapter consumes readonly editing results and transfers detached mutable
-receipts to SDK callers; the structured tool contract exposes publication facts
-without echoing applied file contents. Presentation changes no longer touch publication.
+receipts to SDK callers; details and structured content are separate copies of the
+same per-file evidence. Presentation changes no longer touch publication.
 
 These are maintainability improvements, not claims that every removed diagnostic
 was a runtime bug. Formatting consistency, checker-integrity corrections, safer
