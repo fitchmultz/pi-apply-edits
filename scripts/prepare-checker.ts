@@ -216,7 +216,7 @@ function main(): void {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) {
     console.log(
-      "Prepare the strict native checkers. Requires Git, Go >=1.26, Rust >=1.97, Cargo and a C compiler.\n\nUsage: node scripts/prepare-checker.ts\n       npm run quality:prepare\n\nBuilds immutable upstream sources plus repository corrections, verifies outside-repository\ncaches, and atomically installs the native Oxlint addon and type-aware engine used by\nraw CLI and editor/LSP invocations. Run after npm ci --ignore-scripts and restart existing\nlanguage servers.\n\nExit: 0 prepared/help; 1 missing prerequisites, incompatible version or build failure.",
+      "Prepare the strict native checkers. Requires Git, Go >=1.26, Rust >=1.97, Cargo and a C compiler.\nOn macOS and Linux, native Oxlint builds also require CMake; make cmake available on PATH.\n\nUsage: node scripts/prepare-checker.ts\n       npm run quality:prepare\n\nBuilds immutable upstream sources plus repository corrections, verifies outside-repository\ncaches, and atomically installs the native Oxlint addon and type-aware engine used by\nraw CLI and editor/LSP invocations. Run after npm ci --ignore-scripts and restart existing\nlanguage servers.\n\nExit: 0 prepared/help; 1 missing prerequisites, incompatible version or build failure.",
     );
     return;
   }
