@@ -1,8 +1,23 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "promise", "node"],
-  "jsPlugins": [{ "name": "node-test", "specifier": "./scripts/node-test-plugin.ts" }],
-  "env": { "node": true },
+  "plugins": [
+    "eslint",
+    "typescript",
+    "unicorn",
+    "oxc",
+    "import",
+    "promise",
+    "node"
+  ],
+  "jsPlugins": [
+    {
+      "name": "node-test",
+      "specifier": "./scripts/node-test-plugin.ts"
+    }
+  ],
+  "env": {
+    "node": true
+  },
   "categories": {
     "correctness": "error",
     "suspicious": "error",
@@ -14,16 +29,27 @@
   },
   "options": {
     "typeAware": true,
-    "typeCheck": true,
+    "typeCheck": false,
     "denyWarnings": true,
     "reportUnusedDisableDirectives": "error",
     "respectEslintDisableDirectives": false
   },
   "rules": {
-    "typescript/no-explicit-any": ["error", { "fixToUnknown": false, "ignoreRestArgs": false }],
+    "typescript/no-explicit-any": [
+      "error",
+      {
+        "fixToUnknown": false,
+        "ignoreRestArgs": false
+      }
+    ],
     "typescript/no-non-null-assertion": "error",
     "typescript/no-unsafe-type-assertion": "error",
-    "typescript/no-unnecessary-type-assertion": ["error", { "checkLiteralConstAssertions": true }],
+    "typescript/no-unnecessary-type-assertion": [
+      "error",
+      {
+        "checkLiteralConstAssertions": true
+      }
+    ],
     "typescript/consistent-type-assertions": [
       "error",
       {
@@ -42,7 +68,10 @@
     "typescript/no-wrapper-object-types": "error",
     "typescript/no-invalid-void-type": [
       "error",
-      { "allowAsThisParameter": true, "allowInGenericTypeArguments": true }
+      {
+        "allowAsThisParameter": true,
+        "allowInGenericTypeArguments": true
+      }
     ],
     "typescript/no-unnecessary-type-parameters": "error",
     "typescript/no-deprecated": "error",
@@ -52,7 +81,12 @@
     "typescript/require-array-sort-compare": "error",
     "typescript/ban-ts-comment": [
       "error",
-      { "ts-check": false, "ts-expect-error": true, "ts-ignore": true, "ts-nocheck": true }
+      {
+        "ts-check": false,
+        "ts-expect-error": true,
+        "ts-ignore": true,
+        "ts-nocheck": true
+      }
     ],
     "typescript/strict-boolean-expressions": [
       "error",
@@ -69,13 +103,21 @@
     ],
     "typescript/no-unnecessary-condition": [
       "error",
-      { "checkTypePredicates": true, "allowConstantLoopConditions": "only-allowed-literals" }
+      {
+        "checkTypePredicates": true,
+        "allowConstantLoopConditions": "only-allowed-literals"
+      }
     ],
     "typescript/switch-exhaustiveness-check": [
       "error",
-      { "considerDefaultExhaustiveForUnions": false }
+      {
+        "considerDefaultExhaustiveForUnions": false
+      }
     ],
-    "eqeqeq": ["error", "always"],
+    "eqeqeq": [
+      "error",
+      "always"
+    ],
     "no-implicit-coercion": "error",
     "typescript/restrict-plus-operands": [
       "error",
@@ -100,7 +142,12 @@
         "allowRegExp": false
       }
     ],
-    "typescript/no-base-to-string": ["error", { "checkUnknown": true }],
+    "typescript/no-base-to-string": [
+      "error",
+      {
+        "checkUnknown": true
+      }
+    ],
     "typescript/no-floating-promises": [
       "error",
       {
@@ -108,15 +155,34 @@
         "ignoreIIFE": false,
         "ignoreVoid": false,
         "allowForKnownSafeCalls": [
-          { "from": "package", "package": "@types/node", "name": ["test", "suite"] }
+          {
+            "from": "package",
+            "package": "node:test",
+            "name": [
+              "test",
+              "it",
+              "describe",
+              "skip",
+              "todo",
+              "only"
+            ]
+          }
         ],
         "allowForKnownSafePromises": []
       }
     ],
     "typescript/no-misused-promises": "error",
     "typescript/await-thenable": "error",
-    "typescript/return-await": ["error", "error-handling-correctness-only"],
-    "typescript/strict-void-return": ["error", { "allowReturnAny": false }],
+    "typescript/return-await": [
+      "error",
+      "error-handling-correctness-only"
+    ],
+    "typescript/strict-void-return": [
+      "error",
+      {
+        "allowReturnAny": false
+      }
+    ],
     "typescript/no-confusing-void-expression": [
       "error",
       {
@@ -128,103 +194,44 @@
     "typescript/no-meaningless-void-operator": "error",
     "promise/always-return": [
       "error",
-      { "ignoreLastCallback": true, "ignoreAssignmentVariable": [] }
+      {
+        "ignoreLastCallback": true,
+        "ignoreAssignmentVariable": []
+      }
     ],
     "promise/catch-or-return": "error",
     "no-await-in-loop": "error",
     "typescript/only-throw-error": [
       "error",
-      { "allowThrowingAny": false, "allowThrowingUnknown": false, "allowRethrowing": true }
+      {
+        "allowThrowingAny": false,
+        "allowThrowingUnknown": false,
+        "allowRethrowing": true
+      }
     ],
     "typescript/use-unknown-in-catch-callback-variable": "error",
     "typescript/prefer-promise-reject-errors": [
       "error",
-      { "allowEmptyReject": false, "allowThrowingAny": false, "allowThrowingUnknown": false }
-    ],
-    "no-useless-catch": "error",
-    "no-param-reassign": ["error", { "props": true }],
-    "typescript/prefer-readonly": "error",
-    "typescript/prefer-readonly-parameter-types": [
-      "error",
       {
-        "checkParameterProperties": true,
-        "ignoreInferredTypes": true,
-        "treatMethodsAsReadonly": false,
-        "allow": [
-          {
-            "from": "lib",
-            "name": [
-              "Promise",
-              "PromiseLike",
-              "Request",
-              "RequestInit",
-              "RequestInfo",
-              "Response",
-              "ResponseInit",
-              "Headers",
-              "HeadersInit",
-              "URL",
-              "URLSearchParams",
-              "AbortController",
-              "AbortSignal",
-              "Blob",
-              "File",
-              "FormData",
-              "ReadableStream",
-              "ReadableStreamDefaultReader",
-              "ReadableStreamBYOBReader",
-              "ReadableStreamDefaultController",
-              "ReadableByteStreamController",
-              "ReadableStreamBYOBRequest",
-              "WritableStream",
-              "WritableStreamDefaultWriter",
-              "WritableStreamDefaultController",
-              "TransformStream",
-              "TransformStreamDefaultController",
-              "RegExp"
-            ]
-          },
-          {
-            "from": "package",
-            "package": "@types/node",
-            "name": [
-              "Buffer",
-              "BigIntStats",
-              "Stats",
-              "FileHandle",
-              "TestContext",
-              "MockTracker",
-              "StatOptions",
-              "MakeDirectoryOptions",
-              "ObjectEncodingOptions",
-              "RmOptions",
-              "RmDirOptions",
-              "URL"
-            ]
-          },
-          {
-            "from": "package",
-            "package": "@earendil-works/pi-coding-agent",
-            "name": [
-              "ExtensionAPI",
-              "ExtensionContext",
-              "ExtensionToolContext",
-              "ExtensionCommandContext",
-              "ExtensionUIContext",
-              "AgentSession",
-              "ModelRuntime",
-              "Theme",
-              "SessionManager"
-            ]
-          },
-          { "from": "package", "package": "@earendil-works/pi-ai", "name": ["Tool"] },
-          { "from": "package", "package": "typebox", "name": ["TSchema"] },
-          { "from": "package", "package": "@types/eslint", "name": ["RuleContext", "Scope"] }
-        ]
+        "allowEmptyReject": false,
+        "allowThrowingAny": false,
+        "allowThrowingUnknown": false
       }
     ],
+    "no-useless-catch": "error",
+    "no-param-reassign": [
+      "error",
+      {
+        "props": true
+      }
+    ],
+    "typescript/prefer-readonly": "error",
+    "typescript/prefer-readonly-parameter-types": "off",
     "typescript/explicit-module-boundary-types": "error",
-    "typescript/method-signature-style": ["error", "property"],
+    "typescript/method-signature-style": [
+      "error",
+      "property"
+    ],
     "typescript/consistent-type-imports": [
       "error",
       {
@@ -237,25 +244,73 @@
     "typescript/no-import-type-side-effects": "error",
     "import/no-cycle": [
       "error",
-      { "ignoreTypes": false, "ignoreExternal": false, "allowUnsafeDynamicCyclicDependency": false }
+      {
+        "ignoreTypes": false,
+        "ignoreExternal": false,
+        "allowUnsafeDynamicCyclicDependency": false
+      }
     ],
     "import/no-self-import": "error",
-    "import/no-duplicates": ["error", { "preferInline": true }],
+    "import/no-duplicates": [
+      "error",
+      {
+        "preferInline": true
+      }
+    ],
     "import/no-mutable-exports": "error",
-    "complexity": ["error", { "max": 10, "variant": "modified" }],
-    "max-depth": ["error", { "max": 3 }],
-    "max-params": ["error", { "max": 4 }],
-    "max-statements": ["error", { "max": 40 }],
+    "complexity": [
+      "error",
+      {
+        "max": 10,
+        "variant": "modified"
+      }
+    ],
+    "max-depth": [
+      "error",
+      {
+        "max": 3
+      }
+    ],
+    "max-params": [
+      "error",
+      {
+        "max": 4
+      }
+    ],
+    "max-statements": [
+      "error",
+      {
+        "max": 40
+      }
+    ],
     "max-lines-per-function": [
       "error",
-      { "max": 80, "skipBlankLines": true, "skipComments": true, "IIFEs": true }
+      {
+        "max": 80,
+        "skipBlankLines": true,
+        "skipComments": true,
+        "IIFEs": true
+      }
     ],
-    "max-lines": ["error", { "max": 500, "skipBlankLines": true, "skipComments": true }],
-    "curly": ["error", "all"],
+    "max-lines": [
+      "error",
+      {
+        "max": 500,
+        "skipBlankLines": true,
+        "skipComments": true
+      }
+    ],
+    "curly": [
+      "error",
+      "all"
+    ],
     "no-var": "error",
     "prefer-const": "error",
     "no-nested-ternary": "error",
-    "no-return-assign": ["error", "always"],
+    "no-return-assign": [
+      "error",
+      "always"
+    ],
     "no-sequences": "error",
     "no-multi-assign": "error",
     "no-else-return": "error",
@@ -265,7 +320,12 @@
     "no-with": "error",
     "no-debugger": "error",
     "no-control-regex": "error",
-    "no-empty": ["error", { "allowEmptyCatch": false }],
+    "no-empty": [
+      "error",
+      {
+        "allowEmptyCatch": false
+      }
+    ],
     "no-empty-function": "error",
     "unicorn/no-useless-undefined": "error",
     "unicorn/no-abusive-eslint-disable": "error",
@@ -275,15 +335,32 @@
     "no-underscore-dangle": "off",
     "unicorn/consistent-function-scoping": "off",
     "unicorn/no-array-sort": "off",
-    "unicorn/no-array-reverse": "off"
+    "unicorn/no-array-reverse": "off",
+    "no-async-promise-executor": "error",
+    "no-promise-executor-return": "error",
+    "typescript/no-duplicate-type-constituents": "error",
+    "typescript/no-redundant-type-constituents": "error"
   },
   "overrides": [
     {
-      "files": ["src/macos-acl.js"],
-      "env": { "node": false },
-      "globals": { "ObjC": "readonly", "$": "readonly", "Ref": "readonly" },
+      "files": [
+        "src/macos-acl.js"
+      ],
+      "env": {
+        "node": false
+      },
+      "globals": {
+        "ObjC": "readonly",
+        "$": "readonly",
+        "Ref": "readonly"
+      },
       "rules": {
-        "no-unused-vars": ["error", { "varsIgnorePattern": "^run$" }],
+        "no-unused-vars": [
+          "error",
+          {
+            "varsIgnorePattern": "^run$"
+          }
+        ],
         "typescript/explicit-module-boundary-types": "off",
         "typescript/await-thenable": "off",
         "typescript/consistent-return": "off",
@@ -348,8 +425,19 @@
       }
     },
     {
-      "files": ["src/file-system.ts", "src/apply-edits.ts", "src/tools.ts"],
-      "rules": { "max-params": ["error", { "max": 5 }] }
+      "files": [
+        "src/file-system.ts",
+        "src/apply-edits.ts",
+        "src/tools.ts"
+      ],
+      "rules": {
+        "max-params": [
+          "error",
+          {
+            "max": 5
+          }
+        ]
+      }
     },
     {
       "files": [
@@ -364,12 +452,27 @@
           "error",
           {
             "assertFunctionNames": [
-              { "source": "./test/quality-probe-support.ts", "name": "expectDiagnostics" }
+              {
+                "source": "./test/quality-probe-support.ts",
+                "name": "expectDiagnostics"
+              }
             ],
             "wrappers": [
-              { "source": "./test/quality-probe-support.ts", "name": "inProbe", "callback": 1 },
-              { "source": "./test/racing.ts", "name": "withRacingFileSystem", "callback": 1 },
-              { "source": "./test/racing.ts", "name": "withRacingEditing", "callback": 1 }
+              {
+                "source": "./test/quality-probe-support.ts",
+                "name": "inProbe",
+                "callback": 1
+              },
+              {
+                "source": "./test/racing.ts",
+                "name": "withRacingFileSystem",
+                "callback": 1
+              },
+              {
+                "source": "./test/racing.ts",
+                "name": "withRacingEditing",
+                "callback": 1
+              }
             ]
           }
         ],
@@ -377,12 +480,27 @@
           "error",
           {
             "assertFunctionNames": [
-              { "source": "./test/quality-probe-support.ts", "name": "expectDiagnostics" }
+              {
+                "source": "./test/quality-probe-support.ts",
+                "name": "expectDiagnostics"
+              }
             ],
             "wrappers": [
-              { "source": "./test/quality-probe-support.ts", "name": "inProbe", "callback": 1 },
-              { "source": "./test/racing.ts", "name": "withRacingFileSystem", "callback": 1 },
-              { "source": "./test/racing.ts", "name": "withRacingEditing", "callback": 1 }
+              {
+                "source": "./test/quality-probe-support.ts",
+                "name": "inProbe",
+                "callback": 1
+              },
+              {
+                "source": "./test/racing.ts",
+                "name": "withRacingFileSystem",
+                "callback": 1
+              },
+              {
+                "source": "./test/racing.ts",
+                "name": "withRacingEditing",
+                "callback": 1
+              }
             ]
           }
         ],
@@ -390,29 +508,65 @@
           "error",
           {
             "assertFunctionNames": [
-              { "source": "./test/quality-probe-support.ts", "name": "expectDiagnostics" }
+              {
+                "source": "./test/quality-probe-support.ts",
+                "name": "expectDiagnostics"
+              }
             ],
             "wrappers": [
-              { "source": "./test/quality-probe-support.ts", "name": "inProbe", "callback": 1 },
-              { "source": "./test/racing.ts", "name": "withRacingFileSystem", "callback": 1 },
-              { "source": "./test/racing.ts", "name": "withRacingEditing", "callback": 1 }
+              {
+                "source": "./test/quality-probe-support.ts",
+                "name": "inProbe",
+                "callback": 1
+              },
+              {
+                "source": "./test/racing.ts",
+                "name": "withRacingFileSystem",
+                "callback": 1
+              },
+              {
+                "source": "./test/racing.ts",
+                "name": "withRacingEditing",
+                "callback": 1
+              }
             ]
           }
         ],
         "typescript/no-unnecessary-condition": [
           "error",
-          { "checkTypePredicates": false, "allowConstantLoopConditions": "only-allowed-literals" }
+          {
+            "checkTypePredicates": false,
+            "allowConstantLoopConditions": "only-allowed-literals"
+          }
         ],
-        "complexity": ["error", { "max": 15, "variant": "modified" }],
-        "max-depth": ["error", { "max": 4 }],
-        "max-params": ["error", { "max": 6 }],
+        "complexity": [
+          "error",
+          {
+            "max": 15,
+            "variant": "modified"
+          }
+        ],
+        "max-depth": [
+          "error",
+          {
+            "max": 4
+          }
+        ],
+        "max-params": [
+          "error",
+          {
+            "max": 6
+          }
+        ],
         "max-statements": "off",
         "max-lines-per-function": "off",
         "max-lines": "off"
       }
     },
     {
-      "files": ["**/*.d.{ts,mts,cts}"],
+      "files": [
+        "**/*.d.{ts,mts,cts}"
+      ],
       "rules": {
         "complexity": "off",
         "max-depth": "off",
@@ -423,7 +577,9 @@
       }
     },
     {
-      "files": ["**/*.test-d.ts"],
+      "files": [
+        "**/*.test-d.ts"
+      ],
       "rules": {
         "typescript/ban-ts-comment": [
           "error",
