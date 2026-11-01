@@ -16,14 +16,14 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { applyPatchToFiles, replaceTextInFiles, writeFiles } from "../src/apply-edits.ts";
 import { planNewFile, publishNewFile } from "../src/file-system.ts";
 import { createEditingTools } from "../src/tools.ts";
 
 const posix = process.platform !== "win32";
-async function fixture(t: test.TestContext) {
+async function fixture(t: nodeTest.TestContext) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-native-paths-")));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   await mkdir(join(cwd, "actual", "inner"), { recursive: true });
@@ -33,7 +33,7 @@ async function fixture(t: test.TestContext) {
   return cwd;
 }
 
-test(
+nodeTest(
   "Windows creates agree with native DOS traversal through a junction",
   { skip: posix },
   async (t) => {
@@ -60,14 +60,13 @@ test(
     }
     for (const prefix of ["link/../", "missing/../link/../"]) {
       // Clean each native traversal before reusing its junction and parent directories.
-      // oxlint-disable-next-line no-await-in-loop
       await verifyNativeTraversal(prefix);
     }
     await assert.rejects(lstat(join(cwd, "missing")), /ENOENT/);
   },
 );
 
-test("write_files follows native symlink/.. traversal", { skip: !posix }, async (t) => {
+nodeTest("write_files follows native symlink/.. traversal", { skip: !posix }, async (t) => {
   const cwd = await fixture(t);
   const result = await writeFiles(
     { files: [{ path: "link/../target", content: "changed\n", mode: "replace" }] },
@@ -79,7 +78,7 @@ test("write_files follows native symlink/.. traversal", { skip: !posix }, async 
   assert.deepEqual(result.details.modifiedFiles, [join(cwd, "actual", "target")]);
 });
 
-test(
+nodeTest(
   "patch admission preserves native header addresses through preview and execution",
   { skip: !posix },
   async (t) => {
@@ -103,14 +102,13 @@ test(
     }
     for (const name of ["preview_patch", "apply_patch"]) {
       // Preview must observe the original bytes before execution changes the same target.
-      // oxlint-disable-next-line no-await-in-loop
       await verifyPatchAdmission(name);
     }
   },
 );
 
 for (const kind of ["replace", "patch"] as const) {
-  test(
+  nodeTest(
     `${kind} previews and edits native paths without changing Unicode or formatting`,
     { skip: !posix },
     async (t) => {
@@ -146,7 +144,7 @@ for (const kind of ["replace", "patch"] as const) {
   );
 }
 
-test(
+nodeTest(
   "invalid traversal and missing/.. replacements never write a lexical neighbor",
   { skip: !posix },
   async (t) => {
@@ -170,7 +168,6 @@ test(
       "dotdot-link",
     ]) {
       // Verify every failed address leaves the shared lexical neighbor unchanged before the next attempt.
-      // oxlint-disable-next-line no-await-in-loop
       await verifyInvalidTraversal(path);
     }
     await assert.rejects(lstat(join(cwd, "missing")), /ENOENT/);
@@ -178,7 +175,7 @@ test(
 );
 
 for (const operation of ["delete", "move"] as const) {
-  test(
+  nodeTest(
     `${operation} traverses parents natively but preserves final symlink entry semantics`,
     { skip: !posix },
     async (t) => {
@@ -197,18 +194,18 @@ for (const operation of ["delete", "move"] as const) {
       assert.equal(await readFile(join(cwd, "actual", "target"), "utf8"), "native\n");
       if (operation === "move") {
         // Exhaustive native entry variants preserve the moved symlink or forbid a delete-only destination.
-        // oxlint-disable-next-line node-test/no-conditional-assertions
+        // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
         assert.equal(await readlink(join(cwd, "actual", "moved")), "target");
       } else {
         // Exhaustive native entry variants must not create a destination during deletion.
-        // oxlint-disable-next-line node-test/no-conditional-assertions
+        // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
         await assert.rejects(lstat(join(cwd, "actual", "moved")), /ENOENT/);
       }
     },
   );
 }
 
-test(
+nodeTest(
   "public physical lock holds a native-addressed batch through callback completion",
   { skip: !posix },
   async (t) => {
@@ -254,7 +251,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "prospective native aliases deduplicate before nested queue acquisition",
   { skip: !posix, timeout: 3000 },
   async (t) => {
@@ -276,14 +273,13 @@ test(
     }
     for (const path of ["link/../new", "missing/../link/../new"]) {
       // Both aliases address the same prospective target; each rejection must settle first.
-      // oxlint-disable-next-line no-await-in-loop
       await verifyProspectiveAlias(path);
     }
   },
 );
 
 for (const destination of ["created", "new/created"]) {
-  test(
+  nodeTest(
     `create preserves missing/.. traversal before an existing symlink: ${destination}`,
     { skip: !posix },
     async (t) => {
@@ -302,7 +298,7 @@ for (const destination of ["created", "new/created"]) {
   );
 }
 
-test(
+nodeTest(
   "prospective creates refuse existing referents without publishing traversal directories",
   { skip: !posix },
   async (t) => {
@@ -318,7 +314,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "batch planning failure and cancellation leave prospective traversal directories untouched",
   { skip: !posix },
   async (t) => {
@@ -344,7 +340,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "overlapping auxiliary traversal and staged roots fail before any batch write",
   { skip: !posix },
   async (t) => {
@@ -366,13 +362,12 @@ test(
     }
     for (const first of ["missing/file", "missing"]) {
       // Rejection and cleanup must finish before the next batch reuses these create roots.
-      // oxlint-disable-next-line no-await-in-loop
       await verifyRootOverlap(first);
     }
   },
 );
 
-test(
+nodeTest(
   "independent traversal directories and ordinary shared-root batches stay supported",
   { skip: !posix },
   async (t) => {
@@ -392,7 +387,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "a replaced auxiliary directory parent fails before publication",
   { skip: !posix },
   async (t) => {
@@ -413,7 +408,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "auxiliary directory permissions fail during batch planning",
   { skip: !posix || process.getuid?.() === 0 },
   async (t) => {
@@ -450,7 +445,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "late traversal permission failure cannot enter the hard-link fallback",
   { skip: !posix || process.getuid?.() === 0 },
   async (t) => {
@@ -474,7 +469,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "failed publication cleans only owned prospective traversal directories",
   { skip: !posix },
   async (t) => {

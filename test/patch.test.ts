@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import { applyPatchToFiles } from "../src/apply-edits.ts";
 import { applyPatchUpdate, bindPatchPaths, parsePatch, type PatchOperation } from "../src/patch.ts";
 
 const wrap = (body: string) => `*** Begin Patch\n${body}\n*** End Patch`;
 function update(body: string): Extract<PatchOperation, { kind: "update" }> {
   const operation = parsePatch(wrap(`*** Update File: file.txt\n${body}`)).operations[0];
+  assert(operation !== undefined);
   assert.equal(operation.kind, "update");
   return operation;
 }
@@ -48,15 +49,16 @@ for (const fixture of [
     expected: "ONE\r\ntwo\r\nbetween\r\nthree\r\n",
   },
 ]) {
-  test(`Codex fixture: ${fixture.name}`, () => {
+  nodeTest(`Codex fixture: ${fixture.name}`, () => {
     const operation = parsePatch(wrap(`*** Update File: ${fixture.path}\n${fixture.patch}`) + "\n")
       .operations[0];
+    assert(operation !== undefined);
     assert.equal(operation.kind, "update");
     assert.equal(applyPatchUpdate(fixture.original, operation).text, fixture.expected);
   });
 }
 
-test("parses add, empty add, delete, update, move and pure move", () => {
+nodeTest("parses add, empty add, delete, update, move and pure move", () => {
   const { operations, paths } = parsePatch(
     wrap(
       "*** Add File: new\n+hello\n+\n*** Add File: empty\n*** Delete File: gone\n" +
@@ -90,6 +92,7 @@ test("parses add, empty add, delete, update, move and pure move", () => {
     ["new", "empty", "gone", "old", "moved", "unchanged", "destination"],
   );
   const pureMove = operations[4];
+  assert(pureMove !== undefined);
   assert.equal(pureMove.kind, "update");
   assert.equal(
     applyPatchUpdate("\uFEFFunchanged\r\nlast", pureMove).text,
@@ -97,18 +100,25 @@ test("parses add, empty add, delete, update, move and pure move", () => {
   );
 });
 
-test("parse and update results are fresh values that callers may revise", () => {
+nodeTest("parse and update results are fresh values that callers may revise", () => {
   const original = "head\nold\nmiddle\nold\n";
   const input = wrap("*** Update File: draft.txt\n@@ head\n-old\n+new");
   const parsed = parsePatch(input);
-  parsed.paths[0].path = "final.txt";
+  const [path] = parsed.paths;
+  assert(path !== undefined);
+  path.path = "final.txt";
   parsed.operations.push({ kind: "delete", path: "draft.txt" });
   const operation = parsed.operations[0];
+  assert(operation !== undefined);
   assert.equal(operation.kind, "update");
   operation.path = "final.txt";
+  const [chunk] = operation.chunks;
+  assert(chunk !== undefined);
+  const replacement = chunk.lines[1];
+  assert(replacement !== undefined);
   // The added anchor disambiguates the repeated "old" context.
-  operation.chunks[0].anchors.push("middle");
-  operation.chunks[0].lines[1].text = "revised";
+  chunk.anchors.push("middle");
+  replacement.text = "revised";
   const result = applyPatchUpdate(original, operation);
   // Rebasing a result into an enclosing document cannot leak into later results.
   result.text = `preamble\n${result.text}`;
@@ -146,7 +156,7 @@ test("parse and update results are fresh values that callers may revise", () => 
   });
 });
 
-test("requires a strict envelope and rejects malformed or duplicate structural markers", () => {
+nodeTest("requires a strict envelope and rejects malformed or duplicate structural markers", () => {
   // Deliberate deviations: no heredoc wrapper, padded marker, empty patch,
   // environment ID, or unprefixed empty context line accepted by lenient Codex.
   for (const patch of [
@@ -182,7 +192,7 @@ test("requires a strict envelope and rejects malformed or duplicate structural m
   }
 });
 
-test("validates Unicode and NUL in paths, patch bodies and original text", () => {
+nodeTest("validates Unicode and NUL in paths, patch bodies and original text", () => {
   for (const invalid of ["\0", "\ud800", "\udc00"]) {
     assert.throws(() => parsePatch(wrap(`*** Add File: ${invalid}\n+x`)), /NUL|Unicode/);
     assert.throws(() => parsePatch(wrap(`*** Add File: f\n+${invalid}`)), /NUL|Unicode/);
@@ -191,7 +201,7 @@ test("validates Unicode and NUL in paths, patch bodies and original text", () =>
   assert.equal(apply("🙂\n", "@@\n-🙂\n+🧭").text, "🧭\n");
 });
 
-test("binds original UTF-16 header spans only, with literal path spelling", () => {
+nodeTest("binds original UTF-16 header spans only, with literal path spelling", () => {
   const paths = [
     "🙂 @ ~ file\u00a0 ",
     "~/literal",
@@ -243,7 +253,7 @@ test("binds original UTF-16 header spans only, with literal path spelling", () =
   assert.throws(() => bindPatchPaths(input, "/bad\0"), /NUL/);
 });
 
-test("binding relative patch paths rejects line breaks in the working directory", () => {
+nodeTest("binding relative patch paths rejects line breaks in the working directory", () => {
   const input = wrap("*** Add File: rel\n+content");
   const absolute = wrap(`*** Delete File: ${resolve("/tmp", "existing")}`);
   for (const ending of ["\n", "\r"]) {
@@ -253,7 +263,7 @@ test("binding relative patch paths rejects line breaks in the working directory"
   }
 });
 
-test("new files preserve literal body bytes and mixed patch line endings", () => {
+nodeTest("new files preserve literal body bytes and mixed patch line endings", () => {
   const input =
     "*** Begin Patch\r\n*** Add File: @ literal \r+\uFEFFfirst  \r\n+second\n+third\r*** End Patch";
   assert.deepEqual(parsePatch(input).operations, [
@@ -261,7 +271,7 @@ test("new files preserve literal body bytes and mixed patch line endings", () =>
   ]);
 });
 
-test("bounds file operations and chunks without a blanket text-size ceiling", () => {
+nodeTest("bounds file operations and chunks without a blanket text-size ceiling", () => {
   const files = (count: number) =>
     wrap(Array.from({ length: count }, (_, i) => `*** Add File: ${i}`).join("\n"));
   assert.equal(parsePatch(files(64)).operations.length, 64);
@@ -272,7 +282,7 @@ test("bounds file operations and chunks without a blanket text-size ceiling", ()
   assert.throws(() => update(chunks(101)), /100 chunks/);
 });
 
-test("stacked anchors all resolve in strict source order and appear in match receipts", () => {
+nodeTest("stacked anchors all resolve in strict source order and appear in match receipts", () => {
   const original = "class A\n  method\n    old\nend\n";
   const result = apply(original, "@@ class A\n@@ method\n-old\n+literal");
   assert.equal(result.text, "class A\n  method\nliteral\nend\n");
@@ -291,7 +301,7 @@ test("stacked anchors all resolve in strict source order and appear in match rec
   );
 });
 
-test("unscoped repeated blocks and repeated anchors reject ambiguity", () => {
+nodeTest("unscoped repeated blocks and repeated anchors reject ambiguity", () => {
   const original = "first\nold\nsecond\nold\n";
   assert.throws(() => apply(original, "@@\n-old\n+new"), /Ambiguous context.*2, 4/);
   assert.throws(
@@ -302,13 +312,16 @@ test("unscoped repeated blocks and repeated anchors reject ambiguity", () => {
   assert.throws(() => apply("“old”\n”old“\n", '@@\n-"old"\n+new'), /Ambiguous context/);
 });
 
-test("unique full context or suffix anchors disambiguate without guessed language boundaries", () => {
-  const original = "first\nold\nsecond\nold\n";
-  assert.equal(apply(original, "@@\n first\n-old\n+new").text, "first\nnew\nsecond\nold\n");
-  assert.equal(apply(original, "@@ second\n-old\n+new").text, "first\nold\nsecond\nnew\n");
-  // A first-section anchor does not invent a scope ending at the next section.
-  assert.throws(() => apply(original, "@@ first\n-old\n+new"), /Ambiguous context/);
-});
+nodeTest(
+  "unique full context or suffix anchors disambiguate without guessed language boundaries",
+  () => {
+    const original = "first\nold\nsecond\nold\n";
+    assert.equal(apply(original, "@@\n first\n-old\n+new").text, "first\nnew\nsecond\nold\n");
+    assert.equal(apply(original, "@@ second\n-old\n+new").text, "first\nold\nsecond\nnew\n");
+    // A first-section anchor does not invent a scope ending at the next section.
+    assert.throws(() => apply(original, "@@ first\n-old\n+new"), /Ambiguous context/);
+  },
+);
 
 for (const fixture of [
   {
@@ -367,7 +380,7 @@ for (const fixture of [
     forbidden: [/\uFFFD/],
   },
 ]) {
-  test(`patch recovery: ${fixture.name}`, async (t) => {
+  nodeTest(`patch recovery: ${fixture.name}`, async (t) => {
     const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-recovery-")));
     t.after(() => rm(cwd, { recursive: true, force: true }));
     const path = join(cwd, "file.txt");
@@ -397,7 +410,7 @@ for (const fixture of [
   });
 }
 
-test("patch recovery does not reject a numeric-looking literal source anchor", async (t) => {
+nodeTest("patch recovery does not reject a numeric-looking literal source anchor", async (t) => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-recovery-")));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const path = join(cwd, "file.txt");
@@ -412,7 +425,7 @@ test("patch recovery does not reject a numeric-looking literal source anchor", a
   assert.equal(await readFile(path, "utf8"), "-1 +1 @@\nnew\n");
 });
 
-test("matching prioritizes exact, trailing-whitespace, trimmed, then punctuation", () => {
+nodeTest("matching prioritizes exact, trailing-whitespace, trimmed, then punctuation", () => {
   assert.deepEqual(apply("  old  \nold\n", "@@\n-old\n+new"), {
     text: "  old  \nnew\n",
     matches: [{ line: 2, strategy: "exact" }],
@@ -429,14 +442,14 @@ test("matching prioritizes exact, trailing-whitespace, trimmed, then punctuation
   assert.throws(() => apply("prefix old suffix\n", "@@\n-old\n+new"), /Could not find/);
 });
 
-test("fuzzy context survives byte-for-byte; inserted indentation stays literal", () => {
+nodeTest("fuzzy context survives byte-for-byte; inserted indentation stays literal", () => {
   const original = "  “context”  \r\n    old\rnext\nfinal";
   const result = apply(original, '@@\n "context"\n-old\n+\tnew\n next');
   assert.equal(result.text, "  “context”  \r\n\tnew\rnext\nfinal");
   assert.deepEqual(result.matches, [{ line: 1, strategy: "typography" }]);
 });
 
-test("BOM, local mixed line endings and missing terminal newline survive updates", () => {
+nodeTest("BOM, local mixed line endings and missing terminal newline survive updates", () => {
   const original = "\uFEFFone\r\ntwo\nthree\rfour";
   assert.equal(
     apply(original, "@@\n-one\n+ONE\n two\n-three\n+THREE\n-four\n+FOUR").text,
@@ -447,7 +460,7 @@ test("BOM, local mixed line endings and missing terminal newline survive updates
   assert.equal(apply("\uFEFFold", "@@\n-old").text, "\uFEFF");
 });
 
-test("verbatim first-line BOM patches preserve exactly one encoding BOM", () => {
+nodeTest("verbatim first-line BOM patches preserve exactly one encoding BOM", () => {
   const original = '\uFEFFexport const value = 1;\r\nexport const label = "stable";\r\n';
   const result = apply(
     original,
@@ -459,7 +472,7 @@ test("verbatim first-line BOM patches preserve exactly one encoding BOM", () => 
   });
 });
 
-test("BOM-aware anchors and fuzzy context stay at the source boundary", () => {
+nodeTest("BOM-aware anchors and fuzzy context stay at the source boundary", () => {
   const original = "\uFEFF  “head”  \r\nold\rtail";
   assert.deepEqual(apply(original, '@@ \uFEFF"head"\n-old\n+new'), {
     text: "\uFEFF  “head”  \r\nnew\rtail",
@@ -476,7 +489,7 @@ test("BOM-aware anchors and fuzzy context stay at the source boundary", () => {
   );
 });
 
-test("double-leading BOM content survives explicit and omitted encoding markers", () => {
+nodeTest("double-leading BOM content survives explicit and omitted encoding markers", () => {
   for (const marker of ["\uFEFF", "\uFEFF\uFEFF"]) {
     assert.equal(
       apply("\uFEFF\uFEFFold\r\n", `-${marker}old\n+${marker}new`).text,
@@ -491,7 +504,7 @@ test("double-leading BOM content survives explicit and omitted encoding markers"
   );
 });
 
-test("BOM boundary matches participate in uniqueness without rewriting interior U+FEFF", () => {
+nodeTest("BOM boundary matches participate in uniqueness without rewriting interior U+FEFF", () => {
   const original = "\uFEFFold\n\uFEFFold\n";
   assert.throws(() => apply(original, "-\uFEFFold\n+\uFEFFnew"), /Ambiguous context.*1, 2/);
   assert.throws(() => apply(original, "@@ \uFEFFold\n+new"), /Ambiguous anchor.*1, 2/);
@@ -510,7 +523,7 @@ test("BOM boundary matches participate in uniqueness without rewriting interior 
   });
 });
 
-test("updates cannot promote content to an encoding BOM", () => {
+nodeTest("updates cannot promote content to an encoding BOM", () => {
   assert.throws(() => apply("heading\n\uFEFFpayload\n", "-heading"), /U\+FEFF/);
   assert.throws(() => apply("old\n", "-old\n+\uFEFFnew"), /U\+FEFF/);
   const result = apply("\uFEFFheading\n\uFEFFpayload\n", "-heading");
@@ -518,7 +531,7 @@ test("updates cannot promote content to an encoding BOM", () => {
   assert.equal(new TextDecoder().decode(Buffer.from(result.text)), "\uFEFFpayload\n");
 });
 
-test("terminal-newline preservation deliberately differs from Codex normalization", () => {
+nodeTest("terminal-newline preservation deliberately differs from Codex normalization", () => {
   // Reuse fixture 014's patch, but deliberately remove its input's final LF:
   // despite its name, the official no_newline.txt fixture has a terminal LF.
   // The absent-LF expectation below comes from our fidelity requirement.
@@ -531,7 +544,7 @@ test("terminal-newline preservation deliberately differs from Codex normalizatio
   assert.equal(apply("keep\r\ntail", "@@\n-tail").text, "keep");
 });
 
-test("pure additions append, including empty files and absent terminal newlines", () => {
+nodeTest("pure additions append, including empty files and absent terminal newlines", () => {
   assert.equal(apply("", "@@\n+first\n+second").text, "first\nsecond\n");
   assert.equal(apply("one\r\ntwo", "@@\n+three\n+four").text, "one\r\ntwo\r\nthree\r\nfour");
   assert.equal(apply("one", "@@\n+two\n@@\n+three").text, "one\ntwo\nthree");
@@ -539,7 +552,7 @@ test("pure additions append, including empty files and absent terminal newlines"
   assert.equal(apply("tail\n\n", "@@\n+new").text, "tail\n\nnew\n");
 });
 
-test("anchored pure additions insert after the anchor; EOF explicitly appends", () => {
+nodeTest("anchored pure additions insert after the anchor; EOF explicitly appends", () => {
   // Intentional difference from Codex: an explicit anchor selects the insertion
   // point, rather than merely validating an anchor and then appending anyway.
   const original = "head\r\ntail";
@@ -547,7 +560,7 @@ test("anchored pure additions insert after the anchor; EOF explicitly appends", 
   assert.equal(apply(original, "@@ head\n+last\n*** End of File").text, "head\r\ntail\r\nlast");
 });
 
-test("EOF matches the actual tail and never falls back to an unrelated interior block", () => {
+nodeTest("EOF matches the actual tail and never falls back to an unrelated interior block", () => {
   assert.equal(
     apply("old\nseparator\nold\n", "@@\n-old\n+new\n*** End of File").text,
     "old\nseparator\nnew\n",
@@ -561,7 +574,7 @@ test("EOF matches the actual tail and never falls back to an unrelated interior 
   assert.equal(apply("old\n\n", "@@\n-old\n+new\n \n*** End of File").text, "new\n\n");
 });
 
-test("chunks consume non-overlapping original blocks in source order", () => {
+nodeTest("chunks consume non-overlapping original blocks in source order", () => {
   for (const patch of [
     "@@\n-b\n+B\n@@\n-a\n+A", // reversed
     "@@\n a\n-b\n+B\n@@\n b\n-c\n+C", // overlapping context
@@ -573,7 +586,7 @@ test("chunks consume non-overlapping original blocks in source order", () => {
   assert.equal(apply("a\nb\nc\n", "@@\n-a\n+A\n@@\n-b\n+B").text, "A\nB\nc\n");
 });
 
-test("bounded corrections do not restrict exact matching on a 150,000-line file", () => {
+nodeTest("bounded corrections do not restrict exact matching on a 150,000-line file", () => {
   const rows = Array.from({ length: 150_000 }, (_, i) => `export const value_${i} = ${i};\n`);
   const original = rows.join("");
   const result = apply(
@@ -596,7 +609,7 @@ test("bounded corrections do not restrict exact matching on a 150,000-line file"
   );
 });
 
-test("long repeated exact context is linear and does not use argument spreads", () => {
+nodeTest("long repeated exact context is linear and does not use argument spreads", () => {
   const original = "repeat\n".repeat(150_000) + "unique end\n";
   const context = " repeat\n".repeat(25_000);
   assert.equal(
@@ -605,6 +618,6 @@ test("long repeated exact context is linear and does not use argument spreads", 
   );
 });
 
-test("retains the existing net-expansion bound for updates", () => {
+nodeTest("retains the existing net-expansion bound for updates", () => {
   assert.throws(() => apply("old\n", "@@\n+" + "x".repeat(8 * 1024 * 1024 + 1)), /expand the file/);
 });

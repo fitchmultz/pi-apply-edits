@@ -19,7 +19,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import { fileURLToPath } from "node:url";
 import { applyPatch } from "diff";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
@@ -81,7 +81,9 @@ function filePath(value: unknown): string {
 function singleDetails(details: ReadonlyApplyEditsBatchDetails): ReadonlyApplyEditsDetails {
   assert.equal(details.error, undefined);
   assert.equal(details.files.length, 1);
-  return details.files[0];
+  const [file] = details.files;
+  assert(file !== undefined);
+  return file;
 }
 
 async function assertFailure(
@@ -96,11 +98,11 @@ async function assertFailure(
   );
   if (expected instanceof RegExp) {
     // Exhaustive error-validator variants check either the receipt text or the predicate result.
-    // oxlint-disable-next-line node-test/no-conditional-assertions
+    // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
     assert.match(result.details.error, expected);
   } else {
     // Exhaustive error-validator variants preserve the predicate's exact true-return contract.
-    // oxlint-disable-next-line node-test/no-conditional-assertions
+    // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
     assert.equal(
       expected(Object.assign(new Error(result.details.error), { details: result.details })),
       true,
@@ -149,7 +151,6 @@ async function firstExistingFile(paths: readonly string[]): Promise<string | und
   for (const path of paths) {
     try {
       // Conventional locations are tried in priority order; a successful earlier candidate wins.
-      // oxlint-disable-next-line no-await-in-loop
       if ((await stat(path)).isFile()) {
         return path;
       }
@@ -160,7 +161,7 @@ async function firstExistingFile(paths: readonly string[]): Promise<string | und
   return undefined;
 }
 
-test("ordered edits see prior replacements", () => {
+nodeTest("ordered edits see prior replacements", () => {
   const result = applyTargetedEdits(
     "const state = 'old';\nconsole.log(state);\n",
     [
@@ -177,7 +178,7 @@ test("ordered edits see prior replacements", () => {
   );
 });
 
-test("range edits replace both anchors inclusively and stay ordered", () => {
+nodeTest("range edits replace both anchors inclusively and stay ordered", () => {
   const result = applyTargetedEdits(
     "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/main\nafter\n",
     [
@@ -199,7 +200,7 @@ test("range edits replace both anchors inclusively and stay ordered", () => {
   );
 });
 
-test("range anchors use existing line-ending and indentation correction", () => {
+nodeTest("range anchors use existing line-ending and indentation correction", () => {
   const result = applyTargetedEdits(
     "before\r\n  START\r\n    old\r\n  END\r\nafter\r\n",
     [{ oldText: "START\n  old\n", endText: "END\n", newText: "DONE\n" }],
@@ -210,7 +211,7 @@ test("range anchors use existing line-ending and indentation correction", () => 
   assert.equal(result.matches[0]?.strategy, "indent-normalized");
 });
 
-test("range edits reject ambiguous, missing, reversed, and incompatible anchors", () => {
+nodeTest("range edits reject ambiguous, missing, reversed, and incompatible anchors", () => {
   assert.throws(
     () =>
       applyTargetedEdits(
@@ -276,7 +277,7 @@ test("range edits reject ambiguous, missing, reversed, and incompatible anchors"
   );
 });
 
-test("repeated text requires all or more context", () => {
+nodeTest("repeated text requires all or more context", () => {
   assert.throws(
     () => applyTargetedEdits("x\nx\n", [{ oldText: "x", newText: "y" }], "file.txt"),
     /matched 2 locations.*all: true/s,
@@ -291,7 +292,7 @@ test("repeated text requires all or more context", () => {
   assert.equal(result.matches[0]?.replacements, 2);
 });
 
-test("large replace-all runs linearly and bounds structured line details", () => {
+nodeTest("large replace-all runs linearly and bounds structured line details", () => {
   const result = applyTargetedEdits(
     "x\n".repeat(10_000),
     [{ oldText: "x", newText: "y", all: true }],
@@ -300,11 +301,11 @@ test("large replace-all runs linearly and bounds structured line details", () =>
 
   assert.equal(result.text, "y\n".repeat(10_000));
   assert.equal(result.matches[0]?.replacements, 10_000);
-  assert.equal(result.matches[0]?.lines.length, 32);
-  assert.equal(result.matches[0]?.linesTruncated, true);
+  assert.equal(result.matches[0].lines.length, 32);
+  assert.equal(result.matches[0].linesTruncated, true);
 });
 
-test("replacement count is capped before unbounded match arrays can grow", () => {
+nodeTest("replacement count is capped before unbounded match arrays can grow", () => {
   assert.throws(
     () =>
       applyTargetedEdits(
@@ -316,7 +317,7 @@ test("replacement count is capped before unbounded match arrays can grow", () =>
   );
 });
 
-test("exact replacement growth uses the actual local line endings", () => {
+nodeTest("exact replacement growth uses the actual local line endings", () => {
   const newText = "a\n".repeat(3_000_000);
   const result = applyTargetedEdits("old\n", [{ oldText: "old", newText }], "large.txt");
   assert.equal(result.text, `${newText}\n`);
@@ -326,7 +327,7 @@ test("exact replacement growth uses the actual local line endings", () => {
   );
 });
 
-test("replace-all growth sums replacements with different local line endings", () => {
+nodeTest("replace-all growth sums replacements with different local line endings", () => {
   const padding = "x".repeat(8 * 1024 * 1024);
   const result = applyTargetedEdits(
     "START\nold\r\nold\n",
@@ -340,7 +341,7 @@ test("replace-all growth sums replacements with different local line endings", (
   assert.equal(result.text, `START${padding}\n\r\n\r\n\r\n\n\n\n`);
 });
 
-test("corrected replace-all allows later matches to shrink the final result", () => {
+nodeTest("corrected replace-all allows later matches to shrink the final result", () => {
   const result = applyTargetedEdits(
     `${"old\r\n".repeat(42)}old${" ".repeat(150_000)}\n`,
     [{ oldText: "old\t", newText: "\n".repeat(100_000), all: true }],
@@ -350,7 +351,7 @@ test("corrected replace-all allows later matches to shrink the final result", ()
   assert.equal(result.text, `${"\r\n".repeat(42 * 100_001)}${"\n".repeat(100_001)}`);
 });
 
-test("replace-all amplification is rejected under a bounded heap", () => {
+nodeTest("replace-all amplification is rejected under a bounded heap", () => {
   const moduleUrl = new URL("../src/apply-edits.ts", import.meta.url).href;
   const program = `
     import { applyTargetedEdits } from ${JSON.stringify(moduleUrl)};
@@ -378,41 +379,44 @@ test("replace-all amplification is rejected under a bounded heap", () => {
   assert.equal(result.stdout.match(/expand the result/g)?.length, 3, result.stdout);
 });
 
-test("normalized matching reports its correction budget and supports an exact retry", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const path = join(directory, "large.txt");
-    const rows = Array.from({ length: 10 }, (_, index) => `const item_${index} = ${index};`);
-    const actual = rows.map((row) => `  ${row}`).join("\n");
-    const padding = ("// filler ".padEnd(100, "x") + "\n").repeat(2100);
-    const content = `${padding}${actual}\n`;
-    await writeFile(path, content);
-    const result = await replaceTextInFiles(
-      { files: [{ path, edits: [{ oldText: rows.join("\n"), newText: "done" }] }] },
-      directory,
-    );
-    assert.match(result.details.error ?? "", /corrected matching was skipped.*budget/i);
-    assert.match(result.details.error ?? "", /use exact oldText/i);
-    assert.match(result.details.error ?? "", /100% similar/);
-    assert.deepEqual(result.details.modifiedFiles, []);
-    assert.deepEqual(
-      result.details.files.map((file) => [file.path, file.status]),
-      [[path, "failed"]],
-    );
-    assert.equal(await readFile(path, "utf8"), content);
+nodeTest(
+  "normalized matching reports its correction budget and supports an exact retry",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const path = join(directory, "large.txt");
+      const rows = Array.from({ length: 10 }, (_, index) => `const item_${index} = ${index};`);
+      const actual = rows.map((row) => `  ${row}`).join("\n");
+      const padding = ("// filler ".padEnd(100, "x") + "\n").repeat(2100);
+      const content = `${padding}${actual}\n`;
+      await writeFile(path, content);
+      const result = await replaceTextInFiles(
+        { files: [{ path, edits: [{ oldText: rows.join("\n"), newText: "done" }] }] },
+        directory,
+      );
+      assert.match(result.details.error ?? "", /corrected matching was skipped.*budget/i);
+      assert.match(result.details.error ?? "", /use exact oldText/i);
+      assert.match(result.details.error ?? "", /100% similar/);
+      assert.deepEqual(result.details.modifiedFiles, []);
+      assert.deepEqual(
+        result.details.files.map((file) => [file.path, file.status]),
+        [[path, "failed"]],
+      );
+      assert.equal(await readFile(path, "utf8"), content);
 
-    const retry = await replaceTextInFiles(
-      { files: [{ path, edits: [{ oldText: actual, newText: "  done" }] }] },
-      directory,
-    );
-    assert.equal(retry.details.error, undefined, retry.summary);
-    assert.deepEqual(retry.details.modifiedFiles, [await realpath(path)]);
-    assert.equal(retry.details.files[0]?.status, "applied");
-    assert.equal(retry.details.files[0]?.matches[0]?.strategy, "exact");
-    assert.equal(await readFile(path, "utf8"), `${padding}  done\n`);
-  });
-});
+      const retry = await replaceTextInFiles(
+        { files: [{ path, edits: [{ oldText: actual, newText: "  done" }] }] },
+        directory,
+      );
+      assert.equal(retry.details.error, undefined, retry.summary);
+      assert.deepEqual(retry.details.modifiedFiles, [await realpath(path)]);
+      assert.equal(retry.details.files[0]?.status, "applied");
+      assert.equal(retry.details.files[0].matches[0]?.strategy, "exact");
+      assert.equal(await readFile(path, "utf8"), `${padding}  done\n`);
+    });
+  },
+);
 
-test("failed-match diagnostics stay bounded under a 64 MB heap", () => {
+nodeTest("failed-match diagnostics stay bounded under a 64 MB heap", () => {
   const moduleUrl = new URL("../src/apply-edits.ts", import.meta.url).href;
   const program = `
     import { applyTargetedEdits } from ${JSON.stringify(moduleUrl)};
@@ -433,7 +437,7 @@ test("failed-match diagnostics stay bounded under a 64 MB heap", () => {
   assert.equal(result.stdout, "bounded");
 });
 
-test("benign typography and trailing whitespace drift match only as complete lines", () => {
+nodeTest("benign typography and trailing whitespace drift match only as complete lines", () => {
   const result = applyTargetedEdits(
     "const label = “ready”;   \nnext();\n",
     [{ oldText: 'const label = "ready";\nnext();', newText: 'const label = "done";\nnext();' }],
@@ -444,7 +448,7 @@ test("benign typography and trailing whitespace drift match only as complete lin
   assert.equal(result.matches[0]?.strategy, "normalized");
 });
 
-test("corrected matching does not fold distinct Unicode identifiers", async () => {
+nodeTest("corrected matching does not fold distinct Unicode identifiers", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "demo.js");
     const original = 'const file = "public";\nconst ﬁle = "private";\n';
@@ -468,7 +472,7 @@ test("corrected matching does not fold distinct Unicode identifiers", async () =
   });
 });
 
-test("uniform indentation drift reindents the replacement", () => {
+nodeTest("uniform indentation drift reindents the replacement", () => {
   const result = applyTargetedEdits(
     "function run() {\n    if (ready) {\n        start();\n    }\n}\n",
     [
@@ -487,7 +491,7 @@ test("uniform indentation drift reindents the replacement", () => {
   assert.equal(result.matches[0]?.strategy, "indent-normalized");
 });
 
-test("indent-normalized replacements apply the candidate-versus-search indent delta", () => {
+nodeTest("indent-normalized replacements apply the candidate-versus-search indent delta", () => {
   const result = applyTargetedEdits(
     "  if (ready) {\n    start();\n  }\n",
     [
@@ -503,23 +507,26 @@ test("indent-normalized replacements apply the candidate-versus-search indent de
   assert.equal(result.matches[0]?.strategy, "indent-normalized");
 });
 
-test("indent correction preserves relative width when common indentation cuts through a tab", () => {
-  const result = applyTargetedEdits(
-    "    if (ready) {\n      start();\n    }\n",
-    [
-      {
-        oldText: "  if (ready) {\n\tstart();\n  }",
-        newText: "  if (ready) {\n\tprepare();\n  }",
-      },
-    ],
-    "file.ts",
-  );
+nodeTest(
+  "indent correction preserves relative width when common indentation cuts through a tab",
+  () => {
+    const result = applyTargetedEdits(
+      "    if (ready) {\n      start();\n    }\n",
+      [
+        {
+          oldText: "  if (ready) {\n\tstart();\n  }",
+          newText: "  if (ready) {\n\tprepare();\n  }",
+        },
+      ],
+      "file.ts",
+    );
 
-  assert.equal(result.text, "    if (ready) {\n\t  prepare();\n    }\n");
-  assert.equal(result.matches[0]?.strategy, "indent-normalized");
-});
+    assert.equal(result.text, "    if (ready) {\n\t  prepare();\n    }\n");
+    assert.equal(result.matches[0]?.strategy, "indent-normalized");
+  },
+);
 
-test("indent correction preserves non-indentation Unicode whitespace", () => {
+nodeTest("indent correction preserves non-indentation Unicode whitespace", () => {
   const result = applyTargetedEdits(
     "  if (ready)\n    old\n",
     [{ oldText: "if (ready)\n  old", newText: "if (ready)\n  \u00a0value" }],
@@ -530,7 +537,7 @@ test("indent correction preserves non-indentation Unicode whitespace", () => {
   assert.equal(result.matches[0]?.strategy, "indent-normalized");
 });
 
-test(
+nodeTest(
   "indent correction preserves recipe tabs for zero, positive, and negative shifts",
   { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
@@ -558,9 +565,8 @@ test(
         ["\t@echo before\n", "    @echo before\n", "    @echo after\n", "\t@echo after\n"],
         ["\t\t@echo before\n", "    @echo before\n", "    @echo after\n", "\t\t@echo after\n"],
         ["\t@echo before\n", "        @echo before\n", "        @echo after\n", "\t@echo after\n"],
-      ]) {
+      ] as const) {
         // The next case rewrites the same Makefile only after bytes and native make acceptance are checked.
-        // oxlint-disable-next-line no-await-in-loop
         await verifyRecipe(actual, anchor, replacement, expected);
       }
       const original = "build:\n\t@echo before\n";
@@ -580,22 +586,25 @@ test(
   },
 );
 
-test("nonzero indentation shifts reuse target tabs and preserve relative depth at new levels", () => {
-  const result = applyTargetedEdits(
-    "\tif (ready) {\n\t\told();\n\t}\n",
-    [
-      {
-        oldText: "if (ready) {\n    old();\n}",
-        newText: "if (ready) {\n\tprepare();\n\t\tdeep();\n}",
-      },
-    ],
-    "tabs.ts",
-  );
-  assert.equal(result.text, "\tif (ready) {\n\t\tprepare();\n\t\t\tdeep();\n\t}\n");
-  assert.equal(result.matches[0]?.strategy, "indent-normalized");
-});
+nodeTest(
+  "nonzero indentation shifts reuse target tabs and preserve relative depth at new levels",
+  () => {
+    const result = applyTargetedEdits(
+      "\tif (ready) {\n\t\told();\n\t}\n",
+      [
+        {
+          oldText: "if (ready) {\n    old();\n}",
+          newText: "if (ready) {\n\tprepare();\n\t\tdeep();\n}",
+        },
+      ],
+      "tabs.ts",
+    );
+    assert.equal(result.text, "\tif (ready) {\n\t\tprepare();\n\t\t\tdeep();\n\t}\n");
+    assert.equal(result.matches[0]?.strategy, "indent-normalized");
+  },
+);
 
-test("indent correction does not replace caller tabs with a known space-only depth", () => {
+nodeTest("indent correction does not replace caller tabs with a known space-only depth", () => {
   const result = applyTargetedEdits(
     "    if (ready) {\n      old();\n    }\n",
     [{ oldText: "  if (ready) {\n    old();\n  }", newText: "  if (ready) {\n\tnew();\n  }" }],
@@ -604,7 +613,7 @@ test("indent correction does not replace caller tabs with a known space-only dep
   assert.equal(result.text, "    if (ready) {\n\t  new();\n    }\n");
 });
 
-test("ordered edits can match prior CRLF output with LF anchors", () => {
+nodeTest("ordered edits can match prior CRLF output with LF anchors", () => {
   const result = applyTargetedEdits(
     "one\r\ntwo\r\n",
     [
@@ -621,7 +630,7 @@ test("ordered edits can match prior CRLF output with LF anchors", () => {
   );
 });
 
-test("ambiguous normalized matches fail without choosing one", () => {
+nodeTest("ambiguous normalized matches fail without choosing one", () => {
   assert.throws(
     () =>
       applyTargetedEdits(
@@ -633,7 +642,7 @@ test("ambiguous normalized matches fail without choosing one", () => {
   );
 });
 
-test("overlapping normalized all-matches are rejected", () => {
+nodeTest("overlapping normalized all-matches are rejected", () => {
   assert.throws(
     () =>
       applyTargetedEdits(
@@ -694,7 +703,7 @@ for (const fixture of [
     forbidden: [],
   },
 ]) {
-  test(`missing text recovery: ${fixture.name}`, async () => {
+  nodeTest(`missing text recovery: ${fixture.name}`, async () => {
     await inTemporaryDirectory(async (directory) => {
       const path = join(directory, "file.ts");
       await writeFile(path, fixture.original);
@@ -722,7 +731,7 @@ for (const fixture of [
   });
 }
 
-test("all must be a boolean even through the core API", () => {
+nodeTest("all must be a boolean even through the core API", () => {
   assert.throws(() => {
     Reflect.apply(applyTargetedEdits, undefined, [
       "x\nx\n",
@@ -732,7 +741,7 @@ test("all must be a boolean even through the core API", () => {
   }, /all must be a boolean/);
 });
 
-test("empty, NUL, and no-op targeted edits fail", () => {
+nodeTest("empty, NUL, and no-op targeted edits fail", () => {
   assert.throws(
     () => applyTargetedEdits("x", [{ oldText: "", newText: "y" }], "f"),
     /must not be empty/,
@@ -757,7 +766,7 @@ test("empty, NUL, and no-op targeted edits fail", () => {
   );
 });
 
-test("request size limits bound files and ordered edits", async () => {
+nodeTest("request size limits bound files and ordered edits", async () => {
   assert.throws(
     () =>
       applyTargetedEdits(
@@ -782,7 +791,7 @@ test("request size limits bound files and ordered edits", async () => {
   );
 });
 
-test("a failed ordered batch leaves the file byte-for-byte unchanged", async () => {
+nodeTest("a failed ordered batch leaves the file byte-for-byte unchanged", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     const original = Buffer.from("one\ntwo\n");
@@ -811,7 +820,7 @@ test("a failed ordered batch leaves the file byte-for-byte unchanged", async () 
   });
 });
 
-test("rewrite creation is explicit and creates parent directories", async () => {
+nodeTest("rewrite creation is explicit and creates parent directories", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "nested", "file.txt");
     await assertFailure(
@@ -830,7 +839,7 @@ test("rewrite creation is explicit and creates parent directories", async () => 
   });
 });
 
-test("missing rewrite failures identify the file before any write", async () => {
+nodeTest("missing rewrite failures identify the file before any write", async () => {
   await inTemporaryDirectory(async (directory) => {
     await assertFailure(
       writeFiles(
@@ -853,7 +862,7 @@ test("missing rewrite failures identify the file before any write", async () => 
   });
 });
 
-test("create mode refuses a file that appeared", async () => {
+nodeTest("create mode refuses a file that appeared", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "appeared.txt");
     await writeFile(path, "external\n");
@@ -866,7 +875,7 @@ test("create mode refuses a file that appeared", async () => {
   });
 });
 
-test("create mode keeps a stale create batch entirely unchanged", async () => {
+nodeTest("create mode keeps a stale create batch entirely unchanged", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "appeared.txt"), "external\n");
 
@@ -887,7 +896,7 @@ test("create mode keeps a stale create batch entirely unchanged", async () => {
   });
 });
 
-test("create reports a file-valued parent without raw filesystem errors", async () => {
+nodeTest("create reports a file-valued parent without raw filesystem errors", async () => {
   await inTemporaryDirectory(async (directory) => {
     const parent = join(directory, "parent");
     await writeFile(parent, "not a directory\n");
@@ -903,7 +912,7 @@ test("create reports a file-valued parent without raw filesystem errors", async 
   });
 });
 
-test("existing rewrites preserve UTF-8 BOM and CRLF line endings", async () => {
+nodeTest("existing rewrites preserve UTF-8 BOM and CRLF line endings", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "windows.txt");
     await writeFile(
@@ -920,41 +929,44 @@ test("existing rewrites preserve UTF-8 BOM and CRLF line endings", async () => {
   });
 });
 
-test("exact rewrite controls BOM and line endings per file while default and create behavior stay intact", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const original = "\uFEFFbefore\r\n";
-    await writeFile(join(directory, "default.txt"), original);
-    await writeFile(join(directory, "exact.txt"), original);
-    const created = "\uFEFFcreated\r\nmixed\nend\r";
-    await writeFiles(
-      {
-        files: [
-          { path: "default.txt", content: "after\n", mode: "replace" },
-          { path: "exact.txt", content: "after\n", mode: "replace", preserveFormatting: false },
-          { path: "created.txt", content: created, mode: "create", preserveFormatting: true },
-        ],
-      },
-      directory,
-    );
-    assert.deepEqual(
-      await readFile(join(directory, "default.txt")),
-      Buffer.from("\uFEFFafter\r\n"),
-    );
-    assert.deepEqual(await readFile(join(directory, "exact.txt")), Buffer.from("after\n"));
-    assert.deepEqual(await readFile(join(directory, "created.txt")), Buffer.from(created));
-    await writeFiles(
-      {
-        files: [
-          { path: "exact.txt", content: created, mode: "replace", preserveFormatting: false },
-        ],
-      },
-      directory,
-    );
-    assert.deepEqual(await readFile(join(directory, "exact.txt")), Buffer.from(created));
-  });
-});
+nodeTest(
+  "exact rewrite controls BOM and line endings per file while default and create behavior stay intact",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const original = "\uFEFFbefore\r\n";
+      await writeFile(join(directory, "default.txt"), original);
+      await writeFile(join(directory, "exact.txt"), original);
+      const created = "\uFEFFcreated\r\nmixed\nend\r";
+      await writeFiles(
+        {
+          files: [
+            { path: "default.txt", content: "after\n", mode: "replace" },
+            { path: "exact.txt", content: "after\n", mode: "replace", preserveFormatting: false },
+            { path: "created.txt", content: created, mode: "create", preserveFormatting: true },
+          ],
+        },
+        directory,
+      );
+      assert.deepEqual(
+        await readFile(join(directory, "default.txt")),
+        Buffer.from("\uFEFFafter\r\n"),
+      );
+      assert.deepEqual(await readFile(join(directory, "exact.txt")), Buffer.from("after\n"));
+      assert.deepEqual(await readFile(join(directory, "created.txt")), Buffer.from(created));
+      await writeFiles(
+        {
+          files: [
+            { path: "exact.txt", content: created, mode: "replace", preserveFormatting: false },
+          ],
+        },
+        directory,
+      );
+      assert.deepEqual(await readFile(join(directory, "exact.txt")), Buffer.from(created));
+    });
+  },
+);
 
-test("write controls and preview reject invalid types without writing", async () => {
+nodeTest("write controls and preview reject invalid types without writing", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "file"), "before\n");
     const tool = createEditingTools().find((candidate) => candidate.name === "write_files");
@@ -1003,89 +1015,99 @@ test("write controls and preview reject invalid types without writing", async ()
   });
 });
 
-test("preview shares ordered range, normalization, insertion, and create planning without staging", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const original = "before\n  START\n  old\n  END\nafter\n";
-    await writeFile(join(directory, "file"), original);
-    const request: ReplaceTextRequest = {
-      files: [
-        {
-          path: "file",
-          edits: [
-            { oldText: "START\nold\n", endText: "END\n", newText: "const v = “draft”;\n" },
-            { oldText: 'const v = "draft";', newText: 'const v = "ready";' },
-            { oldText: 'const v = "ready";', newText: "\n  done();", insert: "after" },
-          ],
+nodeTest(
+  "preview shares ordered range, normalization, insertion, and create planning without staging",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const original = "before\n  START\n  old\n  END\nafter\n";
+      await writeFile(join(directory, "file"), original);
+      const request: ReplaceTextRequest = {
+        files: [
+          {
+            path: "file",
+            edits: [
+              { oldText: "START\nold\n", endText: "END\n", newText: "const v = “draft”;\n" },
+              { oldText: 'const v = "draft";', newText: 'const v = "ready";' },
+              { oldText: 'const v = "ready";', newText: "\n  done();", insert: "after" },
+            ],
+          },
+        ],
+      };
+      const createRequest: WriteFilesRequest = {
+        files: [
+          {
+            path: "missing/nested.txt",
+            content: "\uFEFFexact\r\nmixed\n",
+            mode: "create",
+            preserveFormatting: false,
+          },
+        ],
+      };
+      let preview: EditingExecution | undefined;
+      let createPreview: EditingExecution | undefined;
+      await withRacingFileSystem(
+        (mock) => {
+          const noWrites = async () => {
+            throw new Error("preview attempted publication preflight or staging");
+          };
+          for (const name of [
+            "access",
+            "mkdir",
+            "mkdtemp",
+            "link",
+            "rename",
+            "writeFile",
+          ] as const) {
+            mock.method(nodeFs.promises, name, noWrites);
+          }
         },
-      ],
-    };
-    const createRequest: WriteFilesRequest = {
-      files: [
-        {
-          path: "missing/nested.txt",
-          content: "\uFEFFexact\r\nmixed\n",
-          mode: "create",
-          preserveFormatting: false,
+        async () => {
+          preview = await replaceTextInFiles({ ...request, preview: true }, directory);
+          createPreview = await writeFiles({ ...createRequest, preview: true }, directory);
         },
-      ],
-    };
-    let preview: EditingExecution | undefined;
-    let createPreview: EditingExecution | undefined;
-    await withRacingFileSystem(
-      (mock) => {
-        const noWrites = async () => {
-          throw new Error("preview attempted publication preflight or staging");
-        };
-        for (const name of ["access", "mkdir", "mkdtemp", "link", "rename", "writeFile"] as const) {
-          mock.method(nodeFs.promises, name, noWrites);
-        }
-      },
-      async () => {
-        preview = await replaceTextInFiles({ ...request, preview: true }, directory);
-        createPreview = await writeFiles({ ...createRequest, preview: true }, directory);
-      },
-    );
-    assert(preview && "files" in preview.details);
-    assert.equal(preview.details.preview, true);
-    assert.equal(
-      preview.details.files.every((file) => file.preview === true && file.editsApplied === 0),
-      true,
-    );
-    assert.deepEqual(
-      preview.details.files[0]?.matches.map((match) => match.strategy),
-      ["indent-normalized", "indent-normalized", "exact"],
-    );
-    assert.match(preview.summary, /Would update 1 file.*No files written/);
-    assert(createPreview && createPreview.details.error === undefined);
-    assert.match(createPreview.summary, /Would create 1 file.*No files written/);
-    assert.equal(createPreview.details.files[0]?.preview, true);
-    assert.match(preview.summary, /edits\[0\] used indent-normalized matching \(start line 2\)/);
-    assert.equal(await readFile(join(directory, "file"), "utf8"), original);
-    assert.deepEqual(await readdir(directory), ["file"]);
-    const applied = await replaceTextInFiles(request, directory);
-    const created = await writeFiles(createRequest, directory);
-    assert.equal(created.details.error, undefined);
-    assert.deepEqual(
-      created.details.files.map((file) => file.diff),
-      createPreview.details.files.map((file) => file.diff),
-    );
-    assert.equal(
-      await readFile(join(directory, "missing/nested.txt"), "utf8"),
-      "\uFEFFexact\r\nmixed\n",
-    );
-    assert("files" in applied.details);
-    assert.deepEqual(
-      applied.details.files.map((file) => file.diff),
-      preview.details.files.map((file) => file.diff),
-    );
-    assert.equal(
-      await readFile(join(directory, "file"), "utf8"),
-      'before\n  const v = "ready";\n  done();\nafter\n',
-    );
-  });
-});
+      );
+      assert(preview && "files" in preview.details);
+      assert.equal(preview.details.preview, true);
+      assert.equal(
+        preview.details.files.every((file) => file.preview === true && file.editsApplied === 0),
+        true,
+      );
+      assert.deepEqual(
+        preview.details.files[0]?.matches.map((match) => match.strategy),
+        ["indent-normalized", "indent-normalized", "exact"],
+      );
+      assert.match(preview.summary, /Would update 1 file.*No files written/);
+      assert(createPreview && createPreview.details.error === undefined);
+      assert.match(createPreview.summary, /Would create 1 file.*No files written/);
+      assert.equal(createPreview.details.files[0]?.preview, true);
+      assert.match(preview.summary, /edits\[0\] used indent-normalized matching \(start line 2\)/);
+      assert.equal(await readFile(join(directory, "file"), "utf8"), original);
+      assert.deepEqual(await readdir(directory), ["file"]);
+      const applied = await replaceTextInFiles(request, directory);
+      const created = await writeFiles(createRequest, directory);
+      assert.equal(created.details.error, undefined);
+      assert.deepEqual(
+        created.details.files.map((file) => file.diff),
+        createPreview.details.files.map((file) => file.diff),
+      );
+      assert.equal(
+        await readFile(join(directory, "missing/nested.txt"), "utf8"),
+        "\uFEFFexact\r\nmixed\n",
+      );
+      assert("files" in applied.details);
+      assert.deepEqual(
+        applied.details.files.map((file) => file.diff),
+        preview.details.files.map((file) => file.diff),
+      );
+      assert.equal(
+        await readFile(join(directory, "file"), "utf8"),
+        'before\n  const v = "ready";\n  done();\nafter\n',
+      );
+    });
+  },
+);
 
-test("callers may assemble and revise request objects between editing calls", async () => {
+nodeTest("callers may assemble and revise request objects between editing calls", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "note.txt");
     await writeFile(path, "alpha\nbeta\n");
@@ -1096,7 +1118,8 @@ test("callers may assemble and revise request objects between editing calls", as
     });
     const edit: TargetedEdit = { oldText: "alpha", newText: "draft" };
     const replace: ReplaceTextRequest = { files: [], preview: true };
-    replace.files.push({ path, edits: [edit] });
+    const replacementFile = { path, edits: [edit] };
+    replace.files.push(replacementFile);
     const preview = await replaceTextInFiles(replace, directory);
     assert.equal(preview.details.error, undefined, preview.summary);
     assert.deepEqual(outcome(preview.details), {
@@ -1105,7 +1128,7 @@ test("callers may assemble and revise request objects between editing calls", as
     });
     assert.match(preview.details.files[0]?.diff ?? "", /^\+draft$/m);
     edit.newText = "final";
-    replace.files[0].edits.push({ oldText: "beta", newText: "gamma" });
+    replacementFile.edits.push({ oldText: "beta", newText: "gamma" });
     replace.preview = false;
     const applied = await replaceTextInFiles(replace, directory);
     assert.equal(applied.details.error, undefined, applied.summary);
@@ -1116,7 +1139,12 @@ test("callers may assemble and revise request objects between editing calls", as
     assert.equal(await readFile(path, "utf8"), "final\ngamma\n");
 
     const write: WriteFilesRequest = { files: [] };
-    write.files.push({ path, content: "exact\r\nbytes\r\n", mode: "create" });
+    const writeFileRequest: WriteFilesRequest["files"][number] = {
+      path,
+      content: "exact\r\nbytes\r\n",
+      mode: "create",
+    };
+    write.files.push(writeFileRequest);
     const refused = await writeFiles(write, directory);
     assert.match(refused.details.error ?? "", /Create mode refuses to overwrite/);
     assert.deepEqual(outcome(refused.details), {
@@ -1124,8 +1152,8 @@ test("callers may assemble and revise request objects between editing calls", as
       files: [[path, "failed"]],
     });
     assert.equal(await readFile(path, "utf8"), "final\ngamma\n");
-    write.files[0].mode = "replace";
-    write.files[0].preserveFormatting = false;
+    writeFileRequest.mode = "replace";
+    writeFileRequest.preserveFormatting = false;
     const written = await writeFiles(write, directory);
     assert.equal(written.details.error, undefined, written.summary);
     assert.deepEqual(outcome(written.details), {
@@ -1136,33 +1164,36 @@ test("callers may assemble and revise request objects between editing calls", as
   });
 });
 
-test("preview is advisory, allows read-only content, and never supplies a stale commit plan", async (t) => {
-  await inTemporaryDirectory(async (directory) => {
-    const path = join(directory, "file");
-    await writeFile(path, "before\n");
-    await chmod(path, 0o444);
-    const request = { files: [{ path, edits: [{ oldText: "before", newText: "after" }] }] };
-    try {
-      const preview = await replaceTextInFiles({ ...request, preview: true }, directory);
-      assert.equal(preview.details.preview, true);
-      assert.equal(await readFile(path, "utf8"), "before\n");
-      await t.test(
-        "read-only commit refuses a non-root POSIX write",
-        { skip: process.platform === "win32" || process.getuid?.() === 0 },
-        async () => {
-          await assertFailure(replaceTextInFiles(request, directory), /readable and writable/);
-        },
-      );
-    } finally {
-      await chmod(path, 0o644);
-    }
-    await writeFile(path, "external\n");
-    await assertFailure(replaceTextInFiles(request, directory), /Could not find/);
-    assert.equal(await readFile(path, "utf8"), "external\n");
-  });
-});
+nodeTest(
+  "preview is advisory, allows read-only content, and never supplies a stale commit plan",
+  async (t) => {
+    await inTemporaryDirectory(async (directory) => {
+      const path = join(directory, "file");
+      await writeFile(path, "before\n");
+      await chmod(path, 0o444);
+      const request = { files: [{ path, edits: [{ oldText: "before", newText: "after" }] }] };
+      try {
+        const preview = await replaceTextInFiles({ ...request, preview: true }, directory);
+        assert.equal(preview.details.preview, true);
+        assert.equal(await readFile(path, "utf8"), "before\n");
+        await t.test(
+          "read-only commit refuses a non-root POSIX write",
+          { skip: process.platform === "win32" || process.getuid?.() === 0 },
+          async () => {
+            await assertFailure(replaceTextInFiles(request, directory), /readable and writable/);
+          },
+        );
+      } finally {
+        await chmod(path, 0o644);
+      }
+      await writeFile(path, "external\n");
+      await assertFailure(replaceTextInFiles(request, directory), /Could not find/);
+      assert.equal(await readFile(path, "utf8"), "external\n");
+    });
+  },
+);
 
-test("targeted edits preserve CRLF and BOM", async () => {
+nodeTest("targeted edits preserve CRLF and BOM", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "windows.txt");
     await writeFile(
@@ -1182,7 +1213,7 @@ test("targeted edits preserve CRLF and BOM", async () => {
   });
 });
 
-test("CRLF anchors preserve supplied newlines and literal deletion boundaries", async () => {
+nodeTest("CRLF anchors preserve supplied newlines and literal deletion boundaries", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "windows.txt");
     async function verifyCrlfReplacement(
@@ -1215,7 +1246,6 @@ test("CRLF anchors preserve supplied newlines and literal deletion boundaries", 
       ],
     ] satisfies Array<[TargetedEdit[], string]>) {
       // Cases reuse one mixed-EOL file; finish verifying each exact byte transition first.
-      // oxlint-disable-next-line no-await-in-loop
       await verifyCrlfReplacement(edits, expected);
     }
     await writeFile(path, "first\r\nsecond\r\nEND\r\n");
@@ -1235,7 +1265,7 @@ test("CRLF anchors preserve supplied newlines and literal deletion boundaries", 
   });
 });
 
-test("edits to an unterminated last line add lines with that file's line ending", async () => {
+nodeTest("edits to an unterminated last line add lines with that file's line ending", async () => {
   await inTemporaryDirectory(async (directory) => {
     const cases = [
       { path: "exact-crlf.txt", ending: "\r\n", oldText: "second", strategy: "exact" },
@@ -1287,26 +1317,29 @@ test("edits to an unterminated last line add lines with that file's line ending"
   });
 });
 
-test("replace-all uses local endings and the fallback on an unterminated last line", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const path = join(directory, "mixed.txt");
-    await writeFile(path, "old\r\nold\r\nold\nold");
-    const result = await replaceTextInFiles(
-      { files: [{ path, edits: [{ oldText: "old", newText: "new\nline", all: true }] }] },
-      directory,
-    );
-    assert.equal(result.details.error, undefined, result.summary);
-    assert.deepEqual(result.details.modifiedFiles, [await realpath(path)]);
-    assert.equal(result.details.files[0]?.status, "applied");
-    assert.equal(result.details.files[0]?.matches[0]?.replacements, 4);
-    assert.equal(
-      await readFile(path, "utf8"),
-      "new\r\nline\r\nnew\r\nline\r\nnew\nline\nnew\r\nline",
-    );
-  });
-});
+nodeTest(
+  "replace-all uses local endings and the fallback on an unterminated last line",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const path = join(directory, "mixed.txt");
+      await writeFile(path, "old\r\nold\r\nold\nold");
+      const result = await replaceTextInFiles(
+        { files: [{ path, edits: [{ oldText: "old", newText: "new\nline", all: true }] }] },
+        directory,
+      );
+      assert.equal(result.details.error, undefined, result.summary);
+      assert.deepEqual(result.details.modifiedFiles, [await realpath(path)]);
+      assert.equal(result.details.files[0]?.status, "applied");
+      assert.equal(result.details.files[0].matches[0]?.replacements, 4);
+      assert.equal(
+        await readFile(path, "utf8"),
+        "new\r\nline\r\nnew\r\nline\r\nnew\nline\nnew\r\nline",
+      );
+    });
+  },
+);
 
-test("targeted edits reject newly leading U+FEFF without changing bytes", async () => {
+nodeTest("targeted edits reject newly leading U+FEFF without changing bytes", async () => {
   await inTemporaryDirectory(async (directory) => {
     const withBom = join(directory, "with-bom.txt");
     const withoutBom = join(directory, "without-bom.txt");
@@ -1336,7 +1369,7 @@ test("targeted edits reject newly leading U+FEFF without changing bytes", async 
   });
 });
 
-test("targeted edits match internal U+FEFF anchors exactly", () => {
+nodeTest("targeted edits match internal U+FEFF anchors exactly", () => {
   assert.equal(
     applyTargetedEdits(
       "p|\uFEFFtoken|s",
@@ -1355,7 +1388,7 @@ test("targeted edits match internal U+FEFF anchors exactly", () => {
   );
 });
 
-test("targeted edits reject deletion that would silently remove relocated U+FEFF", async () => {
+nodeTest("targeted edits reject deletion that would silently remove relocated U+FEFF", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "relocated-feff.txt");
     const original = Buffer.from("x\uFEFFy");
@@ -1373,7 +1406,7 @@ test("targeted edits reject deletion that would silently remove relocated U+FEFF
   });
 });
 
-test("targeted edits preserve a second leading U+FEFF content character", async () => {
+nodeTest("targeted edits preserve a second leading U+FEFF content character", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "double-bom.txt");
     const bom = Buffer.from([0xef, 0xbb, 0xbf]);
@@ -1388,7 +1421,7 @@ test("targeted edits preserve a second leading U+FEFF content character", async 
   });
 });
 
-test(
+nodeTest(
   "non-regular and dangling-link targets are refused",
   { skip: process.platform === "win32" },
   async () => {
@@ -1416,7 +1449,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "editing through a symbolic link preserves the link",
   { skip: process.platform === "win32" },
   async () => {
@@ -1437,7 +1470,7 @@ test(
   },
 );
 
-test("existing file mode is preserved", { skip: process.platform === "win32" }, async () => {
+nodeTest("existing file mode is preserved", { skip: process.platform === "win32" }, async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "script.sh");
     await writeFile(path, "echo before\n");
@@ -1452,7 +1485,7 @@ test("existing file mode is preserved", { skip: process.platform === "win32" }, 
   });
 });
 
-test(
+nodeTest(
   "setuid and setgid files are rejected without metadata loss",
   { skip: process.platform === "win32" },
   async () => {
@@ -1478,7 +1511,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "capability-bearing Linux files are rejected unchanged",
   { skip: process.platform !== "linux" },
   async (t) => {
@@ -1520,7 +1553,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "atomic replacement preserves macOS extended attributes and ACLs",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -1549,7 +1582,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "macOS replacement support requires the native ACL command",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -1575,7 +1608,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "macOS creates inherit the final parent's ACL at the native depth",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -1634,7 +1667,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "macOS replacements preserve source ACLs instead of inheriting current parent rules",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -1686,7 +1719,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "macOS creates refuse inherited ACLs that prevent content verification",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -1710,7 +1743,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "macOS cancellation after private create preparation leaves no targets or private files",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -1767,7 +1800,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "macOS cancellation as an ACL reply arrives waits for the helper to exit before cleanup",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -2026,7 +2059,7 @@ async function verifyPrivateCopy(
   });
 }
 
-test(
+nodeTest(
   "native copy cleanup removes cancelled private copies after the copy process exits",
   { skip: !new Set(["darwin", "linux", "android"]).has(process.platform) },
   async (t) => {
@@ -2040,7 +2073,6 @@ test(
     ] as const) {
       // Each case replaces process-wide child-process and syscall implementations; finish
       // restoring them before the next case.
-      // oxlint-disable-next-line no-await-in-loop
       await t.test(`${flow}: ${scenario}`, async () => {
         await verifyPrivateCopy(flow, scenario);
       });
@@ -2048,13 +2080,12 @@ test(
   },
 );
 
-test(
+nodeTest(
   "Android nested move publication removes cancelled private copies after the copy process exits",
   { skip: process.platform !== "android" },
   async (t) => {
     for (const scenario of ["cancel-during-copy", "cancel-after-copy"] as const) {
       // Each case replaces process-wide child-process and syscall implementations.
-      // oxlint-disable-next-line no-await-in-loop
       await t.test(scenario, async () => {
         await verifyPrivateCopy("nested-publication", scenario);
       });
@@ -2062,7 +2093,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "Linux native copy preserves ACLs/xattrs and rejects xattr failures before publishing",
   { skip: process.platform !== "linux" },
   async (t) => {
@@ -2140,7 +2171,7 @@ test(
 );
 
 for (const withoutPrefix of [false, true]) {
-  test(
+  nodeTest(
     `Android atomic replacement finds Termux tools ${withoutPrefix ? "without" : "with"} PREFIX`,
     { skip: process.platform !== "android" },
     async () => {
@@ -2208,12 +2239,14 @@ for (const withoutPrefix of [false, true]) {
           paths.map(async (path, index) => {
             assert.equal(await readFile(path, "utf8"), "after\n");
             const after = await metadata(path);
+            const original = before[index];
+            assert(original !== undefined);
             assert.deepEqual(
               [after.stats.uid, after.stats.gid, after.stats.mode],
-              [before[index].stats.uid, before[index].stats.gid, before[index].stats.mode],
+              [original.stats.uid, original.stats.gid, original.stats.mode],
             );
-            assert.equal(after.acl, before[index].acl);
-            assert.equal(after.xattrs, before[index].xattrs);
+            assert.equal(after.acl, original.acl);
+            assert.equal(after.xattrs, original.xattrs);
           }),
         );
       });
@@ -2221,7 +2254,7 @@ for (const withoutPrefix of [false, true]) {
   );
 }
 
-test(
+nodeTest(
   "Android reports a missing tool without requiring one particular path",
   { skip: process.platform !== "android" },
   async () => {
@@ -2268,7 +2301,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "Android refuses extended metadata that Termux cp cannot preserve",
   { skip: process.platform !== "android" },
   async () => {
@@ -2300,7 +2333,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "read-only files are refused even when their directory permits replacement",
   {
     skip:
@@ -2325,7 +2358,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "hard-linked files are refused without changing either name",
   { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
@@ -2348,7 +2381,7 @@ test(
   },
 );
 
-test("non-UTF-8 and NUL-containing files are refused unchanged", async () => {
+nodeTest("non-UTF-8 and NUL-containing files are refused unchanged", async () => {
   await inTemporaryDirectory(async (directory) => {
     const invalid = join(directory, "invalid.txt");
     const nul = join(directory, "nul.txt");
@@ -2374,7 +2407,7 @@ test("non-UTF-8 and NUL-containing files are refused unchanged", async () => {
   });
 });
 
-test("concurrent calls on one path serialize through Pi's mutation queue", async () => {
+nodeTest("concurrent calls on one path serialize through Pi's mutation queue", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     await writeFile(path, "one\n");
@@ -2394,87 +2427,92 @@ test("concurrent calls on one path serialize through Pi's mutation queue", async
   });
 });
 
-test("focused single and batch mutations register in invocation order despite delayed key discovery", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const path = join(directory, "file.txt");
-    const sibling = join(directory, "sibling.txt");
-    async function verifyInvocationOrder(firstBatch: boolean, secondBatch: boolean): Promise<void> {
-      await writeFile(path, "one\n");
-      await writeFile(sibling, "one\n");
-      const canonical = await realpath(path);
-      const discovered = deferred();
-      const release = deferred();
-      let held = false;
-      await withRacingFileSystem(
-        (mock) => {
-          const originalRealpath = nodeFs.promises.realpath;
-          mock.method(
-            nodeFs.promises,
-            "realpath",
-            async (...args: Readonly<Parameters<typeof originalRealpath>>) => {
-              if (filePath(args[0]) === path || filePath(args[0]) === canonical) {
-                if (!held) {
-                  held = true;
-                  discovered.resolve();
-                  await release.promise;
+nodeTest(
+  "focused single and batch mutations register in invocation order despite delayed key discovery",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const path = join(directory, "file.txt");
+      const sibling = join(directory, "sibling.txt");
+      async function verifyInvocationOrder(
+        firstBatch: boolean,
+        secondBatch: boolean,
+      ): Promise<void> {
+        await writeFile(path, "one\n");
+        await writeFile(sibling, "one\n");
+        const canonical = await realpath(path);
+        const discovered = deferred();
+        const release = deferred();
+        let held = false;
+        await withRacingFileSystem(
+          (mock) => {
+            const originalRealpath = nodeFs.promises.realpath;
+            mock.method(
+              nodeFs.promises,
+              "realpath",
+              async (...args: Readonly<Parameters<typeof originalRealpath>>) => {
+                if (filePath(args[0]) === path || filePath(args[0]) === canonical) {
+                  if (!held) {
+                    held = true;
+                    discovered.resolve();
+                    await release.promise;
+                  }
+                  return canonical;
                 }
-                return canonical;
-              }
-              return originalRealpath(...args);
-            },
-          );
-        },
-        async () => {
-          const first = { path, edits: [{ oldText: "one", newText: "two" }] };
-          const second = { path, edits: [{ oldText: "two", newText: "three" }] };
-          const firstCall = replaceTextInFiles(
-            { files: firstBatch ? [first, { ...first, path: sibling }] : [first] },
-            directory,
-          );
-          await discovered.promise;
-          const secondCall = replaceTextInFiles(
-            {
-              files: secondBatch
-                ? [
-                    second,
-                    {
-                      path: sibling,
-                      edits: [{ oldText: firstBatch ? "two" : "one", newText: "three" }],
-                    },
-                  ]
-                : [second],
-            },
-            directory,
-          );
-          // Drain the second call's ready key lookups while the first lookup remains held.
-          const finished = Promise.allSettled([firstCall, secondCall]);
-          await new Promise<void>((resolve) => {
-            setImmediate(resolve);
-          });
-          release.resolve();
-          const results = await withTimeout(finished, "ordered single/batch calls");
-          for (const result of results) {
-            assert.ok(result.status === "fulfilled");
-            assert.equal(result.value.details.error, undefined);
-          }
-          assert.equal(await readFile(path, "utf8"), "three\n");
-          assert.equal(await readFile(sibling, "utf8"), secondBatch ? "three\n" : "two\n");
-        },
-      );
-    }
-    for (const [firstBatch, secondBatch] of [
-      [false, true],
-      [true, false],
-      [true, true],
-    ]) {
-      // Delayed discovery scenarios share paths and global syscall interception, so their teardown must finish first.
-      // oxlint-disable-next-line no-await-in-loop
-      await verifyInvocationOrder(firstBatch, secondBatch);
-    }
-  });
-});
+                return originalRealpath(...args);
+              },
+            );
+          },
+          async () => {
+            const first = { path, edits: [{ oldText: "one", newText: "two" }] };
+            const second = { path, edits: [{ oldText: "two", newText: "three" }] };
+            const firstCall = replaceTextInFiles(
+              { files: firstBatch ? [first, { ...first, path: sibling }] : [first] },
+              directory,
+            );
+            await discovered.promise;
+            const secondCall = replaceTextInFiles(
+              {
+                files: secondBatch
+                  ? [
+                      second,
+                      {
+                        path: sibling,
+                        edits: [{ oldText: firstBatch ? "two" : "one", newText: "three" }],
+                      },
+                    ]
+                  : [second],
+              },
+              directory,
+            );
+            // Drain the second call's ready key lookups while the first lookup remains held.
+            const finished = Promise.allSettled([firstCall, secondCall]);
+            await new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            });
+            release.resolve();
+            const results = await withTimeout(finished, "ordered single/batch calls");
+            for (const result of results) {
+              assert.ok(result.status === "fulfilled");
+              assert.equal(result.value.details.error, undefined);
+            }
+            assert.equal(await readFile(path, "utf8"), "three\n");
+            assert.equal(await readFile(sibling, "utf8"), secondBatch ? "three\n" : "two\n");
+          },
+        );
+      }
+      for (const [firstBatch, secondBatch] of [
+        [false, true],
+        [true, false],
+        [true, true],
+      ] as const) {
+        // Delayed discovery scenarios share paths and global syscall interception, so their teardown must finish first.
+        await verifyInvocationOrder(firstBatch, secondBatch);
+      }
+    });
+  },
+);
 
-test("a blocked batch reserves its later keys without blocking unrelated files", async () => {
+nodeTest("a blocked batch reserves its later keys without blocking unrelated files", async () => {
   await inTemporaryDirectory(async (directory) => {
     const a = join(directory, "a.txt");
     const b = join(directory, "b.txt");
@@ -2522,7 +2560,7 @@ test("a blocked batch reserves its later keys without blocking unrelated files",
   });
 });
 
-test(
+nodeTest(
   "real and symbolic paths share Pi's mutation queue",
   { skip: process.platform === "win32" },
   async () => {
@@ -2549,7 +2587,7 @@ test(
   },
 );
 
-test("replacement rejects a canonical parent alias swapped before rename", async () => {
+nodeTest("replacement rejects a canonical parent alias swapped before rename", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalParent = join(directory, "original");
     const otherParent = join(directory, "other");
@@ -2578,7 +2616,7 @@ test("replacement rejects a canonical parent alias swapped before rename", async
   });
 });
 
-test("replacement rejects a final target changed into a symbolic link", async () => {
+nodeTest("replacement rejects a final target changed into a symbolic link", async () => {
   await inTemporaryDirectory(async (directory) => {
     const target = join(directory, "target.txt");
     const saved = join(directory, "saved.txt");
@@ -2602,7 +2640,7 @@ test("replacement rejects a final target changed into a symbolic link", async ()
   });
 });
 
-test(
+nodeTest(
   "replacement rejects an extended-attribute change after the recovery link",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -2637,7 +2675,7 @@ test(
   },
 );
 
-test("replacement honors an abort from the final rename hook", async () => {
+nodeTest("replacement honors an abort from the final rename hook", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     await writeFile(path, "before\n");
@@ -2655,7 +2693,7 @@ test("replacement honors an abort from the final rename hook", async () => {
   });
 });
 
-test("replacement cleanup leaves a swapped-in temporary file untouched", async () => {
+nodeTest("replacement cleanup leaves a swapped-in temporary file untouched", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     const victim = join(directory, "victim.txt");
@@ -2685,7 +2723,7 @@ test("replacement cleanup leaves a swapped-in temporary file untouched", async (
   });
 });
 
-test(
+nodeTest(
   "post-rename read failures report uncertain commit state and retain recovery",
   {
     skip:
@@ -2718,7 +2756,7 @@ test(
   },
 );
 
-test("recovery-side writes retain both versions without automatic rollback", async () => {
+nodeTest("recovery-side writes retain both versions without automatic rollback", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     await writeFile(path, "before\n");
@@ -2742,7 +2780,7 @@ test("recovery-side writes retain both versions without automatic rollback", asy
   });
 });
 
-test("a target replaced at the former rollback boundary is never overwritten", async () => {
+nodeTest("a target replaced at the former rollback boundary is never overwritten", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     const external = join(directory, "external.txt");
@@ -2771,7 +2809,7 @@ test("a target replaced at the former rollback boundary is never overwritten", a
   });
 });
 
-test("simultaneous old-inode and new-inode writers are both retained", async () => {
+nodeTest("simultaneous old-inode and new-inode writers are both retained", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     const external = join(directory, "external.txt");
@@ -2798,7 +2836,7 @@ test("simultaneous old-inode and new-inode writers are both retained", async () 
   });
 });
 
-test(
+nodeTest(
   "post-commit cleanup and sync failures return explicit warnings",
   {
     skip:
@@ -2837,7 +2875,7 @@ test(
   },
 );
 
-test("recovery cleanup leaves a swapped-in file untouched", async () => {
+nodeTest("recovery cleanup leaves a swapped-in file untouched", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     const victim = join(directory, "victim.txt");
@@ -2866,7 +2904,7 @@ test("recovery cleanup leaves a swapped-in file untouched", async () => {
   });
 });
 
-test("recovery cleanup preserves writes made after commit verification", async () => {
+nodeTest("recovery cleanup preserves writes made after commit verification", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     await writeFile(path, "before\n");
@@ -2885,7 +2923,7 @@ test("recovery cleanup preserves writes made after commit verification", async (
   });
 });
 
-test("diff statistics count content that resembles patch headers", async () => {
+nodeTest("diff statistics count content that resembles patch headers", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "patch-like.txt");
     await writeFile(path, "--before\n");
@@ -2900,7 +2938,7 @@ test("diff statistics count content that resembles patch headers", async () => {
   });
 });
 
-test("sparse edits in a 2200-line file retain a useful diff", async () => {
+nodeTest("sparse edits in a 2200-line file retain a useful diff", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "large.txt");
     const original = Array.from({ length: 2_200 }, (_, index) => `line ${index}\n`).join("");
@@ -2917,7 +2955,7 @@ test("sparse edits in a 2200-line file retain a useful diff", async () => {
   });
 });
 
-test("generated patches larger than 32 KiB remain complete and applicable", async () => {
+nodeTest("generated patches larger than 32 KiB remain complete and applicable", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "large.txt");
     const before = Array.from({ length: 120 }, (_, index) => `${index}:${"a".repeat(300)}\n`).join(
@@ -2934,7 +2972,7 @@ test("generated patches larger than 32 KiB remain complete and applicable", asyn
   });
 });
 
-test("many-line rewrites skip quadratic diff work even when byte size is small", async () => {
+nodeTest("many-line rewrites skip quadratic diff work even when byte size is small", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "many-lines.txt");
     await writeFile(path, "a\n".repeat(5_000));
@@ -2951,7 +2989,7 @@ test("many-line rewrites skip quadratic diff work even when byte size is small",
   });
 });
 
-test("adversarial diff work finishes within a bounded subprocess", () => {
+nodeTest("adversarial diff work finishes within a bounded subprocess", () => {
   const result = spawnSync(
     process.execPath,
     [
@@ -2979,28 +3017,31 @@ test("adversarial diff work finishes within a bounded subprocess", () => {
   assert.equal(result.stdout.trim(), "bounded");
 });
 
-test("batch summary omits aggregate counts when one changed diff count is unavailable", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    await writeFile(join(directory, "small.txt"), "a\n");
-    await writeFile(join(directory, "large.txt"), "a\n".repeat(5_000));
+nodeTest(
+  "batch summary omits aggregate counts when one changed diff count is unavailable",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      await writeFile(join(directory, "small.txt"), "a\n");
+      await writeFile(join(directory, "large.txt"), "a\n".repeat(5_000));
 
-    const result = await writeFiles(
-      {
-        files: [
-          { path: "small.txt", content: "b\n", mode: "replace" },
-          { path: "large.txt", content: "b\n".repeat(5_000), mode: "replace" },
-        ],
-      },
-      directory,
-    );
+      const result = await writeFiles(
+        {
+          files: [
+            { path: "small.txt", content: "b\n", mode: "replace" },
+            { path: "large.txt", content: "b\n".repeat(5_000), mode: "replace" },
+          ],
+        },
+        directory,
+      );
 
-    assert.doesNotMatch(result.summary, /\(\+\d+\/-\d+\)/);
-    assert.ok("files" in result.details);
-    assert.equal(result.details.files[1]?.addedLines, undefined);
-  });
-});
+      assert.doesNotMatch(result.summary, /\(\+\d+\/-\d+\)/);
+      assert.ok("files" in result.details);
+      assert.equal(result.details.files[1]?.addedLines, undefined);
+    });
+  },
+);
 
-test("large rewrites skip expensive diff computation", async () => {
+nodeTest("large rewrites skip expensive diff computation", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "large.txt");
     const original = `${"a".repeat(2_100_000)}\n`;
@@ -3018,7 +3059,7 @@ test("large rewrites skip expensive diff computation", async () => {
   });
 });
 
-test("snapshot validation detects stale no-change plans", async () => {
+nodeTest("snapshot validation detects stale no-change plans", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     await writeFile(path, "same\n");
@@ -3029,7 +3070,7 @@ test("snapshot validation detects stale no-change plans", async () => {
   });
 });
 
-test("aborted creates remove parent directories created by the call", async () => {
+nodeTest("aborted creates remove parent directories created by the call", async () => {
   await inTemporaryDirectory(async (directory) => {
     const firstParent = join(directory, "a");
     const path = join(firstParent, "b", "file.txt");
@@ -3048,7 +3089,7 @@ test("aborted creates remove parent directories created by the call", async () =
   });
 });
 
-test("aborted calls and identical rewrites have explicit non-mutating outcomes", async () => {
+nodeTest("aborted calls and identical rewrites have explicit non-mutating outcomes", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     await writeFile(path, "same\n");
@@ -3074,7 +3115,7 @@ test("aborted calls and identical rewrites have explicit non-mutating outcomes",
   });
 });
 
-test("literal Unicode spaces and leading @ path segments are never rewritten", async () => {
+nodeTest("literal Unicode spaces and leading @ path segments are never rewritten", async () => {
   await inTemporaryDirectory(async (directory) => {
     const unicodePath = join(directory, "a\u00a0b.txt");
     const asciiPath = join(directory, "a b.txt");
@@ -3110,7 +3151,7 @@ test("literal Unicode spaces and leading @ path segments are never rewritten", a
   });
 });
 
-test("file URL-shaped paths are always literal", async () => {
+nodeTest("file URL-shaped paths are always literal", async () => {
   await inTemporaryDirectory(async (directory) => {
     const literalDirectory = join(directory, "file:", "host");
     const literalPath = join(literalDirectory, "x.txt");
@@ -3134,7 +3175,7 @@ test("file URL-shaped paths are always literal", async () => {
   });
 });
 
-test("insert before/after anchors without replacing them", () => {
+nodeTest("insert before/after anchors without replacing them", () => {
   const after = applyTargetedEdits(
     'import fs from "node:fs";\n',
     [
@@ -3156,7 +3197,7 @@ test("insert before/after anchors without replacing them", () => {
   assert.equal(before.text, "// entry\nexport function main() {}\n");
 });
 
-test("insert all applies at every match and empty insert text fails", () => {
+nodeTest("insert all applies at every match and empty insert text fails", () => {
   const result = applyTargetedEdits(
     "item\nitem\n",
     [{ oldText: "item", newText: "!", insert: "after", all: true }],
@@ -3171,7 +3212,7 @@ test("insert all applies at every match and empty insert text fails", () => {
   );
 });
 
-test("multi-file batch plans then writes all files", async () => {
+nodeTest("multi-file batch plans then writes all files", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "a.ts"), "const a = 1;\n");
     await writeFile(join(directory, "b.ts"), "const b = 1;\n");
@@ -3201,7 +3242,7 @@ test("multi-file batch plans then writes all files", async () => {
   });
 });
 
-test("multi-file batch publishes sibling creates under one missing root together", async () => {
+nodeTest("multi-file batch publishes sibling creates under one missing root together", async () => {
   await inTemporaryDirectory(async (directory) => {
     const result = await writeFiles(
       {
@@ -3233,7 +3274,7 @@ test("multi-file batch publishes sibling creates under one missing root together
   });
 });
 
-test(
+nodeTest(
   "batch failure lists completed out-of-order nested creates, failed, and unattempted paths",
   { skip: process.platform === "android" },
   async () => {
@@ -3298,7 +3339,7 @@ test(
   },
 );
 
-test("progress callback failures still report files already committed", async () => {
+nodeTest("progress callback failures still report files already committed", async () => {
   await inTemporaryDirectory(async (directory) => {
     await assertFailure(
       writeFiles(
@@ -3329,7 +3370,7 @@ test("progress callback failures still report files already committed", async ()
   });
 });
 
-test(
+nodeTest(
   "a claimed but unverified nested create is not reported as completed",
   { skip: process.platform === "android" },
   async () => {
@@ -3382,7 +3423,7 @@ test(
   },
 );
 
-test("nested create staging failures are detected before earlier batch writes", async () => {
+nodeTest("nested create staging failures are detected before earlier batch writes", async () => {
   await inTemporaryDirectory(async (directory) => {
     const sentinel = join(directory, "sentinel.txt");
     await writeFile(sentinel, "old\n");
@@ -3410,7 +3451,7 @@ test("nested create staging failures are detected before earlier batch writes", 
   });
 });
 
-test("sibling creates reject alias-spelled missing roots before publication", async (t) => {
+nodeTest("sibling creates reject alias-spelled missing roots before publication", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     const probe = join(directory, "probe");
     let caseInsensitive = false;
@@ -3445,7 +3486,7 @@ test("sibling creates reject alias-spelled missing roots before publication", as
   });
 });
 
-test("multi-file batch writes nothing when a later file cannot be planned", async () => {
+nodeTest("multi-file batch writes nothing when a later file cannot be planned", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "a.ts"), "const a = 1;\n");
     await writeFile(join(directory, "b.ts"), "const b = 1;\n");
@@ -3469,7 +3510,7 @@ test("multi-file batch writes nothing when a later file cannot be planned", asyn
   });
 });
 
-test("ambiguous batch anchors identify the failing file and edit", async () => {
+nodeTest("ambiguous batch anchors identify the failing file and edit", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "a.txt"), "first\n");
     await writeFile(join(directory, "b.txt"), "target\ntarget\n");
@@ -3495,7 +3536,7 @@ test("ambiguous batch anchors identify the failing file and edit", async () => {
   });
 });
 
-test("multi-file batch rejects duplicate resolved paths", async () => {
+nodeTest("multi-file batch rejects duplicate resolved paths", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "a.ts"), "x\n");
     await assertFailure(
@@ -3514,7 +3555,7 @@ test("multi-file batch rejects duplicate resolved paths", async () => {
   });
 });
 
-test("insert does not guess that adjacent text makes the request idempotent", () => {
+nodeTest("insert does not guess that adjacent text makes the request idempotent", () => {
   const result = applyTargetedEdits(
     'import fs from "node:fs";\nimport path from "node:path";\n',
     [
@@ -3532,7 +3573,7 @@ test("insert does not guess that adjacent text makes the request idempotent", ()
   );
 });
 
-test("insert all rejects overlapping normalized anchor windows", () => {
+nodeTest("insert all rejects overlapping normalized anchor windows", () => {
   assert.throws(
     () =>
       applyTargetedEdits(
@@ -3544,7 +3585,7 @@ test("insert all rejects overlapping normalized anchor windows", () => {
   );
 });
 
-test("multi-file batch rejects symlink aliases of the same file", async () => {
+nodeTest("multi-file batch rejects symlink aliases of the same file", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "a.txt"), "x\n");
     await symlink(join(directory, "a.txt"), join(directory, "alias.txt"));
@@ -3565,42 +3606,45 @@ test("multi-file batch rejects symlink aliases of the same file", async () => {
   });
 });
 
-test("multi-file batch rejects case-alias paths of the same file on case-insensitive volumes", async (t) => {
-  await inTemporaryDirectory(async (directory) => {
-    const lower = join(directory, "a.txt");
-    await writeFile(lower, "x\n");
-    const upper = join(directory, "A.TXT");
-    // On case-insensitive APFS, upper is the same inode; on case-sensitive FS this is a second file.
-    let sameFile = false;
-    try {
-      const { statSync } = await import("node:fs");
-      sameFile = statSync(lower).ino === statSync(upper).ino;
-    } catch {
-      sameFile = false;
-    }
-    if (!sameFile) {
-      t.skip("Requires a case-insensitive filesystem");
-      return;
-    }
+nodeTest(
+  "multi-file batch rejects case-alias paths of the same file on case-insensitive volumes",
+  async (t) => {
+    await inTemporaryDirectory(async (directory) => {
+      const lower = join(directory, "a.txt");
+      await writeFile(lower, "x\n");
+      const upper = join(directory, "A.TXT");
+      // On case-insensitive APFS, upper is the same inode; on case-sensitive FS this is a second file.
+      let sameFile = false;
+      try {
+        const { statSync } = await import("node:fs");
+        sameFile = statSync(lower).ino === statSync(upper).ino;
+      } catch {
+        sameFile = false;
+      }
+      if (!sameFile) {
+        t.skip("Requires a case-insensitive filesystem");
+        return;
+      }
 
-    await assertFailure(
-      () =>
-        replaceTextInFiles(
-          {
-            files: [
-              { path: "a.txt", edits: [{ oldText: "x", newText: "y" }] },
-              { path: "A.TXT", edits: [{ oldText: "x", newText: "z" }] },
-            ],
-          },
-          directory,
-        ),
-      /same file/,
-    );
-    assert.equal(await readFile(lower, "utf8"), "x\n");
-  });
-});
+      await assertFailure(
+        () =>
+          replaceTextInFiles(
+            {
+              files: [
+                { path: "a.txt", edits: [{ oldText: "x", newText: "y" }] },
+                { path: "A.TXT", edits: [{ oldText: "x", newText: "z" }] },
+              ],
+            },
+            directory,
+          ),
+        /same file/,
+      );
+      assert.equal(await readFile(lower, "utf8"), "x\n");
+    });
+  },
+);
 
-test(
+nodeTest(
   "multi-file batch refuses hard-linked targets during plan before any write",
   { skip: process.platform === "android" },
   async () => {
@@ -3632,7 +3676,7 @@ test(
   },
 );
 
-test("missing text with no close match shows the file head", () => {
+nodeTest("missing text with no close match shows the file head", () => {
   assert.throws(
     () =>
       applyTargetedEdits(
@@ -3644,7 +3688,7 @@ test("missing text with no close match shows the file head", () => {
   );
 });
 
-test("insert all applies at anchors with adjacent short text", () => {
+nodeTest("insert all applies at anchors with adjacent short text", () => {
   const result = applyTargetedEdits(
     "x!\ny\nx\n",
     [{ oldText: "x", newText: "!", insert: "after", all: true }],
@@ -3654,7 +3698,7 @@ test("insert all applies at anchors with adjacent short text", () => {
   assert.equal(result.text, "x!!\ny\nx!\n");
 });
 
-test("insert all applies even when identical text is already adjacent", () => {
+nodeTest("insert all applies even when identical text is already adjacent", () => {
   const result = applyTargetedEdits(
     "x<!--done-->\ny\nx\n",
     [{ oldText: "x", newText: "<!--done-->", insert: "after", all: true }],
@@ -3663,7 +3707,7 @@ test("insert all applies even when identical text is already adjacent", () => {
   assert.equal(result.text, "x<!--done--><!--done-->\ny\nx<!--done-->\n");
 });
 
-test("short insert after shared prefix is not false-already-applied", () => {
+nodeTest("short insert after shared prefix is not false-already-applied", () => {
   const result = applyTargetedEdits(
     "test\n",
     [{ oldText: "tes", newText: "t", insert: "after" }],
@@ -3672,14 +3716,14 @@ test("short insert after shared prefix is not false-already-applied", () => {
   assert.equal(result.text, "testt\n");
 });
 
-test("exact overlapping matches are ambiguous without all", () => {
+nodeTest("exact overlapping matches are ambiguous without all", () => {
   assert.throws(
     () => applyTargetedEdits("banana\n", [{ oldText: "ana", newText: "X" }], "overlap.txt"),
     /matched 2 locations/,
   );
 });
 
-test("exact overlapping all-matches are rejected", () => {
+nodeTest("exact overlapping all-matches are rejected", () => {
   assert.throws(
     () =>
       applyTargetedEdits("banana\n", [{ oldText: "ana", newText: "X", all: true }], "overlap.txt"),
@@ -3687,71 +3731,77 @@ test("exact overlapping all-matches are rejected", () => {
   );
 });
 
-test("multi-file batch rejects create aliases through symlink parents before any write", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const real = join(directory, "real");
-    const alias = join(directory, "alias");
-    await mkdir(real);
-    await symlink(real, alias);
+nodeTest(
+  "multi-file batch rejects create aliases through symlink parents before any write",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const real = join(directory, "real");
+      const alias = join(directory, "alias");
+      await mkdir(real);
+      await symlink(real, alias);
 
-    await assertFailure(
-      () =>
-        writeFiles(
-          {
-            files: [
-              { path: join(real, "new.txt"), content: "first\n", mode: "create" },
-              { path: join(alias, "new.txt"), content: "second\n", mode: "create" },
-            ],
-          },
-          directory,
-        ),
-      /same file/,
-    );
+      await assertFailure(
+        () =>
+          writeFiles(
+            {
+              files: [
+                { path: join(real, "new.txt"), content: "first\n", mode: "create" },
+                { path: join(alias, "new.txt"), content: "second\n", mode: "create" },
+              ],
+            },
+            directory,
+          ),
+        /same file/,
+      );
 
-    await assert.rejects(() => readFile(join(real, "new.txt"), "utf8"), /ENOENT/);
-  });
-});
+      await assert.rejects(() => readFile(join(real, "new.txt"), "utf8"), /ENOENT/);
+    });
+  },
+);
 
-test("multi-file batch rejects Unicode case-fold aliases of the same missing path", async (t) => {
-  await inTemporaryDirectory(async (directory) => {
-    const plain = join(directory, "s");
-    const longS = join(directory, "ſ");
-    let aliases = false;
-    try {
-      await writeFile(plain, "probe\n");
-      const { statSync } = await import("node:fs");
-      aliases = statSync(plain).ino === statSync(longS).ino;
-      await unlink(plain);
-    } catch {
+nodeTest(
+  "multi-file batch rejects Unicode case-fold aliases of the same missing path",
+  async (t) => {
+    await inTemporaryDirectory(async (directory) => {
+      const plain = join(directory, "s");
+      const longS = join(directory, "ſ");
+      let aliases = false;
       try {
+        await writeFile(plain, "probe\n");
+        const { statSync } = await import("node:fs");
+        aliases = statSync(plain).ino === statSync(longS).ino;
         await unlink(plain);
       } catch {
-        /* ignore */
+        try {
+          await unlink(plain);
+        } catch {
+          /* ignore */
+        }
       }
-    }
-    if (!aliases) {
-      t.skip("Requires a filesystem that aliases these Unicode spellings");
-      return;
-    }
+      if (!aliases) {
+        t.skip("Requires a filesystem that aliases these Unicode spellings");
+        return;
+      }
 
-    await assertFailure(
-      () =>
-        writeFiles(
-          {
-            files: [
-              { path: plain, content: "first\n", mode: "create" },
-              { path: longS, content: "second\n", mode: "create" },
-            ],
-          },
-          directory,
-        ),
-      /same file/,
-    );
-    await assert.rejects(() => readFile(plain, "utf8"), /ENOENT/);
-  });
-});
+      await assertFailure(
+        () =>
+          writeFiles(
+            {
+              files: [
+                { path: plain, content: "first\n", mode: "create" },
+                { path: longS, content: "second\n", mode: "create" },
+              ],
+            },
+            directory,
+          ),
+        /same file/,
+      );
+      await assert.rejects(() => readFile(plain, "utf8"), /ENOENT/);
+    });
+  },
+);
 
-test(
+nodeTest(
   "Linux keeps distinct NFC and NFD missing paths",
   { skip: process.platform !== "linux" },
   async () => {
@@ -3773,7 +3823,7 @@ test(
   },
 );
 
-test("multi-file batch rejects uppercase/lowercase sharp-S aliases", async (t) => {
+nodeTest("multi-file batch rejects uppercase/lowercase sharp-S aliases", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     const upper = join(directory, "ẞ.txt");
     const lower = join(directory, "ß.txt");
@@ -3812,7 +3862,7 @@ test("multi-file batch rejects uppercase/lowercase sharp-S aliases", async (t) =
   });
 });
 
-test("exact match wins in mixed-line-ending files", () => {
+nodeTest("exact match wins in mixed-line-ending files", () => {
   const result = applyTargetedEdits(
     "A\nB\n---\r\nA\r\nB\r\n",
     [{ oldText: "A\nB\n", newText: "X\n" }],
@@ -3822,7 +3872,7 @@ test("exact match wins in mixed-line-ending files", () => {
   assert.equal(result.matches[0]?.strategy, "exact");
 });
 
-test("multi-file batch rejects case-alias creates of the same missing path", async (t) => {
+nodeTest("multi-file batch rejects case-alias creates of the same missing path", async (t) => {
   await inTemporaryDirectory(async (directory) => {
     // On case-sensitive volumes this creates two different paths; skip if both can coexist.
     const lower = join(directory, "new.txt");
@@ -3863,57 +3913,63 @@ test("multi-file batch rejects case-alias creates of the same missing path", asy
   });
 });
 
-test("multi-file batch rejects create under an existing file parent before any write", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const first = join(directory, "first.txt");
-    const blocker = join(directory, "blocker");
-    await writeFile(first, "old\n");
-    await writeFile(blocker, "file\n");
+nodeTest(
+  "multi-file batch rejects create under an existing file parent before any write",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const first = join(directory, "first.txt");
+      const blocker = join(directory, "blocker");
+      await writeFile(first, "old\n");
+      await writeFile(blocker, "file\n");
 
-    await assertFailure(
-      () =>
-        writeFiles(
-          {
-            files: [
-              { path: "first.txt", content: "new\n", mode: "replace" },
-              { path: "blocker/child.txt", content: "child\n", mode: "create" },
-            ],
-          },
-          directory,
-        ),
-      /not a directory/,
-    );
+      await assertFailure(
+        () =>
+          writeFiles(
+            {
+              files: [
+                { path: "first.txt", content: "new\n", mode: "replace" },
+                { path: "blocker/child.txt", content: "child\n", mode: "create" },
+              ],
+            },
+            directory,
+          ),
+        /not a directory/,
+      );
 
-    assert.equal(await readFile(first, "utf8"), "old\n");
-  });
-});
+      assert.equal(await readFile(first, "utf8"), "old\n");
+    });
+  },
+);
 
-test("multi-file batch rejects a path nested under another batch target before any write", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const first = join(directory, "first.txt");
-    await writeFile(first, "old\n");
+nodeTest(
+  "multi-file batch rejects a path nested under another batch target before any write",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const first = join(directory, "first.txt");
+      await writeFile(first, "old\n");
 
-    await assertFailure(
-      () =>
-        writeFiles(
-          {
-            files: [
-              { path: "first.txt", content: "new\n", mode: "replace" },
-              { path: "parent", content: "file\n", mode: "create" },
-              { path: "parent/child.txt", content: "child\n", mode: "create" },
-            ],
-          },
-          directory,
-        ),
-      /nested under/,
-    );
+      await assertFailure(
+        () =>
+          writeFiles(
+            {
+              files: [
+                { path: "first.txt", content: "new\n", mode: "replace" },
+                { path: "parent", content: "file\n", mode: "create" },
+                { path: "parent/child.txt", content: "child\n", mode: "create" },
+              ],
+            },
+            directory,
+          ),
+        /nested under/,
+      );
 
-    assert.equal(await readFile(first, "utf8"), "old\n");
-    await assert.rejects(() => readFile(join(directory, "parent"), "utf8"), /ENOENT/);
-  });
-});
+      assert.equal(await readFile(first, "utf8"), "old\n");
+      await assert.rejects(() => readFile(join(directory, "parent"), "utf8"), /ENOENT/);
+    });
+  },
+);
 
-test("ancestor conflict detection cannot be bypassed by a locale-sort interloper", async () => {
+nodeTest("ancestor conflict detection cannot be bypassed by a locale-sort interloper", async () => {
   await inTemporaryDirectory(async (directory) => {
     await assertFailure(
       () =>
@@ -3937,7 +3993,7 @@ test("ancestor conflict detection cannot be bypassed by a locale-sort interloper
   });
 });
 
-test("multi-file batch rejects dangling parent symlinks during plan", async () => {
+nodeTest("multi-file batch rejects dangling parent symlinks during plan", async () => {
   await inTemporaryDirectory(async (directory) => {
     await symlink(join(directory, "missing-dir"), join(directory, "dangling"));
     await assertFailure(
@@ -3957,7 +4013,7 @@ test("multi-file batch rejects dangling parent symlinks during plan", async () =
   });
 });
 
-test("planned create stays bound to its canonical parent if an alias changes", async () => {
+nodeTest("planned create stays bound to its canonical parent if an alias changes", async () => {
   await inTemporaryDirectory(async (directory) => {
     const dir1 = join(directory, "dir1");
     const dir2 = join(directory, "dir2");
@@ -3977,7 +4033,7 @@ test("planned create stays bound to its canonical parent if an alias changes", a
   });
 });
 
-test("direct create honors an abort from the final publish hook", async () => {
+nodeTest("direct create honors an abort from the final publish hook", async () => {
   await inTemporaryDirectory(async (directory) => {
     const target = join(directory, "target.txt");
     const plan = await planNewFile(target);
@@ -3993,7 +4049,7 @@ test("direct create honors an abort from the final publish hook", async () => {
   });
 });
 
-test("direct create cleanup leaves a swapped-in temporary file untouched", async () => {
+nodeTest("direct create cleanup leaves a swapped-in temporary file untouched", async () => {
   await inTemporaryDirectory(async (directory) => {
     const target = join(directory, "target.txt");
     const victim = join(directory, "victim.txt");
@@ -4023,7 +4079,7 @@ test("direct create cleanup leaves a swapped-in temporary file untouched", async
   });
 });
 
-test("direct create rejects a replaced parent immediately before publication", async () => {
+nodeTest("direct create rejects a replaced parent immediately before publication", async () => {
   await inTemporaryDirectory(async (directory) => {
     const parent = join(directory, "parent");
     const moved = join(directory, "moved");
@@ -4049,63 +4105,69 @@ test("direct create rejects a replaced parent immediately before publication", a
   });
 });
 
-test("planned nested create never replaces a directory appearing at final reservation", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const target = join(directory, "missing", "child.txt");
-    const plan = await planNewFile(target);
-    let appearedStats: Awaited<ReturnType<typeof lstat>> | undefined;
+nodeTest(
+  "planned nested create never replaces a directory appearing at final reservation",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const target = join(directory, "missing", "child.txt");
+      const plan = await planNewFile(target);
+      let appearedStats: Awaited<ReturnType<typeof lstat>> | undefined;
 
-    await assert.rejects(
-      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
-        beforeRootReserve: async ({ target: publishRoot }) => {
-          await mkdir(publishRoot);
-          appearedStats = await lstat(publishRoot);
+      await assert.rejects(
+        publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+          beforeRootReserve: async ({ target: publishRoot }) => {
+            await mkdir(publishRoot);
+            appearedStats = await lstat(publishRoot);
+          },
+        }),
+        /Create parent changed after planning/,
+      );
+
+      const current = await lstat(join(directory, "missing"));
+      assert.equal(current.ino, appearedStats?.ino);
+      assert.deepEqual(await readdir(join(directory, "missing")), []);
+      assert.equal(
+        (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
+        false,
+      );
+    });
+  },
+);
+
+nodeTest(
+  "planned nested create preserves an entry appearing inside its reserved root",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const firstPlan = await planNewFile(join(directory, "shared", "a.txt"));
+      const secondPlan = await planNewFile(join(directory, "shared", "b.txt"));
+      const prepared = await preparePlannedNestedFiles(
+        [
+          { plan: firstPlan, bytes: Buffer.from("A\n") },
+          { plan: secondPlan, bytes: Buffer.from("B\n") },
+        ],
+        undefined,
+        {
+          afterRootReserve: async ({ target: publishRoot }) => {
+            await writeFile(join(publishRoot, "b.txt"), "EXTERNAL\n");
+          },
         },
-      }),
-      /Create parent changed after planning/,
-    );
+      );
 
-    const current = await lstat(join(directory, "missing"));
-    assert.equal(current.ino, appearedStats?.ino);
-    assert.deepEqual(await readdir(join(directory, "missing")), []);
-    assert.equal(
-      (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
-      false,
-    );
-  });
-});
+      await assert.rejects(
+        publishPreparedNestedFiles(prepared),
+        /File appeared before create.*Partial create publication retained 1 file.*private staging remains/s,
+      );
 
-test("planned nested create preserves an entry appearing inside its reserved root", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const firstPlan = await planNewFile(join(directory, "shared", "a.txt"));
-    const secondPlan = await planNewFile(join(directory, "shared", "b.txt"));
-    const prepared = await preparePlannedNestedFiles(
-      [
-        { plan: firstPlan, bytes: Buffer.from("A\n") },
-        { plan: secondPlan, bytes: Buffer.from("B\n") },
-      ],
-      undefined,
-      {
-        afterRootReserve: async ({ target: publishRoot }) => {
-          await writeFile(join(publishRoot, "b.txt"), "EXTERNAL\n");
-        },
-      },
-    );
+      assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
+      assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "EXTERNAL\n");
+      assert.equal(await readFile(join(prepared.staging, "a.txt"), "utf8"), "A\n");
+      await rm(join(directory, "shared"), { recursive: true });
+      await rm(prepared.container, { recursive: true });
+    });
+  },
+);
 
-    await assert.rejects(
-      publishPreparedNestedFiles(prepared),
-      /File appeared before create.*Partial create publication retained 1 file.*private staging remains/s,
-    );
-
-    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
-    assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "EXTERNAL\n");
-    assert.equal(await readFile(join(prepared.staging, "a.txt"), "utf8"), "A\n");
-    await rm(join(directory, "shared"), { recursive: true });
-    await rm(prepared.container, { recursive: true });
-  });
-});
-
-test("planned nested create rejects staged content tampering", async () => {
+nodeTest("planned nested create rejects staged content tampering", async () => {
   await inTemporaryDirectory(async (directory) => {
     const inputPath = join(directory, "missing", "nested", "child.txt");
     const plan = await planNewFile(inputPath);
@@ -4125,7 +4187,7 @@ test("planned nested create rejects staged content tampering", async () => {
   });
 });
 
-test("planned nested cleanup leaves a swapped-in directory untouched", async () => {
+nodeTest("planned nested cleanup leaves a swapped-in directory untouched", async () => {
   await inTemporaryDirectory(async (directory) => {
     const target = join(directory, "missing", "child.txt");
     const victim = join(directory, "victim");
@@ -4155,7 +4217,7 @@ test("planned nested cleanup leaves a swapped-in directory untouched", async () 
   });
 });
 
-test("planned nested create revalidates its ancestor at final root reservation", async () => {
+nodeTest("planned nested create revalidates its ancestor at final root reservation", async () => {
   await inTemporaryDirectory(async (directory) => {
     const ancestor = join(directory, "ancestor");
     const moved = join(directory, "moved");
@@ -4179,7 +4241,7 @@ test("planned nested create revalidates its ancestor at final root reservation",
   });
 });
 
-test(
+nodeTest(
   "planned nested create preserves inherited setgid directory mode",
   {
     skip: process.platform === "win32",
@@ -4199,30 +4261,33 @@ test(
   },
 );
 
-test("planned nested create rejects a replaced ancestor immediately before commit", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const parent = join(directory, "parent");
-    const moved = join(directory, "moved");
-    const target = join(parent, "missing", "child.txt");
-    await mkdir(parent);
-    const plan = await planNewFile(target);
+nodeTest(
+  "planned nested create rejects a replaced ancestor immediately before commit",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const parent = join(directory, "parent");
+      const moved = join(directory, "moved");
+      const target = join(parent, "missing", "child.txt");
+      await mkdir(parent);
+      const plan = await planNewFile(target);
 
-    await assert.rejects(
-      publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
-        beforeDirectoryCommit: async () => {
-          await rename(parent, moved);
-          await mkdir(parent);
-        },
-      }),
-      /Create parent changed after planning/,
-    );
+      await assert.rejects(
+        publishNewFile(target, Buffer.from("created\n"), undefined, plan, {
+          beforeDirectoryCommit: async () => {
+            await rename(parent, moved);
+            await mkdir(parent);
+          },
+        }),
+        /Create parent changed after planning/,
+      );
 
-    await assert.rejects(readFile(target), /ENOENT/);
-    await assert.rejects(readFile(join(moved, "missing", "child.txt")), /ENOENT/);
-  });
-});
+      await assert.rejects(readFile(target), /ENOENT/);
+      await assert.rejects(readFile(join(moved, "missing", "child.txt")), /ENOENT/);
+    });
+  },
+);
 
-test("planned nested create honors an abort from the final commit hook", async () => {
+nodeTest("planned nested create honors an abort from the final commit hook", async () => {
   await inTemporaryDirectory(async (directory) => {
     const inputPath = join(directory, "missing", "child.txt");
     const plan = await planNewFile(inputPath);
@@ -4238,47 +4303,53 @@ test("planned nested create honors an abort from the final commit hook", async (
   });
 });
 
-test("nested discard is idempotent and later prepared groups can still be cleaned", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const firstPlan = await planNewFile(join(directory, "first", "child.txt"));
-    const secondPlan = await planNewFile(join(directory, "second", "child.txt"));
-    const controller = new AbortController();
-    const first = await preparePlannedNestedFiles(
-      [{ plan: firstPlan, bytes: Buffer.from("first\n") }],
-      undefined,
-      { beforeDirectoryCommit: () => controller.abort() },
-    );
-    const second = await preparePlannedNestedFiles([
-      { plan: secondPlan, bytes: Buffer.from("second\n") },
-    ]);
+nodeTest(
+  "nested discard is idempotent and later prepared groups can still be cleaned",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const firstPlan = await planNewFile(join(directory, "first", "child.txt"));
+      const secondPlan = await planNewFile(join(directory, "second", "child.txt"));
+      const controller = new AbortController();
+      const first = await preparePlannedNestedFiles(
+        [{ plan: firstPlan, bytes: Buffer.from("first\n") }],
+        undefined,
+        { beforeDirectoryCommit: () => controller.abort() },
+      );
+      const second = await preparePlannedNestedFiles([
+        { plan: secondPlan, bytes: Buffer.from("second\n") },
+      ]);
 
-    await assert.rejects(
-      publishPreparedNestedFiles(first, controller.signal),
-      /Operation aborted before file content was committed/,
-    );
-    await discardPreparedNestedFiles(first);
-    await discardPreparedNestedFiles(second);
+      await assert.rejects(
+        publishPreparedNestedFiles(first, controller.signal),
+        /Operation aborted before file content was committed/,
+      );
+      await discardPreparedNestedFiles(first);
+      await discardPreparedNestedFiles(second);
 
-    await assert.rejects(lstat(first.container), /ENOENT/);
-    await assert.rejects(lstat(second.container), /ENOENT/);
-  });
-});
-
-test("nested discard leaves the container untouched when cleanupBlocked names a path", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const plan = await planNewFile(join(directory, "missing", "child.txt"));
-    const prepared = await preparePlannedNestedFiles([{ plan, bytes: Buffer.from("staged\n") }]);
-    // As in v1.1.0, the public field holds the path whose ownership blocks cleanup.
-    prepared.cleanupBlocked = prepared.staging;
-
-    await assert.rejects(discardPreparedNestedFiles(prepared), {
-      message: `Staging cleanup was skipped because ${prepared.staging} is not owned by this user; the staging container was left untouched at ${prepared.container}`,
+      await assert.rejects(lstat(first.container), /ENOENT/);
+      await assert.rejects(lstat(second.container), /ENOENT/);
     });
-    assert.equal(await readFile(join(prepared.staging, "child.txt"), "utf8"), "staged\n");
-  });
-});
+  },
+);
 
-test("planned nested create rejects staged symbolic links", async () => {
+nodeTest(
+  "nested discard leaves the container untouched when cleanupBlocked names a path",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const plan = await planNewFile(join(directory, "missing", "child.txt"));
+      const prepared = await preparePlannedNestedFiles([{ plan, bytes: Buffer.from("staged\n") }]);
+      // As in v1.1.0, the public field holds the path whose ownership blocks cleanup.
+      prepared.cleanupBlocked = prepared.staging;
+
+      await assert.rejects(discardPreparedNestedFiles(prepared), {
+        message: `Staging cleanup was skipped because ${prepared.staging} is not owned by this user; the staging container was left untouched at ${prepared.container}`,
+      });
+      assert.equal(await readFile(join(prepared.staging, "child.txt"), "utf8"), "staged\n");
+    });
+  },
+);
+
+nodeTest("planned nested create rejects staged symbolic links", async () => {
   await inTemporaryDirectory(async (directory) => {
     const inputPath = join(directory, "missing", "nested", "child.txt");
     const outside = join(directory, "outside.txt");
@@ -4303,32 +4374,35 @@ test("planned nested create rejects staged symbolic links", async () => {
   });
 });
 
-test("planned nested create never follows a parent symlink appearing after validation", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const outside = join(directory, "outside");
-    const gate = join(directory, "gate");
-    const inputPath = join(gate, "sub", "child.txt");
-    await mkdir(outside);
-    const plan = await planNewFile(inputPath);
+nodeTest(
+  "planned nested create never follows a parent symlink appearing after validation",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const outside = join(directory, "outside");
+      const gate = join(directory, "gate");
+      const inputPath = join(gate, "sub", "child.txt");
+      await mkdir(outside);
+      const plan = await planNewFile(inputPath);
 
-    await assert.rejects(
-      () =>
-        publishNewFile(inputPath, Buffer.from("created\n"), undefined, plan, {
-          beforeDirectoryPublish: async () => symlink(outside, gate),
-        }),
-      /Create parent changed after planning/,
-    );
+      await assert.rejects(
+        () =>
+          publishNewFile(inputPath, Buffer.from("created\n"), undefined, plan, {
+            beforeDirectoryPublish: async () => symlink(outside, gate),
+          }),
+        /Create parent changed after planning/,
+      );
 
-    await assert.rejects(() => readFile(join(outside, "sub", "child.txt"), "utf8"), /ENOENT/);
-    assert.equal((await lstat(gate)).isSymbolicLink(), true);
-    assert.equal(
-      (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
-      false,
-    );
-  });
-});
+      await assert.rejects(() => readFile(join(outside, "sub", "child.txt"), "utf8"), /ENOENT/);
+      assert.equal((await lstat(gate)).isSymbolicLink(), true);
+      assert.equal(
+        (await readdir(directory)).some((name) => name.startsWith(".pi-apply-edits-")),
+        false,
+      );
+    });
+  },
+);
 
-test("ancestor replacement leaves displaced private staging for inspection", async () => {
+nodeTest("ancestor replacement leaves displaced private staging for inspection", async () => {
   await inTemporaryDirectory(async (directory) => {
     const ancestor = join(directory, "ancestor");
     const movedAncestor = join(directory, "moved-ancestor");
@@ -4357,7 +4431,7 @@ test("ancestor replacement leaves displaced private staging for inspection", asy
   });
 });
 
-test("concurrent single creates through symlink-parent aliases serialize", async () => {
+nodeTest("concurrent single creates through symlink-parent aliases serialize", async () => {
   await inTemporaryDirectory(async (directory) => {
     const real = join(directory, "real");
     const alias = join(directory, "alias");
@@ -4379,7 +4453,7 @@ test("concurrent single creates through symlink-parent aliases serialize", async
   });
 });
 
-test("long valid basenames do not overflow temporary names", async () => {
+nodeTest("long valid basenames do not overflow temporary names", async () => {
   await inTemporaryDirectory(async (directory) => {
     const existing = "x".repeat(240);
     const created = "y".repeat(240);
@@ -4399,7 +4473,7 @@ test("long valid basenames do not overflow temporary names", async () => {
   });
 });
 
-test("multi-file batch rejects unwritable target directories during plan", async (t) => {
+nodeTest("multi-file batch rejects unwritable target directories during plan", async (t) => {
   if (process.platform === "win32") {
     t.skip("Requires POSIX directory permissions");
     return;
@@ -4435,7 +4509,7 @@ test("multi-file batch rejects unwritable target directories during plan", async
   });
 });
 
-test(
+nodeTest(
   "create rejects a target entry swapped for a symbolic link after publication",
   { skip: process.platform === "win32" },
   async () => {
@@ -4483,7 +4557,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "create reports an uncertain commit when the parent moves after exclusive open",
   { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
@@ -4535,7 +4609,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "replacement rejects a parent alias swapped during target validation",
   { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
@@ -4591,7 +4665,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "nested create cleanup never follows a swapped directory entry to an unrelated path",
   { skip: process.platform === "win32" },
   async () => {
@@ -4662,7 +4736,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "create reports an uncertain commit when the parent moves right after linking",
   { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
@@ -4727,7 +4801,7 @@ test(
 // Mixed case is covered because the Pi key for a create is the exact-case path. A folded key
 // would name a different queue than the realpath-derived key an edit takes after publication.
 for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
-  test(
+  nodeTest(
     `a rewrite of ${relative} while it is being created waits for the create to finish`,
     { skip: process.platform === "win32" },
     async () => {
@@ -4801,7 +4875,7 @@ for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
   );
 }
 
-test(
+nodeTest(
   "a rewrite that resolves a path before it is created still completes",
   { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
@@ -4878,7 +4952,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "an unverifiable create claims nothing about what remains on disk",
   { skip: process.platform === "win32" || process.platform === "android" },
   async () => {
@@ -4922,20 +4996,29 @@ test(
   },
 );
 
-test("concurrent creates under one missing root serialize instead of racing the claim", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    // Both creates must claim the same missing root. Without a lock that survives the root
-    // coming into existence, one wins the exclusive mkdir and the other fails closed.
-    await Promise.all([
-      writeFiles({ files: [{ path: "shared/a.txt", content: "A\n", mode: "create" }] }, directory),
-      writeFiles({ files: [{ path: "shared/b.txt", content: "B\n", mode: "create" }] }, directory),
-    ]);
-    assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
-    assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
-  });
-});
+nodeTest(
+  "concurrent creates under one missing root serialize instead of racing the claim",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      // Both creates must claim the same missing root. Without a lock that survives the root
+      // coming into existence, one wins the exclusive mkdir and the other fails closed.
+      await Promise.all([
+        writeFiles(
+          { files: [{ path: "shared/a.txt", content: "A\n", mode: "create" }] },
+          directory,
+        ),
+        writeFiles(
+          { files: [{ path: "shared/b.txt", content: "B\n", mode: "create" }] },
+          directory,
+        ),
+      ]);
+      assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
+      assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "B\n");
+    });
+  },
+);
 
-test("concurrent creates three deep under one missing root all publish", async () => {
+nodeTest("concurrent creates three deep under one missing root all publish", async () => {
   await inTemporaryDirectory(async (directory) => {
     await Promise.all([
       writeFiles({ files: [{ path: "r/x/a.txt", content: "A\n", mode: "create" }] }, directory),
@@ -4948,7 +5031,7 @@ test("concurrent creates three deep under one missing root all publish", async (
   });
 });
 
-test(
+nodeTest(
   "concurrent creates of one path spelled two ways do not both claim it",
   { skip: process.platform !== "darwin" && process.platform !== "win32" },
   async () => {
@@ -4971,12 +5054,14 @@ test(
       );
       const entries = await readdir(join(directory, "case"));
       assert.equal(entries.length, 1);
-      assert.match(await readFile(join(directory, "case", entries[0]), "utf8"), /^[AB]\n$/);
+      const [entry] = entries;
+      assert(entry !== undefined);
+      assert.match(await readFile(join(directory, "case", entry), "utf8"), /^[AB]\n$/);
     });
   },
 );
 
-test(
+nodeTest(
   "a newly claimed directory owned by another user is never adopted for publication or cleanup",
   { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
   async () => {
@@ -5034,77 +5119,80 @@ test(
   },
 );
 
-test("a batch rejects a dangling alias before its lock can collapse onto the target", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const alias = join(directory, "a");
-    const target = join(directory, "b");
-    await symlink("b", alias);
-    const canonicalDirectory = await realpath(directory);
-    const queueAlias = join(canonicalDirectory, "a");
-    const originalRealpath = nodeFs.promises.realpath;
-    let aliasFailed = false;
-    let targetFailed = false;
-    let injected = false;
+nodeTest(
+  "a batch rejects a dangling alias before its lock can collapse onto the target",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const alias = join(directory, "a");
+      const target = join(directory, "b");
+      await symlink("b", alias);
+      const canonicalDirectory = await realpath(directory);
+      const queueAlias = join(canonicalDirectory, "a");
+      const originalRealpath = nodeFs.promises.realpath;
+      let aliasFailed = false;
+      let targetFailed = false;
+      let injected = false;
 
-    await withRacingEditing(
-      (mock) => {
-        mock.method(
-          nodeFs.promises,
-          "realpath",
-          async (...args: Readonly<Parameters<typeof originalRealpath>>) => {
-            const [path] = args;
-            const value = filePath(path);
-            // Both entries must first be classified as distinct missing targets. When Pi later
-            // resolves the first queue key, make the dangling alias resolve onto the second.
-            // Main then acquires that queue twice and waits on itself.
-            if (!injected && aliasFailed && targetFailed && value === queueAlias) {
-              await writeFile(target, "external\n");
-              injected = true;
-            }
-            try {
-              return await originalRealpath(...args);
-            } catch (error) {
-              if (value === alias || value === queueAlias) {
-                aliasFailed = true;
+      await withRacingEditing(
+        (mock) => {
+          mock.method(
+            nodeFs.promises,
+            "realpath",
+            async (...args: Readonly<Parameters<typeof originalRealpath>>) => {
+              const [path] = args;
+              const value = filePath(path);
+              // Both entries must first be classified as distinct missing targets. When Pi later
+              // resolves the first queue key, make the dangling alias resolve onto the second.
+              // Main then acquires that queue twice and waits on itself.
+              if (!injected && aliasFailed && targetFailed && value === queueAlias) {
+                await writeFile(target, "external\n");
+                injected = true;
               }
-              if (value === target || value === join(canonicalDirectory, "b")) {
-                targetFailed = true;
+              try {
+                return await originalRealpath(...args);
+              } catch (error) {
+                if (value === alias || value === queueAlias) {
+                  aliasFailed = true;
+                }
+                if (value === target || value === join(canonicalDirectory, "b")) {
+                  targetFailed = true;
+                }
+                throw error;
               }
-              throw error;
-            }
-          },
-        );
-      },
-      async (module) => {
-        const operation = module.writeFiles(
-          {
-            files: [
-              { path: "a", content: "one\n", mode: "replace" },
-              { path: "b", content: "two\n", mode: "replace" },
-            ],
-          },
-          directory,
-        );
-        const outcome = await Promise.race([
-          operation.then((result) =>
-            result.details.error !== undefined ? `failed: ${result.details.error}` : "settled",
-          ),
-          new Promise<string>((resolve) => {
-            setTimeout(() => {
-              resolve("timeout");
-            }, 1000);
-          }),
-        ]);
-        assert.match(outcome, /^failed: .*Cannot mutate dangling symbolic link/);
-        assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
-      },
-    );
+            },
+          );
+        },
+        async (module) => {
+          const operation = module.writeFiles(
+            {
+              files: [
+                { path: "a", content: "one\n", mode: "replace" },
+                { path: "b", content: "two\n", mode: "replace" },
+              ],
+            },
+            directory,
+          );
+          const outcome = await Promise.race([
+            operation.then((result) =>
+              result.details.error !== undefined ? `failed: ${result.details.error}` : "settled",
+            ),
+            new Promise<string>((resolve) => {
+              setTimeout(() => {
+                resolve("timeout");
+              }, 1000);
+            }),
+          ]);
+          assert.match(outcome, /^failed: .*Cannot mutate dangling symbolic link/);
+          assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
+        },
+      );
 
-    await assert.rejects(lstat(target), /ENOENT/);
-  });
-});
+      await assert.rejects(lstat(target), /ENOENT/);
+    });
+  },
+);
 
-test("successful inserts retain exact separators without warnings", async () => {
+nodeTest("successful inserts retain exact separators without warnings", async () => {
   await inTemporaryDirectory(async (directory) => {
     const target = join(directory, "imports.ts");
     await writeFile(target, 'import fs from "node:fs";\n');
@@ -5134,79 +5222,82 @@ test("successful inserts retain exact separators without warnings", async () => 
   });
 });
 
-test("a batch rejects a dangling ancestor before its lock can collapse onto the target", async () => {
-  await inTemporaryDirectory(async (unresolved) => {
-    // Exercise identical discovery/queue spellings on macOS too (/tmp is a symlink).
-    const directory = await realpath(unresolved);
-    const aliasParent = join(directory, "a");
-    const targetParent = join(directory, "b");
-    const alias = join(aliasParent, "child.txt");
-    const target = join(targetParent, "child.txt");
-    await symlink("b", aliasParent);
-    const canonicalDirectory = await realpath(directory);
-    const queueAlias = join(canonicalDirectory, "a", "child.txt");
-    const originalRealpath = nodeFs.promises.realpath;
-    let aliasFailed = false;
-    let targetFailed = false;
-    let injected = false;
+nodeTest(
+  "a batch rejects a dangling ancestor before its lock can collapse onto the target",
+  async () => {
+    await inTemporaryDirectory(async (unresolved) => {
+      // Exercise identical discovery/queue spellings on macOS too (/tmp is a symlink).
+      const directory = await realpath(unresolved);
+      const aliasParent = join(directory, "a");
+      const targetParent = join(directory, "b");
+      const alias = join(aliasParent, "child.txt");
+      const target = join(targetParent, "child.txt");
+      await symlink("b", aliasParent);
+      const canonicalDirectory = await realpath(directory);
+      const queueAlias = join(canonicalDirectory, "a", "child.txt");
+      const originalRealpath = nodeFs.promises.realpath;
+      let aliasFailed = false;
+      let targetFailed = false;
+      let injected = false;
 
-    await withRacingEditing(
-      (mock) => {
-        mock.method(
-          nodeFs.promises,
-          "realpath",
-          async (...args: Readonly<Parameters<typeof originalRealpath>>) => {
-            const [path] = args;
-            const value = filePath(path);
-            if (!injected && aliasFailed && targetFailed && value === queueAlias) {
-              await mkdir(targetParent);
-              await writeFile(target, "external\n");
-              injected = true;
-            }
-            try {
-              return await originalRealpath(...args);
-            } catch (error) {
-              if (value === alias || value === queueAlias) {
-                aliasFailed = true;
+      await withRacingEditing(
+        (mock) => {
+          mock.method(
+            nodeFs.promises,
+            "realpath",
+            async (...args: Readonly<Parameters<typeof originalRealpath>>) => {
+              const [path] = args;
+              const value = filePath(path);
+              if (!injected && aliasFailed && targetFailed && value === queueAlias) {
+                await mkdir(targetParent);
+                await writeFile(target, "external\n");
+                injected = true;
               }
-              if (value === target || value === join(canonicalDirectory, "b", "child.txt")) {
-                targetFailed = true;
+              try {
+                return await originalRealpath(...args);
+              } catch (error) {
+                if (value === alias || value === queueAlias) {
+                  aliasFailed = true;
+                }
+                if (value === target || value === join(canonicalDirectory, "b", "child.txt")) {
+                  targetFailed = true;
+                }
+                throw error;
               }
-              throw error;
-            }
-          },
-        );
-      },
-      async (module) => {
-        const operation = module.writeFiles(
-          {
-            files: [
-              { path: "a/child.txt", content: "one\n", mode: "replace" },
-              { path: "b/child.txt", content: "two\n", mode: "replace" },
-            ],
-          },
-          directory,
-        );
-        const outcome = await Promise.race([
-          operation.then((result) =>
-            result.details.error !== undefined ? `failed: ${result.details.error}` : "settled",
-          ),
-          new Promise<string>((resolve) => {
-            setTimeout(() => {
-              resolve("timeout");
-            }, 1000);
-          }),
-        ]);
-        assert.match(outcome, /^failed: .*Cannot mutate dangling symbolic link/);
-        assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
-      },
-    );
+            },
+          );
+        },
+        async (module) => {
+          const operation = module.writeFiles(
+            {
+              files: [
+                { path: "a/child.txt", content: "one\n", mode: "replace" },
+                { path: "b/child.txt", content: "two\n", mode: "replace" },
+              ],
+            },
+            directory,
+          );
+          const outcome = await Promise.race([
+            operation.then((result) =>
+              result.details.error !== undefined ? `failed: ${result.details.error}` : "settled",
+            ),
+            new Promise<string>((resolve) => {
+              setTimeout(() => {
+                resolve("timeout");
+              }, 1000);
+            }),
+          ]);
+          assert.match(outcome, /^failed: .*Cannot mutate dangling symbolic link/);
+          assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
+        },
+      );
 
-    await assert.rejects(lstat(targetParent), /ENOENT/);
-  });
-});
+      await assert.rejects(lstat(targetParent), /ENOENT/);
+    });
+  },
+);
 
-test("local create locks stay stable as missing ancestors are published", async () => {
+nodeTest("local create locks stay stable as missing ancestors are published", async () => {
   await inTemporaryDirectory(async (directory) => {
     const canonicalDirectory = await realpath(directory);
     const root = join(canonicalDirectory, "r");
@@ -5302,7 +5393,7 @@ test("local create locks stay stable as missing ancestors are published", async 
   });
 });
 
-test(
+nodeTest(
   "whole-path folding dedupes a batch when an ancestor appears with different case",
   { skip: process.platform !== "darwin" && process.platform !== "win32" },
   async () => {
@@ -5394,65 +5485,70 @@ test(
   },
 );
 
-test("batch dedupe stays stable when a missing target appears between discoveries", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const canonicalDirectory = await realpath(directory);
-    const root = join(canonicalDirectory, "R");
-    const target = join(root, "B.txt");
-    await mkdir(root);
-    const originalRealpath = nodeFs.promises.realpath;
-    const secondDiscoveryReached = deferred();
-    const releaseSecondDiscovery = deferred();
-    let targetCalls = 0;
+nodeTest(
+  "batch dedupe stays stable when a missing target appears between discoveries",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const canonicalDirectory = await realpath(directory);
+      const root = join(canonicalDirectory, "R");
+      const target = join(root, "B.txt");
+      await mkdir(root);
+      const originalRealpath = nodeFs.promises.realpath;
+      const secondDiscoveryReached = deferred();
+      const releaseSecondDiscovery = deferred();
+      let targetCalls = 0;
 
-    await withRacingEditing(
-      (mock) => {
-        mock.method(
-          nodeFs.promises,
-          "realpath",
-          async (...args: Readonly<Parameters<typeof originalRealpath>>) => {
-            const [path] = args;
-            if (filePath(path) === target && ++targetCalls === 2) {
-              secondDiscoveryReached.resolve();
-              await releaseSecondDiscovery.promise;
-            }
-            return originalRealpath(...args);
-          },
-        );
-      },
-      async (module) => {
-        let batch: Promise<string> | undefined;
-        try {
-          batch = module
-            .writeFiles(
-              {
-                files: [
-                  { path: "R/B.txt", content: "one\n", mode: "create" },
-                  { path: "R/B.txt", content: "two\n", mode: "create" },
-                ],
-              },
-              canonicalDirectory,
-            )
-            .then((result) =>
-              result.details.error !== undefined ? `failed: ${result.details.error}` : "fulfilled",
-            );
-          await withTimeout(secondDiscoveryReached.promise, "second target discovery");
-          // An external writer can publish while this call's discovery is held.
-          await writeFile(target, "outside\n");
-          releaseSecondDiscovery.resolve();
-          const outcome = await withTimeout(batch, "batch duplicate rejection");
-          assert.match(outcome, /^failed: .*refers to the same file/);
-        } finally {
-          releaseSecondDiscovery.resolve();
-        }
-      },
-    );
+      await withRacingEditing(
+        (mock) => {
+          mock.method(
+            nodeFs.promises,
+            "realpath",
+            async (...args: Readonly<Parameters<typeof originalRealpath>>) => {
+              const [path] = args;
+              if (filePath(path) === target && ++targetCalls === 2) {
+                secondDiscoveryReached.resolve();
+                await releaseSecondDiscovery.promise;
+              }
+              return originalRealpath(...args);
+            },
+          );
+        },
+        async (module) => {
+          let batch: Promise<string> | undefined;
+          try {
+            batch = module
+              .writeFiles(
+                {
+                  files: [
+                    { path: "R/B.txt", content: "one\n", mode: "create" },
+                    { path: "R/B.txt", content: "two\n", mode: "create" },
+                  ],
+                },
+                canonicalDirectory,
+              )
+              .then((result) =>
+                result.details.error !== undefined
+                  ? `failed: ${result.details.error}`
+                  : "fulfilled",
+              );
+            await withTimeout(secondDiscoveryReached.promise, "second target discovery");
+            // An external writer can publish while this call's discovery is held.
+            await writeFile(target, "outside\n");
+            releaseSecondDiscovery.resolve();
+            const outcome = await withTimeout(batch, "batch duplicate rejection");
+            assert.match(outcome, /^failed: .*refers to the same file/);
+          } finally {
+            releaseSecondDiscovery.resolve();
+          }
+        },
+      );
 
-    assert.equal(await readFile(target, "utf8"), "outside\n");
-  });
-});
+      assert.equal(await readFile(target, "utf8"), "outside\n");
+    });
+  },
+);
 
-test(
+nodeTest(
   "whole-path folding keeps APFS-distinct i and dotless-i paths separate",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -5475,7 +5571,7 @@ test(
   },
 );
 
-test("an already-aborted batch does no filesystem key discovery", async () => {
+nodeTest("an already-aborted batch does no filesystem key discovery", async () => {
   let filesystemCalls = 0;
   const missing = () => Object.assign(new Error("missing"), { code: "ENOENT" });
   await withRacingEditing(
@@ -5504,7 +5600,7 @@ test("an already-aborted batch does no filesystem key discovery", async () => {
   assert.equal(filesystemCalls, 0);
 });
 
-test(
+nodeTest(
   "near-limit replacement is rejected during planning before staging",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -5540,7 +5636,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "batch rejects a near-limit create before an earlier planned write",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -5585,7 +5681,7 @@ test(
   },
 );
 
-test("nested create reports staging disappearance during cleanup quarantine", async () => {
+nodeTest("nested create reports staging disappearance during cleanup quarantine", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRename = nodeFs.promises.rename;
     const originalRm = nodeFs.promises.rm;
@@ -5625,7 +5721,7 @@ test("nested create reports staging disappearance during cleanup quarantine", as
   });
 });
 
-test("non-empty staged container fails cleanup at its original path", async () => {
+nodeTest("non-empty staged container fails cleanup at its original path", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRename = nodeFs.promises.rename;
     const originalRmdir = nodeFs.promises.rmdir;
@@ -5683,7 +5779,7 @@ test("non-empty staged container fails cleanup at its original path", async () =
   });
 });
 
-test("staging quarantine ENOENT reports an uncertain location", async () => {
+nodeTest("staging quarantine ENOENT reports an uncertain location", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRename = nodeFs.promises.rename;
     const escaped = join(directory, "escaped-staging");
@@ -5723,7 +5819,7 @@ test("staging quarantine ENOENT reports an uncertain location", async () => {
   });
 });
 
-test(
+nodeTest(
   "owner-rejected initial private directories never enter cleanup state",
   { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
   async (t) => {
@@ -5855,7 +5951,6 @@ test(
       "content-move",
     ] as const) {
       // All flows replace process-wide syscall implementations; finish restoring each before the next flow.
-      // oxlint-disable-next-line no-await-in-loop
       await t.test(flow, async () => {
         await verifyRejectedOwner(flow);
       });
@@ -5863,7 +5958,7 @@ test(
   },
 );
 
-test("nested create warns when staging disappears before quarantine precheck", async () => {
+nodeTest("nested create warns when staging disappears before quarantine precheck", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalLstat = nodeFs.promises.lstat;
     const originalRename = nodeFs.promises.rename;
@@ -5905,7 +6000,7 @@ test("nested create warns when staging disappears before quarantine precheck", a
   });
 });
 
-test(
+nodeTest(
   "owner-rejected entries inside the container block container cleanup entirely",
   { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
   async () => {
@@ -5964,13 +6059,12 @@ test(
     }
     for (const rejectedName of ["q", "publish"]) {
       // Owner-rejection cases share process-wide syscall interception and must restore it before continuing.
-      // oxlint-disable-next-line no-await-in-loop
       await verifyRejectedEntry(rejectedName);
     }
   },
 );
 
-test(
+nodeTest(
   "unplanned create leaves a rejected temporary directory in place without moving parents",
   { skip: process.platform === "win32" || typeof process.geteuid !== "function" },
   async () => {
@@ -6027,7 +6121,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "partial publication reports a moved staging tree as uncertain",
   { skip: process.platform === "android" },
   async () => {
@@ -6074,7 +6168,7 @@ test(
   },
 );
 
-test("staged container disappearance before cleanup returns a warning", async () => {
+nodeTest("staged container disappearance before cleanup returns a warning", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalLstat = nodeFs.promises.lstat;
     const originalRename = nodeFs.promises.rename;
@@ -6118,7 +6212,7 @@ test("staged container disappearance before cleanup returns a warning", async ()
   });
 });
 
-test(
+nodeTest(
   "direct create warns when its temporary link escapes before unlink",
   { skip: process.platform === "android" },
   async () => {
@@ -6166,7 +6260,7 @@ test(
   },
 );
 
-test("replacement warns when the recovery link escapes before unlink", async () => {
+nodeTest("replacement warns when the recovery link escapes before unlink", async () => {
   await inTemporaryDirectory(async (directory) => {
     const target = join(directory, "file");
     const escaped = join(directory, "escaped-recovery");
@@ -6188,7 +6282,7 @@ test("replacement warns when the recovery link escapes before unlink", async () 
   });
 });
 
-test(
+nodeTest(
   "partial publication does not claim absence when staging cannot be inspected",
   { skip: process.platform === "android" },
   async () => {
@@ -6253,7 +6347,7 @@ test(
   },
 );
 
-test("staged container disappearance during rmdir returns a warning", async () => {
+nodeTest("staged container disappearance during rmdir returns a warning", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRename = nodeFs.promises.rename;
     const originalRmdir = nodeFs.promises.rmdir;
@@ -6295,7 +6389,7 @@ test("staged container disappearance during rmdir returns a warning", async () =
   });
 });
 
-test(
+nodeTest(
   "direct create warns when its temporary link escapes after quarantine",
   { skip: process.platform === "android" },
   async () => {
@@ -6341,7 +6435,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "staged create cleanup reports an escape after its quarantine rename",
   { skip: process.platform === "android" },
   async () => {
@@ -6390,66 +6484,72 @@ test(
   },
 );
 
-test("non-empty temporary directory fails cleanup in place instead of being moved", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const originalRename = nodeFs.promises.rename;
-    const originalRmdir = nodeFs.promises.rmdir;
-    let injectedDirectory = "";
-    const inject = async (path: string) => {
-      if (injectedDirectory.length > 0) {
-        return;
-      }
-      injectedDirectory = path;
-      await writeFile(join(path, "concurrent"), "keep\n");
-    };
-    await withRacingEditing(
-      (mock) => {
-        mock.method(
-          nodeFs.promises,
-          "rename",
-          async (...args: Readonly<Parameters<typeof originalRename>>) => {
-            const [source, target] = args;
-            if (
-              !basename(dirname(filePath(source))).endsWith(".tmpdir") &&
-              basename(filePath(source)).endsWith(".tmpdir") &&
-              basename(filePath(target)) === "entry"
-            ) {
-              await inject(filePath(source));
-            }
-            return originalRename(source, target);
-          },
-        );
-        mock.method(
-          nodeFs.promises,
-          "rmdir",
-          async (...args: Readonly<Parameters<typeof originalRmdir>>) => {
-            const [path] = args;
-            if (
-              !basename(dirname(filePath(path))).endsWith(".tmpdir") &&
-              basename(filePath(path)).endsWith(".tmpdir")
-            ) {
-              await inject(filePath(path));
-            }
-            return originalRmdir(...args);
-          },
-        );
-      },
-      async (module) => {
-        const result = await module.writeFiles(
-          { files: [{ path: "file", content: "ok\n", mode: "create" }] },
-          directory,
-        );
-        const warnings = singleDetails(result.details).warnings;
-        assert.match(warnings.join("\n"), /temporary directory remains.*(?:ENOTEMPTY|not empty)/is);
-      },
-    );
-    assert(injectedDirectory.length > 0);
-    assert.equal(await readFile(join(injectedDirectory, "concurrent"), "utf8"), "keep\n");
-    assert.equal(await readFile(join(directory, "file"), "utf8"), "ok\n");
-  });
-});
+nodeTest(
+  "non-empty temporary directory fails cleanup in place instead of being moved",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const originalRename = nodeFs.promises.rename;
+      const originalRmdir = nodeFs.promises.rmdir;
+      let injectedDirectory = "";
+      const inject = async (path: string) => {
+        if (injectedDirectory.length > 0) {
+          return;
+        }
+        injectedDirectory = path;
+        await writeFile(join(path, "concurrent"), "keep\n");
+      };
+      await withRacingEditing(
+        (mock) => {
+          mock.method(
+            nodeFs.promises,
+            "rename",
+            async (...args: Readonly<Parameters<typeof originalRename>>) => {
+              const [source, target] = args;
+              if (
+                !basename(dirname(filePath(source))).endsWith(".tmpdir") &&
+                basename(filePath(source)).endsWith(".tmpdir") &&
+                basename(filePath(target)) === "entry"
+              ) {
+                await inject(filePath(source));
+              }
+              return originalRename(source, target);
+            },
+          );
+          mock.method(
+            nodeFs.promises,
+            "rmdir",
+            async (...args: Readonly<Parameters<typeof originalRmdir>>) => {
+              const [path] = args;
+              if (
+                !basename(dirname(filePath(path))).endsWith(".tmpdir") &&
+                basename(filePath(path)).endsWith(".tmpdir")
+              ) {
+                await inject(filePath(path));
+              }
+              return originalRmdir(...args);
+            },
+          );
+        },
+        async (module) => {
+          const result = await module.writeFiles(
+            { files: [{ path: "file", content: "ok\n", mode: "create" }] },
+            directory,
+          );
+          const warnings = singleDetails(result.details).warnings;
+          assert.match(
+            warnings.join("\n"),
+            /temporary directory remains.*(?:ENOTEMPTY|not empty)/is,
+          );
+        },
+      );
+      assert(injectedDirectory.length > 0);
+      assert.equal(await readFile(join(injectedDirectory, "concurrent"), "utf8"), "keep\n");
+      assert.equal(await readFile(join(directory, "file"), "utf8"), "ok\n");
+    });
+  },
+);
 
-test(
+nodeTest(
   "nested create whose rollback cleanup would exceed the budget is rejected during planning",
   {
     skip:
@@ -6489,7 +6589,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "near-limit direct create is rejected during planning on supported POSIX platforms",
   {
     skip:
@@ -6532,7 +6632,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "replacement failure discloses an unverifiable recovery link",
   { skip: process.platform === "android" },
   async () => {
@@ -6586,7 +6686,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "successful create discloses an unverifiable temporary link",
   { skip: process.platform === "android" },
   async () => {
@@ -6642,7 +6742,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "post-unlink quarantine failure reports unknown state, not a retained link",
   { skip: process.platform === "android" },
   async () => {
@@ -6705,7 +6805,7 @@ test(
   },
 );
 
-test("create succeeds when realpath is unavailable for every ancestor", async () => {
+nodeTest("create succeeds when realpath is unavailable for every ancestor", async () => {
   await inTemporaryDirectory(async (unresolved) => {
     // Resolve first: the walk crosses every ancestor, and a real symlink like /var would
     // correctly fail the dangling-link check before the root terminator is reached.
@@ -6750,7 +6850,7 @@ test("create succeeds when realpath is unavailable for every ancestor", async ()
   });
 });
 
-test("batch ancestor rejection survives realpath loss on every ancestor", async () => {
+nodeTest("batch ancestor rejection survives realpath loss on every ancestor", async () => {
   await inTemporaryDirectory(async (unresolved) => {
     const directory = await realpath(unresolved);
     const originalRealpath = nodeFs.promises.realpath;
@@ -6794,7 +6894,7 @@ test("batch ancestor rejection survives realpath loss on every ancestor", async 
   });
 });
 
-test("simulated Windows path budget rejects the overlong path during planning", async () => {
+nodeTest("simulated Windows path budget rejects the overlong path during planning", async () => {
   await inTemporaryDirectory(async (directory) => {
     const originalRealpath = nodeFs.promises.realpath;
     const originalLstat = nodeFs.promises.lstat;
@@ -6868,7 +6968,7 @@ test("simulated Windows path budget rejects the overlong path during planning", 
 });
 
 for (const linkCode of ["EIO", "EACCES"]) {
-  test(
+  nodeTest(
     `${linkCode === "EIO" ? "create failure" : "exclusive-create fallback success"} discloses an unverifiable temporary file`,
     { skip: process.platform === "android" },
     async () => {
@@ -6909,24 +7009,24 @@ for (const linkCode of ["EIO", "EACCES"]) {
             );
             if (linkCode === "EIO") {
               // Exhaustive link-error variants reject EIO without publishing, or verify the EACCES fallback below.
-              // oxlint-disable-next-line node-test/no-conditional-assertions
+              // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
               await assertFailure(
                 operation,
                 /the temporary create file's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, or only leftover temporary directories may remain/s,
               );
               // Exhaustive link-error variants must leave no target when EIO prevents publication.
-              // oxlint-disable-next-line node-test/no-conditional-assertions
+              // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
               await assert.rejects(lstat(join(directory, "file")), /ENOENT/);
             } else {
               const result = await operation;
               // Exhaustive link-error variants verify the exclusive-write fallback's published bytes.
-              // oxlint-disable-next-line node-test/no-conditional-assertions
+              // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
               assert.equal(await readFile(join(directory, "file"), "utf8"), "secret\n");
               // Exhaustive link-error variants must disclose the fallback publication mechanism.
-              // oxlint-disable-next-line node-test/no-conditional-assertions
+              // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
               assert.match(result.summary, /used exclusive write publication/);
               // Exhaustive link-error variants must disclose uncertain temporary-link cleanup.
-              // oxlint-disable-next-line node-test/no-conditional-assertions
+              // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
               assert.match(
                 result.summary,
                 /temporary link's cleanup failed and its final state is unknown/,
@@ -6940,7 +7040,7 @@ for (const linkCode of ["EIO", "EACCES"]) {
   );
 }
 
-test("create failure discloses an escaped temporary file", async () => {
+nodeTest("create failure discloses an escaped temporary file", async () => {
   await inTemporaryDirectory(async (directory) => {
     const escaped = join(directory, "escaped-temporary");
 
@@ -6957,7 +7057,7 @@ test("create failure discloses an escaped temporary file", async () => {
   });
 });
 
-test(
+nodeTest(
   "replacement failure discloses an escaped recovery link",
   { skip: process.platform === "android" },
   async () => {
@@ -6987,7 +7087,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "batch failure preserves warnings from completed files",
   { skip: process.platform === "android" },
   async () => {
@@ -7038,7 +7138,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "summary deduplicates repeated warnings so unique ones stay visible",
   { skip: process.platform === "android" },
   async () => {

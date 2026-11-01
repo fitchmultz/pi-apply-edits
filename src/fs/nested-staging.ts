@@ -90,13 +90,11 @@ abstract class NestedStaging {
       throwIfAborted(signal);
       for (const entry of this.entries) {
         // Validate every source and plan before exposing any private staging tree.
-        // oxlint-disable-next-line no-await-in-loop
         await this.validateEntry(entry);
       }
       await this.createContainer(signal);
       for (const entry of this.entries) {
         // Shared private paths and descriptor ownership require completing one staged entry at a time.
-        // oxlint-disable-next-line no-await-in-loop
         await this.stageEntry(entry, signal);
       }
       for (const directory of [...this.#stagedDirectories].sort(
@@ -104,7 +102,6 @@ abstract class NestedStaging {
       )) {
         throwIfAborted(signal);
         // Sync children before the containing directory so staged durability follows creation order.
-        // oxlint-disable-next-line no-await-in-loop
         const warning = await syncDirectory(directory);
         if (warning !== undefined) {
           this.warnings.push(warning);
@@ -190,7 +187,6 @@ abstract class NestedStaging {
     for (const relative of stagedTraversalDirectories(entry.plan)) {
       const traversed = join(this.staging, relative);
       // Native traversal directories must be created and tracked in prerequisite order.
-      // oxlint-disable-next-line no-await-in-loop
       await mkdir(traversed, { recursive: true });
       this.rememberDirectory(traversed);
     }

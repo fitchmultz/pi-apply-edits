@@ -1,0 +1,198 @@
+[
+  {
+    "path": "src/apply-edits.ts",
+    "rule": "max-params",
+    "id": "QX-002",
+    "selector": "function applyPatchToFiles > async function applyPatchToFiles( input: string, cwd: string, preview = false, signal?: AbortSignal, onProgress?: (summary: string) => void, ): Promise<EditingExecution>",
+    "count": 1
+  },
+  {
+    "path": "src/file-system.ts",
+    "rule": "max-params",
+    "id": "QX-002",
+    "selector": "function publishNewFile > async function publishNewFile( inputTargetPath: string, bytes: Buffer, signal?: AbortSignal, plan?: ReadonlyNewFilePlan, hooks?: ReadonlyNewFilePublishHooks, ): Promise<string[]>",
+    "count": 1
+  },
+  {
+    "path": "src/tools.ts",
+    "rule": "max-params",
+    "id": "QX-002",
+    "selector": "function createPatchTool > method execute > (_id, params, signal, onUpdate, ctx)",
+    "count": 1
+  },
+  {
+    "path": "src/tools.ts",
+    "rule": "max-params",
+    "id": "QX-002",
+    "selector": "function createReplaceTool > method execute > (_id, params, signal, onUpdate, ctx)",
+    "count": 1
+  },
+  {
+    "path": "src/tools.ts",
+    "rule": "max-params",
+    "id": "QX-002",
+    "selector": "function createWriteTool > method execute > (_id, params, signal, onUpdate, ctx)",
+    "count": 1
+  },
+  {
+    "path": "test/apply-edits.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "function assertFailure > if expected instanceof RegExp > assert.match(result.details.error, expected)",
+    "count": 1
+  },
+  {
+    "path": "test/apply-edits.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "function assertFailure > else expected instanceof RegExp > assert.equal( expected(Object.assign(new Error(result.details.error), { details: result.details })), true, )",
+    "count": 1
+  },
+  {
+    "path": "test/apply-edits.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `${linkCode === \"EIO\" ? \"create failure\" : \"exclusive-create fallback success\"} discloses an unverifiable temporary file` > if linkCode === \"EIO\" > assertFailure( operation, /the temporary create file's cleanup failed and its final state is unknown; it may remain at .* or elsewhere, or only leftover temporary directories may remain/s, )",
+    "count": 1
+  },
+  {
+    "path": "test/apply-edits.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `${linkCode === \"EIO\" ? \"create failure\" : \"exclusive-create fallback success\"} discloses an unverifiable temporary file` > if linkCode === \"EIO\" > assert.rejects(lstat(join(directory, \"file\")), /ENOENT/)",
+    "count": 1
+  },
+  {
+    "path": "test/apply-edits.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `${linkCode === \"EIO\" ? \"create failure\" : \"exclusive-create fallback success\"} discloses an unverifiable temporary file` > else linkCode === \"EIO\" > assert.equal(await readFile(join(directory, \"file\"), \"utf8\"), \"secret\\n\")",
+    "count": 1
+  },
+  {
+    "path": "test/apply-edits.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `${linkCode === \"EIO\" ? \"create failure\" : \"exclusive-create fallback success\"} discloses an unverifiable temporary file` > else linkCode === \"EIO\" > assert.match(result.summary, /used exclusive write publication/)",
+    "count": 1
+  },
+  {
+    "path": "test/apply-edits.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `${linkCode === \"EIO\" ? \"create failure\" : \"exclusive-create fallback success\"} discloses an unverifiable temporary file` > else linkCode === \"EIO\" > assert.match( result.summary, /temporary link's cleanup failed and its final state is unknown/, )",
+    "count": 1
+  },
+  {
+    "path": "test/entry-queue.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `entry ${operation} queues a self-referential link without resolving its target` > if operation === \"move\" > assert.equal(await readlink(join(cwd, \"moved\")), \"loop\")",
+    "count": 1
+  },
+  {
+    "path": "test/entry-queue.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `entry ${operation} queues a self-referential link without resolving its target` > else operation === \"move\" > assert.rejects(lstat(join(cwd, \"moved\")), /ENOENT/)",
+    "count": 1
+  },
+  {
+    "path": "test/entry-queue.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `entry ${operation} waits for an earlier create of ${path}` > if operation === \"move\" > assert.equal(await readFile(join(cwd, \"moved\"), \"utf8\"), \"created\\n\")",
+    "count": 1
+  },
+  {
+    "path": "test/entry-queue.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `entry ${operation} waits for an earlier create of ${path}` > else operation === \"move\" > assert.rejects(lstat(join(cwd, \"moved\")), /ENOENT/)",
+    "count": 1
+  },
+  {
+    "path": "test/file-system.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `replacement retains descriptor xattr writes in ${phase}` > if phase === \"afterRename\" > assert.rejects(publication, (error: unknown) => { assert(outcome([path], [])(error)); assert.match(error.message, /File versions changed during commit/); assert.ok(error.message.includes(retained)); return true; })",
+    "count": 1
+  },
+  {
+    "path": "test/file-system.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `replacement retains descriptor xattr writes in ${phase}` > else phase === \"afterRename\" > assert.ok( preserved !== undefined && preserved.length > 0, \"cleanup must report the retained metadata\", )",
+    "count": 1
+  },
+  {
+    "path": "test/native-paths.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `${operation} traverses parents natively but preserves final symlink entry semantics` > if operation === \"move\" > assert.equal(await readlink(join(cwd, \"actual\", \"moved\")), \"target\")",
+    "count": 1
+  },
+  {
+    "path": "test/native-paths.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `${operation} traverses parents natively but preserves final symlink entry semantics` > else operation === \"move\" > assert.rejects(lstat(join(cwd, \"actual\", \"moved\")), /ENOENT/)",
+    "count": 1
+  },
+  {
+    "path": "test/runtime.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `execution directory is bound before policy in ${bind ? \"normal sessions\" : \"bare SDK prompts\"}` > if bind > assert.partialDeepStrictEqual(prepare(args), { files: [{ path: join(a, \"same.txt\") }] })",
+    "count": 1
+  },
+  {
+    "path": "test/runtime.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `execution directory is bound before policy in ${bind ? \"normal sessions\" : \"bare SDK prompts\"}` > else bind > assert.throws(() => prepare(args), /not initialized/)",
+    "count": 1
+  },
+  {
+    "path": "test/runtime.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `directory-owner provenance: ${scenario}` > if scenario === \"disabled\" || scenario === \"unrelated\" > assert.partialDeepStrictEqual(prepare(args), { files: [{ path: join(root, \"fixture.txt\") }], })",
+    "count": 1
+  },
+  {
+    "path": "test/runtime.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `directory-owner provenance: ${scenario}` > if scenario === \"disabled\" || scenario === \"unrelated\" > assert.equal( api.getCommands().some((command) => command.name === \"cwd\"), scenario === \"unrelated\", )",
+    "count": 1
+  },
+  {
+    "path": "test/runtime.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `directory-owner provenance: ${scenario}` > else scenario === \"disabled\" || scenario === \"unrelated\" > assert.throws(() => prepare(args), /Update pi-change-working-dir and restart Pi/)",
+    "count": 1
+  },
+  {
+    "path": "test/runtime.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `directory-owner provenance: ${scenario}` > else scenario === \"disabled\" || scenario === \"unrelated\" > assert(api.getCommands().some((command) => /^cwd(?::\\d+)?$/.test(command.name)))",
+    "count": 1
+  },
+  {
+    "path": "test/transport.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `${api}: streamed edits and replay survive grammar → JSON → grammar model switches` > if native > assert.deepEqual(definition.format, { type: \"grammar\", syntax: \"lark\", definition: PATCH_GRAMMAR, })",
+    "count": 1
+  },
+  {
+    "path": "test/transport.test.ts",
+    "rule": "node-test/no-conditional-assertions",
+    "id": "QX-003",
+    "selector": "test `${api}: streamed edits and replay survive grammar → JSON → grammar model switches` > else native > assert.partialDeepStrictEqual(definition.parameters, { type: \"object\", required: [\"input\"], properties: { input: { type: \"string\" } }, })",
+    "count": 1
+  }
+]

@@ -3,14 +3,12 @@ import { Text } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import type { ApplyEditsBatchDetails } from "./apply-edits.ts";
 
-interface RenderedFile {
-  readonly path: string;
-  readonly moveTo?: string;
-  readonly operation: string;
-  readonly status: string;
-  readonly diff: string;
-  readonly preview?: true;
-}
+type RenderedFile = Readonly<
+  Pick<
+    ApplyEditsBatchDetails["files"][number],
+    "path" | "moveTo" | "operation" | "status" | "diff" | "preview"
+  >
+>;
 
 function outcomeStyle(
   failed: boolean,

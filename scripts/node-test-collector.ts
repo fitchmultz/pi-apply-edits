@@ -1,5 +1,6 @@
 import type { Rule, Scope } from "eslint";
 import { dirname } from "node:path";
+import { hasConditionalDirective } from "./lint-directives.ts";
 import { canonicalPath, normalizedFlow, ownedFunctions } from "./node-test-ownership.ts";
 import { calleeBinding, callbackTargets } from "./node-test-bindings.ts";
 import {
@@ -190,7 +191,9 @@ export class NodeTestCollector {
     this.stack.at(-1)?.active.delete(segment.id);
   };
 
-  private readonly regionEnd = (node: { readonly range?: readonly [number, number] }): void => {
+  private readonly regionEnd = (node: {
+    readonly range?: readonly [number, number] | undefined;
+  }): void => {
     if (node.range === undefined) {
       return;
     }
@@ -201,7 +204,9 @@ export class NodeTestCollector {
     });
   };
 
-  private readonly returnSite = (node: { readonly range?: readonly [number, number] }): void => {
+  private readonly returnSite = (node: {
+    readonly range?: readonly [number, number] | undefined;
+  }): void => {
     if (node.range !== undefined) {
       this.stack.at(-1)?.returnSites.push({
         offset: node.range[0],
@@ -439,18 +444,6 @@ export class NodeTestCollector {
     }
   }
 
-  private hasDirective(line: number): boolean {
-    return this.context.sourceCode
-      .getAllComments()
-      .some(
-        (comment) =>
-          comment.loc?.end.line === line - 1 &&
-          /^\s*oxlint-disable-next-line\s+node-test\/no-conditional-assertions\s*$/u.test(
-            comment.value,
-          ),
-      );
-  }
-
   private checkConditionalAssertions(
     flows: readonly FunctionFlow[],
     summaries: ReadonlyMap<number, FlowSummary>,
@@ -499,7 +492,10 @@ export class NodeTestCollector {
       return;
     }
     if (this.rule === "node-test/valid-exceptions") {
-      if (this.hasDirective(event.line) && !exhaustive(event, flow, summaries, context)) {
+      if (
+        hasConditionalDirective(this.context.sourceCode, event.line) &&
+        !exhaustive(event, flow, summaries, context)
+      ) {
         this.context.report({
           loc: { line: event.line, column: 0 },
           message:

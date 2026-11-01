@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { type TestContext } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import {
   createAgentSession,
   initTheme,
@@ -150,74 +150,82 @@ function renderContext(cwd: string, isError = false) {
 const patch = (path: string, before = "before", after = "after") =>
   `*** Begin Patch\n*** Update File: ${path}\n@@\n-${before}\n+${after}\n*** End Patch`;
 
-test("registers exactly four focused tools with native grammar and no legacy alias", async (t) => {
-  const { tools } = await harness(t);
-  assert.deepEqual([...tools.keys()], EDITING_TOOL_NAMES);
-  for (const tool of tools.values()) {
-    assert.equal(tool.executionMode, "parallel");
-    assert.partialDeepStrictEqual(tool.parameters, { additionalProperties: false });
-    assert.equal("freeform" in tool, false);
-    assert(!JSON.stringify(tool.parameters).includes('"retry"'));
-  }
-  for (const name of ["apply_patch", "preview_patch"]) {
-    const tool = tools.get(name);
-    assert(tool);
-    assert.equal(
-      tool.constrainedSampling === false ? false : tool.constrainedSampling?.type,
-      "grammar",
+nodeTest(
+  "registers exactly four focused tools with native grammar and no legacy alias",
+  async (t) => {
+    const { tools } = await harness(t);
+    assert.deepEqual([...tools.keys()], EDITING_TOOL_NAMES);
+    for (const tool of tools.values()) {
+      assert.equal(tool.executionMode, "parallel");
+      assert.partialDeepStrictEqual(tool.parameters, { additionalProperties: false });
+      assert.equal("freeform" in tool, false);
+      assert(!JSON.stringify(tool.parameters).includes('"retry"'));
+    }
+    for (const name of ["apply_patch", "preview_patch"]) {
+      const tool = tools.get(name);
+      assert(tool);
+      assert.equal(
+        tool.constrainedSampling === false ? false : tool.constrainedSampling?.type,
+        "grammar",
+      );
+      assert.partialDeepStrictEqual(tool.parameters, { required: ["input"] });
+    }
+  },
+);
+
+nodeTest(
+  "startup respects active selection, keep-builtins, and custom writer ownership",
+  async (t) => {
+    const normal = await harness(t);
+    await normal.session.extensionRunner.emit({ type: "session_start", reason: "new" });
+    const supported = await supportsExistingFileReplacement();
+    assert.deepEqual(
+      normal.state.active,
+      supported
+        ? ["read", ...EDITING_TOOL_NAMES]
+        : ["read", "edit", "write", ...EDITING_TOOL_NAMES],
     );
-    assert.partialDeepStrictEqual(tool.parameters, { required: ["input"] });
-  }
-});
+    await Promise.all(
+      [
+        ["edit", "write"],
+        ["edit", "write", "preview_patch"],
+      ].map(async (active) => {
+        const selected = await harness(t, active);
+        await selected.session.extensionRunner.emit({ type: "session_start", reason: "new" });
+        assert.deepEqual(selected.state.active, active);
+      }),
+    );
+    const flagged = await harness(t, undefined, true);
+    await flagged.session.extensionRunner.emit({ type: "session_start", reason: "new" });
+    assert(flagged.state.active.includes("write"));
+    const custom = await harness(t);
+    custom.sources.set("write", {
+      path: "remote",
+      source: "remote",
+      scope: "temporary",
+      origin: "top-level",
+    });
+    await custom.session.extensionRunner.emit({ type: "session_start", reason: "new" });
+    assert(custom.state.active.includes("write"));
+    const wrapped = await harness(t);
+    wrapped.sources.set("write", {
+      path: "cwd",
+      source: "git:github.com/fitchmultz/pi-change-working-dir@v0.5.0",
+      scope: "user",
+      origin: "top-level",
+    });
+    await wrapped.session.extensionRunner.emit({ type: "session_start", reason: "new" });
+    assert.equal(wrapped.state.active.includes("write"), !supported);
+    const collision = await harness(t, ["edit", "write", "apply_patch"]);
+    const registered = collision.tools.get("apply_patch");
+    assert(registered);
+    collision.tools.set("apply_patch", { ...registered, parameters: {} });
+    await collision.session.extensionRunner.emit({ type: "session_start", reason: "new" });
+    assert.deepEqual(collision.state.active, ["edit", "write", "apply_patch"]);
+  },
+);
 
-test("startup respects active selection, keep-builtins, and custom writer ownership", async (t) => {
-  const normal = await harness(t);
-  await normal.session.extensionRunner.emit({ type: "session_start", reason: "new" });
-  const supported = await supportsExistingFileReplacement();
-  assert.deepEqual(
-    normal.state.active,
-    supported ? ["read", ...EDITING_TOOL_NAMES] : ["read", "edit", "write", ...EDITING_TOOL_NAMES],
-  );
-  await Promise.all(
-    [
-      ["edit", "write"],
-      ["edit", "write", "preview_patch"],
-    ].map(async (active) => {
-      const selected = await harness(t, active);
-      await selected.session.extensionRunner.emit({ type: "session_start", reason: "new" });
-      assert.deepEqual(selected.state.active, active);
-    }),
-  );
-  const flagged = await harness(t, undefined, true);
-  await flagged.session.extensionRunner.emit({ type: "session_start", reason: "new" });
-  assert(flagged.state.active.includes("write"));
-  const custom = await harness(t);
-  custom.sources.set("write", {
-    path: "remote",
-    source: "remote",
-    scope: "temporary",
-    origin: "top-level",
-  });
-  await custom.session.extensionRunner.emit({ type: "session_start", reason: "new" });
-  assert(custom.state.active.includes("write"));
-  const wrapped = await harness(t);
-  wrapped.sources.set("write", {
-    path: "cwd",
-    source: "git:github.com/fitchmultz/pi-change-working-dir@v0.5.0",
-    scope: "user",
-    origin: "top-level",
-  });
-  await wrapped.session.extensionRunner.emit({ type: "session_start", reason: "new" });
-  assert.equal(wrapped.state.active.includes("write"), !supported);
-  const collision = await harness(t, ["edit", "write", "apply_patch"]);
-  const registered = collision.tools.get("apply_patch");
-  assert(registered);
-  collision.tools.set("apply_patch", { ...registered, parameters: {} });
-  await collision.session.extensionRunner.emit({ type: "session_start", reason: "new" });
-  assert.deepEqual(collision.state.active, ["edit", "write", "apply_patch"]);
-});
-
-test("environment opt-in and later manual selection survive the first turn", async (t) => {
+nodeTest("environment opt-in and later manual selection survive the first turn", async (t) => {
   const previous = process.env.PI_APPLY_EDITS_KEEP_BUILTINS;
   process.env.PI_APPLY_EDITS_KEEP_BUILTINS = " YES ";
   try {
@@ -241,7 +249,7 @@ test("environment opt-in and later manual selection survive the first turn", asy
   assert.deepEqual(fixture.state.active, ["read", "write"]);
 });
 
-test("preparation binds literal paths and leaves optional-null validation to the host", () => {
+nodeTest("preparation binds literal paths and leaves optional-null validation to the host", () => {
   const [apply, , write] = createEditingTools(() => "/root");
   const prepareApply = apply.prepareArguments;
   const prepareWrite = write.prepareArguments;
@@ -263,163 +271,171 @@ test("preparation binds literal paths and leaves optional-null validation to the
   assert.throws(() => prepareApply({ input: "not a patch" }), /patch/i);
 });
 
-test("compaction includes partial commits while ignoring previews and uncertain paths", async (t) => {
-  const fixture = await harness(t);
-  const edited = new Set<string>();
-  await fixture.session.extensionRunner.emit({
-    type: "session_before_compact",
-    reason: "manual",
-    willRetry: false,
-    branchEntries: [],
-    signal: new AbortController().signal,
-    preparation: {
-      firstKeptEntryId: "fixture",
-      isSplitTurn: false,
-      tokensBefore: 0,
-      settings: { enabled: true, keepRecentTokens: 0, reserveTokens: 0 },
-      fileOps: { edited, read: new Set<string>(), written: new Set<string>() },
-      turnPrefixMessages: [],
-      messagesToSummarize: [
-        {
-          role: "toolResult",
-          toolCallId: "fixture",
-          content: [],
-          timestamp: 0,
-          toolName: "apply_patch",
-          isError: true,
-          details: { modifiedFiles: ["/committed"], error: "later file failed" },
-        },
-        {
-          role: "toolResult",
-          toolCallId: "fixture",
-          content: [],
-          timestamp: 0,
-          toolName: "replace_text",
-          isError: false,
-          details: { modifiedFiles: ["/preview"], preview: true },
-        },
-        {
-          role: "toolResult",
-          toolCallId: "fixture",
-          content: [],
-          timestamp: 0,
-          toolName: "write_files",
-          isError: false,
-          details: { modifiedFiles: [], files: [{ path: "/uncertain", status: "uncertain" }] },
-        },
-        {
-          role: "toolResult",
-          toolCallId: "fixture",
-          content: [],
-          timestamp: 0,
-          toolName: "unrelated",
-          isError: false,
-          details: { modifiedFiles: ["/unrelated"] },
-        },
-      ],
-    },
-  });
-  assert.deepEqual([...edited], ["/committed"]);
-});
+nodeTest(
+  "compaction includes partial commits while ignoring previews and uncertain paths",
+  async (t) => {
+    const fixture = await harness(t);
+    const edited = new Set<string>();
+    await fixture.session.extensionRunner.emit({
+      type: "session_before_compact",
+      reason: "manual",
+      willRetry: false,
+      branchEntries: [],
+      signal: new AbortController().signal,
+      preparation: {
+        firstKeptEntryId: "fixture",
+        isSplitTurn: false,
+        tokensBefore: 0,
+        settings: { enabled: true, keepRecentTokens: 0, reserveTokens: 0 },
+        fileOps: { edited, read: new Set<string>(), written: new Set<string>() },
+        turnPrefixMessages: [],
+        messagesToSummarize: [
+          {
+            role: "toolResult",
+            toolCallId: "fixture",
+            content: [],
+            timestamp: 0,
+            toolName: "apply_patch",
+            isError: true,
+            details: { modifiedFiles: ["/committed"], error: "later file failed" },
+          },
+          {
+            role: "toolResult",
+            toolCallId: "fixture",
+            content: [],
+            timestamp: 0,
+            toolName: "replace_text",
+            isError: false,
+            details: { modifiedFiles: ["/preview"], preview: true },
+          },
+          {
+            role: "toolResult",
+            toolCallId: "fixture",
+            content: [],
+            timestamp: 0,
+            toolName: "write_files",
+            isError: false,
+            details: { modifiedFiles: [], files: [{ path: "/uncertain", status: "uncertain" }] },
+          },
+          {
+            role: "toolResult",
+            toolCallId: "fixture",
+            content: [],
+            timestamp: 0,
+            toolName: "unrelated",
+            isError: false,
+            details: { modifiedFiles: ["/unrelated"] },
+          },
+        ],
+      },
+    });
+    assert.deepEqual([...edited], ["/committed"]);
+  },
+);
 
-test("preview rendering preserves unchanged, planned, failed, and unattempted file outcomes without writes", async (t) => {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-preview-")));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const [, , write, preview] = createEditingTools();
-  const fixture = await harness(t, EDITING_TOOL_NAMES, false, directory);
-  const ctx = fixture.session.extensionRunner.createToolContext(
-    "preview",
-    fixture.session.extensionRunner.createContext().signal,
-  );
-  await Promise.all(
-    ["same", "planned"].map((path) => writeFile(join(directory, path), "before\n")),
-  );
-  const mixed = await write.execute(
-    "mixed-preview",
-    {
-      files: [
-        { path: "same", content: "before\n", mode: "replace" },
-        { path: "planned", content: "after\n", mode: "replace" },
-      ],
-      preview: true,
-    },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert.equal(mixed.isError, false);
-  assert(mixed.details !== undefined);
-  assert.equal(mixed.details.error, undefined);
-  assert.deepEqual(
-    mixed.details.files.map((file) => file.status),
-    ["unchanged", "unattempted"],
-  );
-  const failed = await preview.execute(
-    "failed-preview",
-    {
-      input:
-        "*** Begin Patch\n*** Update File: planned\n@@\n-before\n+after\n" +
-        "*** Update File: same\n@@\n-missing\n+after\n" +
-        "*** Add File: unreached\n+never written\n*** End Patch",
-    },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert.equal(failed.isError, true);
-  assert(failed.details !== undefined);
-  assert.notEqual(failed.details.error, undefined);
-  assert.deepEqual(
-    failed.details.files.map((file) => file.status),
-    ["unattempted", "failed", "unattempted"],
-  );
-  assert.equal(failed.details.files[0]?.preview, true);
-  assert.equal(Object.hasOwn(failed.details.files[2], "preview"), false);
-  initTheme("dark", false);
-  const theme = fixture.session.extensionRunner.getUIContext().theme;
-  for (const { tool, result, labels } of [
-    {
-      tool: write,
-      result: mixed,
-      labels: ["same (no_change; unchanged)", "planned (rewrite; planned preview)"],
-    },
-    {
-      tool: preview,
-      result: failed,
-      labels: [
-        "planned (patch; planned preview)",
-        "same (patch; failed preview)",
-        "unreached (create; unattempted preview)",
-      ],
-    },
-  ]) {
-    const details = result.details;
-    assert(details !== undefined);
-    assert.equal(details.preview, true);
-    assert.deepEqual(details.modifiedFiles, []);
-    const render = tool.renderResult;
-    assert(render);
-    for (const width of [120, 32]) {
-      const lines = render(
-        result,
-        { expanded: true, isPartial: false },
-        theme,
-        renderContext(directory, result.isError),
-      ).render(width);
-      for (const line of lines) {
-        assert(visibleWidth(line) <= width);
-      }
-      const text = stripTerminalSequences(lines.join("")).replace(/\s+/g, "");
-      assert(!text.includes("unreached(create;plannedpreview)"), lines.join("\n"));
-      for (const label of labels) {
-        assert(text.includes(label.replace(/\s+/g, "")), lines.join("\n"));
+nodeTest(
+  "preview rendering preserves unchanged, planned, failed, and unattempted file outcomes without writes",
+  async (t) => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-preview-")));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const [, , write, preview] = createEditingTools();
+    const fixture = await harness(t, EDITING_TOOL_NAMES, false, directory);
+    const ctx = fixture.session.extensionRunner.createToolContext(
+      "preview",
+      fixture.session.extensionRunner.createContext().signal,
+    );
+    await Promise.all(
+      ["same", "planned"].map((path) => writeFile(join(directory, path), "before\n")),
+    );
+    const mixed = await write.execute(
+      "mixed-preview",
+      {
+        files: [
+          { path: "same", content: "before\n", mode: "replace" },
+          { path: "planned", content: "after\n", mode: "replace" },
+        ],
+        preview: true,
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.equal(mixed.isError, false);
+    assert(mixed.details !== undefined);
+    assert.equal(mixed.details.error, undefined);
+    assert.deepEqual(
+      mixed.details.files.map((file) => file.status),
+      ["unchanged", "unattempted"],
+    );
+    const failed = await preview.execute(
+      "failed-preview",
+      {
+        input:
+          "*** Begin Patch\n*** Update File: planned\n@@\n-before\n+after\n" +
+          "*** Update File: same\n@@\n-missing\n+after\n" +
+          "*** Add File: unreached\n+never written\n*** End Patch",
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.equal(failed.isError, true);
+    assert(failed.details !== undefined);
+    assert.notEqual(failed.details.error, undefined);
+    assert.deepEqual(
+      failed.details.files.map((file) => file.status),
+      ["unattempted", "failed", "unattempted"],
+    );
+    assert.equal(failed.details.files[0]?.preview, true);
+    const failedFile = failed.details.files[2];
+    assert(failedFile !== undefined);
+    assert.equal(Object.hasOwn(failedFile, "preview"), false);
+    initTheme("dark", false);
+    const theme = fixture.session.extensionRunner.getUIContext().theme;
+    for (const { tool, result, labels } of [
+      {
+        tool: write,
+        result: mixed,
+        labels: ["same (no_change; unchanged)", "planned (rewrite; planned preview)"],
+      },
+      {
+        tool: preview,
+        result: failed,
+        labels: [
+          "planned (patch; planned preview)",
+          "same (patch; failed preview)",
+          "unreached (create; unattempted preview)",
+        ],
+      },
+    ]) {
+      const details = result.details;
+      assert(details !== undefined);
+      assert.equal(details.preview, true);
+      assert.deepEqual(details.modifiedFiles, []);
+      const render = tool.renderResult;
+      assert(render);
+      for (const width of [120, 32]) {
+        const lines = render(
+          result,
+          { expanded: true, isPartial: false },
+          theme,
+          renderContext(directory, result.isError),
+        ).render(width);
+        for (const line of lines) {
+          assert(visibleWidth(line) <= width);
+        }
+        const text = stripTerminalSequences(lines.join("")).replace(/\s+/g, "");
+        assert(!text.includes("unreached(create;plannedpreview)"), lines.join("\n"));
+        for (const label of labels) {
+          assert(text.includes(label.replace(/\s+/g, "")), lines.join("\n"));
+        }
       }
     }
-  }
-  assert.equal(await readFile(join(directory, "same"), "utf8"), "before\n");
-  assert.equal(await readFile(join(directory, "planned"), "utf8"), "before\n");
-  assert.deepEqual((await readdir(directory)).sort(), ["planned", "same"]);
-});
+    assert.equal(await readFile(join(directory, "same"), "utf8"), "before\n");
+    assert.equal(await readFile(join(directory, "planned"), "utf8"), "before\n");
+    assert.deepEqual((await readdir(directory)).sort(), ["planned", "same"]);
+  },
+);
 
 function firstStructuredFile(receipt: unknown): object {
   assert(receipt !== null && typeof receipt === "object");
@@ -430,198 +446,207 @@ function firstStructuredFile(receipt: unknown): object {
   return file;
 }
 
-test("tools return bounded preview text, full expanded diffs, and truthful receipts", async (t) => {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-tools-")));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const [apply, replace, write] = createEditingTools();
-  const fixture = await harness(
-    t,
-    ["read", "edit", "write", ...EDITING_TOOL_NAMES],
-    false,
-    directory,
-  );
-  const ctx = fixture.session.extensionRunner.createToolContext(
-    "fixture",
-    fixture.session.extensionRunner.createContext().signal,
-  );
-  const renderWrite = write.renderResult;
-  const renderApply = apply.renderResult;
-  assert(renderWrite);
-  assert(renderApply);
-  const body = `${"line\n".repeat(3_000)}FINAL-LINE\n`;
-  const preview = await write.execute(
-    "preview",
-    { files: [{ path: "new", content: body, mode: "create" }], preview: true },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert.equal(preview.details?.preview, true);
-  assert.notEqual(preview.details, undefined);
-  assert.deepEqual(preview.details.modifiedFiles, []);
-  assert.deepEqual(await readdir(directory), []);
-  assert.match(
-    preview.content[1]?.type === "text" ? preview.content[1].text : "",
-    /Preview truncated/,
-  );
-  assert.partialDeepStrictEqual(preview.structuredContent, {
-    summary: "Would create 1 file (+3001/-0): new. No files written.",
-    preview: true,
-    modifiedFiles: [],
-    previewDiffTruncated: true,
-  });
-  assert.match(JSON.stringify(preview.structuredContent), /Preview truncated/);
-  assert.match(preview.details.files[0]?.diff ?? "", /FINAL-LINE/);
-  const omitted = await write.execute(
-    "omitted-preview",
-    {
-      files: [{ path: "omitted", content: "line\n".repeat(20_001), mode: "create" }],
+nodeTest(
+  "tools return bounded preview text, full expanded diffs, and truthful receipts",
+  async (t) => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-tools-")));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const [apply, replace, write] = createEditingTools();
+    const fixture = await harness(
+      t,
+      ["read", "edit", "write", ...EDITING_TOOL_NAMES],
+      false,
+      directory,
+    );
+    const ctx = fixture.session.extensionRunner.createToolContext(
+      "fixture",
+      fixture.session.extensionRunner.createContext().signal,
+    );
+    const renderWrite = write.renderResult;
+    const renderApply = apply.renderResult;
+    assert(renderWrite);
+    assert(renderApply);
+    const body = `${"line\n".repeat(3_000)}FINAL-LINE\n`;
+    const preview = await write.execute(
+      "preview",
+      { files: [{ path: "new", content: body, mode: "create" }], preview: true },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.equal(preview.details?.preview, true);
+    assert.notEqual(preview.details, undefined);
+    assert.deepEqual(preview.details.modifiedFiles, []);
+    assert.deepEqual(await readdir(directory), []);
+    assert.match(
+      preview.content[1]?.type === "text" ? preview.content[1].text : "",
+      /Preview truncated/,
+    );
+    assert.partialDeepStrictEqual(preview.structuredContent, {
+      summary: "Would create 1 file (+3001/-0): new. No files written.",
       preview: true,
-    },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert.equal(omitted.isError, false);
-  assert.partialDeepStrictEqual(omitted.structuredContent, {
-    preview: true,
-    modifiedFiles: [],
-    previewDiffTruncated: true,
-  });
-  const omittedFile = firstStructuredFile(omitted.structuredContent);
-  assert("diff" in omittedFile);
-  assert(typeof omittedFile.diff === "string");
-  assert.match(omittedFile.diff, /Diff omitted/);
-  assert("diffTruncated" in omittedFile);
-  assert.equal(omittedFile.diffTruncated, true);
-  assert.equal(Object.hasOwn(omittedFile, "addedLines"), false);
-  assert.equal(Object.hasOwn(omittedFile, "deletedLines"), false);
-  assert.deepEqual(await readdir(directory), []);
-  initTheme("dark", false);
-  const theme = fixture.session.extensionRunner.getUIContext().theme;
-  const expanded = renderWrite(
-    preview,
-    { expanded: true, isPartial: false },
-    theme,
-    renderContext(directory),
-  ).render(80);
-  assert(expanded.some((line) => line.includes("FINAL-LINE")));
-  for (const line of expanded) {
-    assert(visibleWidth(line) <= 80);
-  }
-  const collapsed = renderWrite(
-    preview,
-    { expanded: false, isPartial: false },
-    theme,
-    renderContext(directory),
-  ).render(80);
-  assert(!collapsed.some((line) => line.includes("FINAL-LINE")));
-
-  const written = await write.execute(
-    "create",
-    { files: [{ path: "new", content: body, mode: "create" }] },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert.equal(written.isError, false);
-  assert.equal(await readFile(join(directory, "new"), "utf8"), body);
-  assert.partialDeepStrictEqual(written.structuredContent, {
-    summary: "Created 1 file (+3001/-0): new.",
-    modifiedFiles: [join(directory, "new")],
-    files: [{ path: join(directory, "new"), status: "applied", addedLines: 3_001 }],
-  });
-  assert.match(written.details?.files[0]?.diff ?? "", /FINAL-LINE/);
-
-  await writeFile(join(directory, "file"), "before\n");
-  const result = await apply.execute("apply", { input: patch("file") }, undefined, undefined, ctx);
-  assert.equal(await readFile(join(directory, "file"), "utf8"), "after\n");
-  assert.deepEqual(result.details?.modifiedFiles, [join(directory, "file")]);
-  assert.equal(result.details.files.at(0)?.status, "applied");
-  // A result hook may mutate details; the structured receipt must not share its arrays.
-  const fileReceipt = result.details.files.at(0);
-  const match = fileReceipt?.matches.at(0);
-  assert(fileReceipt);
-  assert(match);
-  const structured = JSON.stringify(result.structuredContent);
-  result.details.modifiedFiles.push("hook path");
-  match.lines.push(0);
-  fileReceipt.warnings.push("hook warning");
-  assert.equal(JSON.stringify(result.structuredContent), structured);
-  assert.match(structured, /"strategy":"exact"/);
-  await writeFile(join(directory, "targeted"), "before\n");
-  const targeted = await replace.execute(
-    "targeted",
-    { files: [{ path: "targeted", edits: [{ oldText: "before", newText: "after" }] }] },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert.equal(targeted.isError, false);
-  const structuredFile = firstStructuredFile(targeted.structuredContent);
-  assert("matches" in structuredFile);
-  assert(Array.isArray(structuredFile.matches));
-  const structuredMatch: unknown = structuredFile.matches[0];
-  assert(structuredMatch !== null && typeof structuredMatch === "object");
-  assert.equal(Object.hasOwn(structuredMatch, "linesTruncated"), false);
-  const failed = await apply.execute(
-    "fail",
-    { input: patch("file", "missing") },
-    undefined,
-    undefined,
-    ctx,
-  );
-  assert(failed.details !== undefined);
-  assert.notEqual(failed.details.error, undefined);
-  assert.equal(failed.isError, true);
-  assert.partialDeepStrictEqual(failed.structuredContent, {
-    summary:
-      "Editing failed (0 verified committed paths). Inspect error and per-file outcomes before retrying.",
-    error: failed.details.error,
-    modifiedFiles: [],
-    files: [{ path: join(directory, "file"), status: "failed" }],
-  });
-  assert.deepEqual(failed.details.modifiedFiles, []);
-  const failureView = renderApply(
-    failed,
-    { expanded: false, isPartial: false },
-    theme,
-    renderContext(directory, true),
-  )
-    .render(100)
-    .join("\n");
-  assert.match(failureView, /✗/);
-  assert.doesNotMatch(failureView, /✓/);
-
-  const nativeRealpath = fs.realpath;
-  let resolutions = 0;
-  t.mock.method(fs, "realpath", async (...args: Readonly<Parameters<typeof fs.realpath>>) => {
-    const [path, options] = args;
-    if (path === join(directory, "file") && ++resolutions === 2) {
-      throw new Error("");
-    }
-    return nativeRealpath(path, options);
-  });
-  syncBuiltinESMExports();
-  try {
-    // Discovery succeeds, but Pi's subsequent queue acquisition rejects with an
-    // empty-message error. Error presence, not message truthiness, owns the flag.
-    const queueFailure = await write.execute(
-      "queue-fail",
+      modifiedFiles: [],
+      previewDiffTruncated: true,
+    });
+    assert.match(JSON.stringify(preview.structuredContent), /Preview truncated/);
+    assert.match(preview.details.files[0]?.diff ?? "", /FINAL-LINE/);
+    const omitted = await write.execute(
+      "omitted-preview",
       {
-        files: [{ path: join(directory, "file"), content: "must not write", mode: "replace" }],
+        files: [{ path: "omitted", content: "line\n".repeat(20_001), mode: "create" }],
+        preview: true,
       },
       undefined,
       undefined,
       ctx,
     );
-    assert(queueFailure.details !== undefined);
-    assert.equal(queueFailure.details.error, "");
-    assert.equal(queueFailure.isError, true);
-    assert.deepEqual(queueFailure.details.modifiedFiles, []);
+    assert.equal(omitted.isError, false);
+    assert.partialDeepStrictEqual(omitted.structuredContent, {
+      preview: true,
+      modifiedFiles: [],
+      previewDiffTruncated: true,
+    });
+    const omittedFile = firstStructuredFile(omitted.structuredContent);
+    assert("diff" in omittedFile);
+    assert(typeof omittedFile.diff === "string");
+    assert.match(omittedFile.diff, /Diff omitted/);
+    assert("diffTruncated" in omittedFile);
+    assert.equal(omittedFile.diffTruncated, true);
+    assert.equal(Object.hasOwn(omittedFile, "addedLines"), false);
+    assert.equal(Object.hasOwn(omittedFile, "deletedLines"), false);
+    assert.deepEqual(await readdir(directory), []);
+    initTheme("dark", false);
+    const theme = fixture.session.extensionRunner.getUIContext().theme;
+    const expanded = renderWrite(
+      preview,
+      { expanded: true, isPartial: false },
+      theme,
+      renderContext(directory),
+    ).render(80);
+    assert(expanded.some((line) => line.includes("FINAL-LINE")));
+    for (const line of expanded) {
+      assert(visibleWidth(line) <= 80);
+    }
+    const collapsed = renderWrite(
+      preview,
+      { expanded: false, isPartial: false },
+      theme,
+      renderContext(directory),
+    ).render(80);
+    assert(!collapsed.some((line) => line.includes("FINAL-LINE")));
+
+    const written = await write.execute(
+      "create",
+      { files: [{ path: "new", content: body, mode: "create" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.equal(written.isError, false);
+    assert.equal(await readFile(join(directory, "new"), "utf8"), body);
+    assert.partialDeepStrictEqual(written.structuredContent, {
+      summary: "Created 1 file (+3001/-0): new.",
+      modifiedFiles: [join(directory, "new")],
+      files: [{ path: join(directory, "new"), status: "applied", addedLines: 3_001 }],
+    });
+    assert.match(written.details?.files[0]?.diff ?? "", /FINAL-LINE/);
+
+    await writeFile(join(directory, "file"), "before\n");
+    const result = await apply.execute(
+      "apply",
+      { input: patch("file") },
+      undefined,
+      undefined,
+      ctx,
+    );
     assert.equal(await readFile(join(directory, "file"), "utf8"), "after\n");
-  } finally {
-    t.mock.restoreAll();
+    assert.deepEqual(result.details?.modifiedFiles, [join(directory, "file")]);
+    assert.equal(result.details.files.at(0)?.status, "applied");
+    // A result hook may mutate details; the structured receipt must not share its arrays.
+    const fileReceipt = result.details.files.at(0);
+    const match = fileReceipt?.matches.at(0);
+    assert(fileReceipt);
+    assert(match);
+    const structured = JSON.stringify(result.structuredContent);
+    result.details.modifiedFiles.push("hook path");
+    match.lines.push(0);
+    fileReceipt.warnings.push("hook warning");
+    assert.equal(JSON.stringify(result.structuredContent), structured);
+    assert.match(structured, /"strategy":"exact"/);
+    await writeFile(join(directory, "targeted"), "before\n");
+    const targeted = await replace.execute(
+      "targeted",
+      { files: [{ path: "targeted", edits: [{ oldText: "before", newText: "after" }] }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.equal(targeted.isError, false);
+    const structuredFile = firstStructuredFile(targeted.structuredContent);
+    assert("matches" in structuredFile);
+    assert(Array.isArray(structuredFile.matches));
+    const structuredMatch: unknown = structuredFile.matches[0];
+    assert(structuredMatch !== null && typeof structuredMatch === "object");
+    assert.equal(Object.hasOwn(structuredMatch, "linesTruncated"), false);
+    const failed = await apply.execute(
+      "fail",
+      { input: patch("file", "missing") },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert(failed.details !== undefined);
+    assert.notEqual(failed.details.error, undefined);
+    assert.equal(failed.isError, true);
+    assert.partialDeepStrictEqual(failed.structuredContent, {
+      summary:
+        "Editing failed (0 verified committed paths). Inspect error and per-file outcomes before retrying.",
+      error: failed.details.error,
+      modifiedFiles: [],
+      files: [{ path: join(directory, "file"), status: "failed" }],
+    });
+    assert.deepEqual(failed.details.modifiedFiles, []);
+    const failureView = renderApply(
+      failed,
+      { expanded: false, isPartial: false },
+      theme,
+      renderContext(directory, true),
+    )
+      .render(100)
+      .join("\n");
+    assert.match(failureView, /✗/);
+    assert.doesNotMatch(failureView, /✓/);
+
+    const nativeRealpath = fs.realpath;
+    let resolutions = 0;
+    t.mock.method(fs, "realpath", async (...args: Readonly<Parameters<typeof fs.realpath>>) => {
+      const [path, options] = args;
+      if (path === join(directory, "file") && ++resolutions === 2) {
+        throw new Error("");
+      }
+      return nativeRealpath(path, options);
+    });
     syncBuiltinESMExports();
-  }
-});
+    try {
+      // Discovery succeeds, but Pi's subsequent queue acquisition rejects with an
+      // empty-message error. Error presence, not message truthiness, owns the flag.
+      const queueFailure = await write.execute(
+        "queue-fail",
+        {
+          files: [{ path: join(directory, "file"), content: "must not write", mode: "replace" }],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      assert(queueFailure.details !== undefined);
+      assert.equal(queueFailure.details.error, "");
+      assert.equal(queueFailure.isError, true);
+      assert.deepEqual(queueFailure.details.modifiedFiles, []);
+      assert.equal(await readFile(join(directory, "file"), "utf8"), "after\n");
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  },
+);

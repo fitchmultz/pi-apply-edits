@@ -2,11 +2,13 @@
 /.oxlintrc.json @fitchmultz
 /.oxfmtrc.json @fitchmultz
 /.gitignore @fitchmultz
-/tsconfig.json @fitchmultz
+/tsconfig*.json @fitchmultz
 /package.json @fitchmultz
 /package-lock.json @fitchmultz
 /scripts/ @fitchmultz
-/patches/ @fitchmultz
+/QUALITY.md @fitchmultz
+/docs/engineering-standard.md @fitchmultz
+/docs/quality-qualification.md @fitchmultz
 /test/quality*.test.ts @fitchmultz
 /test/quality-probe-support.ts @fitchmultz
 /test/racing.ts @fitchmultz

@@ -162,7 +162,6 @@ export async function assertPublishedDirectoriesCurrent(
 ): Promise<void> {
   for (const [path, expected] of directories) {
     // Each identity check must finish before the next dependent publication phase.
-    // oxlint-disable-next-line no-await-in-loop
     const current = await currentOwnedPath(path, expected, "Published create directory");
     if (!current || !current.isDirectory() || current.isSymbolicLink()) {
       throw new Error(`Published create directory changed identity at ${path}.`);

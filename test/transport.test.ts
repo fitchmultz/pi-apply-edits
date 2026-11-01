@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { type TestContext } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { zstdDecompressSync } from "node:zlib";
 import {
@@ -28,7 +28,7 @@ import { PATCH_GRAMMAR } from "../src/patch.ts";
 type Api = "openai-responses" | "openai-codex-responses";
 type Reply = { readonly native: boolean; readonly input: string } | { readonly text: string };
 type RequestBody = {
-  readonly tools?: readonly Readonly<Record<string, unknown>>[];
+  readonly tools?: readonly Readonly<Record<string, unknown>>[] | undefined;
   readonly input: readonly Readonly<Record<string, unknown>>[];
 };
 interface SseEvent {
@@ -272,7 +272,7 @@ async function fixture(t: TestContext, api: Api) {
 }
 
 for (const api of ["openai-responses", "openai-codex-responses"] as const) {
-  test(
+  nodeTest(
     `${api}: streamed edits and replay survive grammar → JSON → grammar model switches`,
     { timeout: 30_000 },
     async (t) => {
@@ -282,7 +282,6 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
       for (const [index, native] of [true, false, true].entries()) {
         if (index > 0) {
           // Model switches must complete before the next wire-format scenario begins.
-          // oxlint-disable-next-line no-await-in-loop
           await f.session.setModel({
             ...f.model,
             id: `model-${index}`,
@@ -295,13 +294,10 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
         const deltaStart = f.deltas.length;
         f.replies.push({ native, input }, { text: "Edit complete." });
         // Each patch depends on the bytes and transcript produced by the preceding patch.
-        // oxlint-disable-next-line no-await-in-loop
         await f.session.prompt("Apply the fixture patch.");
         // Settle this model generation before checking its output and changing the model.
-        // oxlint-disable-next-line no-await-in-loop
         await f.session.waitForIdle();
         // This file read observes the ordered commit before the next patch consumes it.
-        // oxlint-disable-next-line no-await-in-loop
         assert.equal(await readFile(join(f.cwd, "fixture.txt"), "utf8"), `${after}\n`);
         const results = f.session.messages.filter((m) => m.role === "toolResult");
         assert.equal(results.length, index + 1);
@@ -339,7 +335,7 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
             assert.equal(definition.type, native ? "custom" : "function");
             if (native) {
               // Exhaustive transport variants validate native grammar or JSON parameters, never omit a schema.
-              // oxlint-disable-next-line node-test/no-conditional-assertions
+              // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
               assert.deepEqual(definition.format, {
                 type: "grammar",
                 syntax: "lark",
@@ -347,7 +343,7 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
               });
             } else {
               // Exhaustive transport variants validate the function-call schema when native grammar is absent.
-              // oxlint-disable-next-line node-test/no-conditional-assertions
+              // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
               assert.partialDeepStrictEqual(definition.parameters, {
                 type: "object",
                 required: ["input"],
@@ -389,7 +385,7 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
   );
 }
 
-test(
+nodeTest(
   "native compaction retains committed paths from successful and partial-error receipts",
   { timeout: 30_000 },
   async (t) => {

@@ -30,6 +30,7 @@
   "scripts": {
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:jxa": "tsc --noEmit -p tsconfig.jxa.json",
     "pack:check": "npm pack --dry-run",
     "lint": "oxlint --deny-warnings .",
     "lint:agent": "oxlint --deny-warnings --format=agent .",
@@ -38,7 +39,7 @@
     "format:check": "oxfmt --check .",
     "policy:check": "node scripts/check-policy.ts",
     "quality:probes": "node --test test/quality*.test.ts",
-    "check": "npm run policy:check && npm run lint && npm run format:check && npm run typecheck && npm test && npm run pack:check",
+    "check": "node scripts/check.ts",
     "check:compat": "npm run check",
     "prepublishOnly": "npm run check"
   },

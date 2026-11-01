@@ -23,28 +23,28 @@ export interface TargetedEdit {
   oldText: string;
   newText: string;
   /** Replace through the inclusive end anchor. */
-  endText?: string;
-  all?: boolean;
+  endText?: string | undefined;
+  all?: boolean | undefined;
   /** Keep the matched anchor; insert with no implicit separator. */
-  insert?: InsertPosition;
+  insert?: InsertPosition | undefined;
 }
 export interface ApplyEditsInput {
   path: string;
-  edits?: TargetedEdit[];
-  rewrite?: string;
-  onMissing?: "error" | "create";
-  requireMissing?: boolean;
-  preserveFormatting?: boolean;
+  edits?: TargetedEdit[] | undefined;
+  rewrite?: string | undefined;
+  onMissing?: "error" | "create" | undefined;
+  requireMissing?: boolean | undefined;
+  preserveFormatting?: boolean | undefined;
 }
 export interface AppliedEditDetail {
   index: number;
   strategy: MatchStrategy;
   replacements: number;
   lines: number[];
-  linesTruncated?: boolean;
+  linesTruncated?: boolean | undefined;
 }
 export interface ApplyEditsDetails {
-  preview?: true;
+  preview?: true | undefined;
   path: string;
   operation: "edit" | "rewrite" | "create" | "patch" | "delete" | "move" | "no_change";
   editsRequested: number;
@@ -52,8 +52,8 @@ export interface ApplyEditsDetails {
   matches: AppliedEditDetail[];
   bytesBefore: number;
   bytesAfter: number;
-  addedLines?: number;
-  deletedLines?: number;
+  addedLines?: number | undefined;
+  deletedLines?: number | undefined;
   diff: string;
   diffTruncated: boolean;
   warnings: string[];
@@ -61,13 +61,13 @@ export interface ApplyEditsDetails {
 export type FileStatus = "applied" | "unchanged" | "failed" | "unattempted" | "uncertain";
 export interface FileReceipt extends ApplyEditsDetails {
   status: FileStatus;
-  moveTo?: string;
+  moveTo?: string | undefined;
 }
 export interface ApplyEditsBatchDetails {
-  preview?: true;
+  preview?: true | undefined;
   modifiedFiles: string[];
   files: FileReceipt[];
-  error?: string;
+  error?: string | undefined;
 }
 export interface EditingExecution {
   summary: string;
@@ -97,21 +97,21 @@ export type ReadonlyEditingExecution = Readonly<Omit<EditingExecution, "details"
 };
 export interface ReplaceTextRequest {
   files: Array<{ path: string; edits: TargetedEdit[] }>;
-  preview?: boolean;
+  preview?: boolean | undefined;
 }
 export interface WriteFilesRequest {
   files: Array<{
     path: string;
     content: string;
     mode: "create" | "replace";
-    preserveFormatting?: boolean;
+    preserveFormatting?: boolean | undefined;
   }>;
-  preview?: boolean;
+  preview?: boolean | undefined;
 }
 /** Read views of caller-owned inputs; the editing pipeline only reads them. */
 export type ReadonlyTargetedEdit = Readonly<TargetedEdit>;
 export type ReadonlyApplyEditsInput = Readonly<Omit<ApplyEditsInput, "edits">> & {
-  readonly edits?: readonly ReadonlyTargetedEdit[];
+  readonly edits?: readonly ReadonlyTargetedEdit[] | undefined;
 };
 type ReadonlyReplaceTextFile = Readonly<Omit<ReplaceTextRequest["files"][number], "edits">> & {
   readonly edits: readonly ReadonlyTargetedEdit[];
@@ -123,8 +123,8 @@ export type ReadonlyWriteFilesRequest = Readonly<Omit<WriteFilesRequest, "files"
   readonly files: readonly Readonly<WriteFilesRequest["files"][number]>[];
 };
 export interface MutationInput extends ReadonlyApplyEditsInput {
-  readonly patch?: ReadonlyPatchUpdate;
-  readonly delete?: true;
+  readonly patch?: ReadonlyPatchUpdate | undefined;
+  readonly delete?: true | undefined;
 }
 export interface PlannedMutation {
   readonly inputPath: string;
@@ -137,10 +137,10 @@ export interface PlannedMutation {
   readonly operation: ApplyEditsDetails["operation"];
   readonly editsRequested: number;
   readonly needsWrite: boolean;
-  readonly createPlan?: ReadonlyNewFilePlan;
-  readonly lockKey?: string;
-  readonly entry?: ReadonlyEntrySnapshot;
-  readonly movePlan?: ReadonlyEntryMovePlan;
+  readonly createPlan?: ReadonlyNewFilePlan | undefined;
+  readonly lockKey?: string | undefined;
+  readonly entry?: ReadonlyEntrySnapshot | undefined;
+  readonly movePlan?: ReadonlyEntryMovePlan | undefined;
 }
 export interface TextEditResult {
   text: string;
@@ -161,16 +161,16 @@ export interface MatchResult {
 export interface EditSearch {
   readonly oldText: string;
   readonly newText: string;
-  readonly insert?: InsertPosition;
+  readonly insert?: InsertPosition | undefined;
   readonly applyAll: boolean;
   readonly maxResultLength: number;
-  readonly field?: "oldText" | "endText";
+  readonly field?: "oldText" | "endText" | undefined;
 }
 export interface ExecutionOptions {
   readonly cwd: string;
   readonly preview: boolean;
-  readonly signal?: AbortSignal;
-  readonly onProgress?: (summary: string) => void;
+  readonly signal?: AbortSignal | undefined;
+  readonly onProgress?: ((summary: string) => void) | undefined;
 }
 export function required<T>(value: T | undefined): T {
   if (value === undefined) {

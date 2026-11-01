@@ -1,33 +1,54 @@
 # Development
 
-pi-apply-edits is distributed through Git/GitHub only. Publishing to npm is unsupported.
+pi-apply-edits is distributed through Git and GitHub. Use Node 24.15 or newer,
+Git, and the npm version declared in `package.json`. The extension's runtime
+floor remains Node 24.0.
 
-Use Node 24.15 or later for the pinned npm 12 development toolchain. The extension's
-runtime floor remains Node 24.0. Development checker preparation also requires
-Git, Go 1.26 or later, and Rust 1.99.0. On macOS and Linux, native Oxlint checker
-builds also require CMake. Production installs do not build checkers.
+## Install and check
+
+```sh
+npm ci
+npm run check:compat
+```
+
+A lifecycle-disabled installation works too:
 
 ```sh
 npm ci --ignore-scripts
 npm run check:compat
 ```
 
-The package uses public Pi and TypeBox peer APIs, with jsdiff as its only direct
-runtime dependency. `check:compat` runs policy and installed-checker probes,
-strict type-aware Oxlint, Oxfmt checking, canonical TypeScript checking,
-tests, and a pack dry-run
-against the installed host; its official development cohort is Pi 1.0.0 and
-TypeBox 1.3.34. The suite includes real Pi loader/policy/settlement, native nested
-receipts, and journal reload/restore checks with scripted responses and no model
-calls. Both 1.0 targets use the public same-file queue; batch reservations,
-prospective aliases, and publication/recovery safeguards remain package-owned.
-Fitch Pi no longer provides checkpoint or mutation-key APIs. CI qualifies the declared
-official Pi version on macOS/Node 24 and `fitchmultz/pi@main` on Linux/Node 24;
-both lanes verify a fresh Git consumer through the real Pi CLI. Linux metadata
-fault tests require `attr`, `acl`, and a C compiler.
-Temporary directories must allow the current user to set the tested permission
-bits (on macOS, a directory inherited from `/tmp` may need its group set to the
-current user's primary group before creating fixtures).
+Use `npm run lint:agent` for diagnostics, `npm run lint:fix` for ordinary fixes,
+and `npm run format` for formatting. Inspect fixes before committing.
 
-See [Code quality and maintainability](../QUALITY.md) for coverage, narrow semantic
-exceptions, editor setup, and the production responsibility boundaries.
+`check:compat` runs policy and installed-tool probes, strict semantic lint,
+formatting checks, both canonical compiler projects, behavioral tests, and a
+pack dry-run. Each independent gate runs and contributes to the final status.
+Keep the checkout unchanged while checks run.
+
+## Qualify supported hosts
+
+Run the same command against each installed target host. The locked development
+cohort is official Pi 1.0.0 and TypeBox 1.3.34. CI also resolves the latest official
+Pi release and the current `fitchmultz/pi` commit. Its qualifier verifies the
+selected host's package identity and a fresh Git consumer through the actual CLI.
+
+The suite exercises the real Pi loader, tool policy, settlement, nested receipts,
+and journal reload with scripted model responses. No paid model calls are needed.
+Pi owns the public same-file mutation queue. Batch reservations, prospective
+aliases, publication, and recovery remain package responsibilities.
+
+Linux metadata tests require `attr`, `acl`, `libcap` tools, and a C compiler.
+macOS tests use the native ACL API through `/usr/bin/osascript`. Temporary
+directories must allow the user to set the permission bits under test. On macOS,
+a directory inherited from `/tmp` can need its group set to the user's primary
+group before fixtures are created. Android tests require the actual Termux
+metadata and atomic-move tools. Platform skips are not platform qualification.
+
+## Change quality policy
+
+Follow [the engineering standard](engineering-standard.md), version 5.1.2.
+Record an evidence-backed exception in Appendix B before changing an applicable
+rule or authorized operation. Update the operation inventory and its controls in
+the same review. [Quality coverage](../QUALITY.md) lists source owners, required
+gates, editor behavior, and known tool limits.

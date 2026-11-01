@@ -3,7 +3,7 @@ import type { CallBinding } from "./test-flow.ts";
 
 export interface ExpressionView {
   readonly type: string;
-  readonly range?: readonly [number, number];
+  readonly range?: readonly [number, number] | undefined;
   readonly name?: string;
   readonly object?: ExpressionView;
   readonly property?: ExpressionView;
@@ -20,7 +20,7 @@ export function calleeBinding(
   if (callee === undefined) {
     return { binding: { kind: "unknown", name: "" }, suffix: "" };
   }
-  const binding =
+  const binding: CallBinding =
     callee.type === "Identifier" && callee.name !== undefined
       ? findBinding(scope, callee.name, seen)
       : ({
@@ -53,7 +53,7 @@ function calleeParts(input: ExpressionView): {
 }
 
 export function transparentExpression(
-  node: ExpressionView & { readonly expression?: ExpressionView | boolean },
+  node: ExpressionView & { readonly expression?: ExpressionView | boolean | undefined },
 ): ExpressionView | undefined {
   return [
     "TSAsExpression",
@@ -68,7 +68,7 @@ export function transparentExpression(
 
 export function functionTarget(
   scope: Scope.Scope,
-  node: ExpressionView & { readonly expression?: ExpressionView | boolean },
+  node: ExpressionView & { readonly expression?: ExpressionView | boolean | undefined },
 ): number | undefined {
   const expression = transparentExpression(node);
   if (expression !== undefined) {
@@ -84,7 +84,7 @@ export function functionTarget(
 }
 
 interface VariableView extends ExpressionView {
-  readonly init?: ExpressionView | null;
+  readonly init?: ExpressionView | null | undefined;
 }
 /** Only immutable local declarations can carry a saved call's identity. */
 export function bindingValue(

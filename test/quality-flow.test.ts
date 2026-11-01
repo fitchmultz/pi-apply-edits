@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import { expectDiagnostics, frameworkConfig, inProbe, lint } from "./quality-probe-support.ts";
 
 const missing = "node-test(expect-assertions)";
@@ -627,7 +627,7 @@ const cases = [
 }[];
 
 for (const probe of cases) {
-  test(`native scope/code-path assertion ownership: ${probe.name}`, async () => {
+  nodeTest(`native scope/code-path assertion ownership: ${probe.name}`, async () => {
     await inProbe(
       {
         ".oxlintrc.json": frameworkConfig(),
@@ -649,17 +649,17 @@ for (const probe of cases) {
 const exceptionCases = [
   {
     name: "native handler cannot suppress optional payload",
-    body: 'test("payload", async () => { assert.equal(process.argv.length > 0, true); await Promise.resolve().finally(() => { if (process.env.MAYBE !== undefined) {\n// Exhaustive variants supposedly validate every optional payload.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.fail("unchecked payload");\n} }); });',
+    body: 'test("payload", async () => { assert.equal(process.argv.length > 0, true); await Promise.resolve().finally(() => { if (process.env.MAYBE !== undefined) {\n// Exhaustive variants supposedly validate every optional payload.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.fail("unchecked payload");\n} }); });',
     expected: [["node-test(valid-exceptions)", 6]],
   },
   {
     name: "exhaustive throwing assertions with nested callbacks",
-    body: 'function operation(reason: string): never { throw new Error(reason); } test("variants", () => { if (process.env.MODE === "left") {\n// Exhaustive variants validate each operation refusal through a native throwing assertion.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.throws(() => operation("left"), /left/);\n} else {\n// Exhaustive variants validate each operation refusal through a native throwing assertion.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.throws(() => operation("right"), /right/);\n} });',
+    body: 'function operation(reason: string): never { throw new Error(reason); } test("variants", () => { if (process.env.MODE === "left") {\n// Exhaustive variants validate each operation refusal through a native throwing assertion.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.throws(() => operation("left"), /left/);\n} else {\n// Exhaustive variants validate each operation refusal through a native throwing assertion.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.throws(() => operation("right"), /right/);\n} });',
     expected: [],
   },
   {
     name: "optional loop cannot hide behind exhaustive arms",
-    body: 'test("variants", () => { assert.equal(1, 1); for (const item of process.argv.slice(99)) { if (item === "x") {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(item, "x");\n} else {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(item, "y");\n} } });',
+    body: 'test("variants", () => { assert.equal(1, 1); for (const item of process.argv.slice(99)) { if (item === "x") {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(item, "x");\n} else {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(item, "y");\n} } });',
     expected: [
       ["node-test(valid-exceptions)", 6],
       ["node-test(valid-exceptions)", 10],
@@ -667,27 +667,27 @@ const exceptionCases = [
   },
   {
     name: "nonempty table exhaustive arms",
-    body: 'test("variants", () => { for (const item of ["x", "y"]) { if (item === "x") {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(item, "x");\n} else {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(item, "y");\n} } });',
+    body: 'test("variants", () => { for (const item of ["x", "y"]) { if (item === "x") {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(item, "x");\n} else {\n// Exhaustive variants validate both branches for their matching payloads.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(item, "y");\n} } });',
     expected: [],
   },
   {
     name: "exhaustive switch variants",
-    body: 'test("variants", () => { switch (process.env.MODE) { case "left":\n// Exhaustive variants validate this distinct payload before leaving its arm.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(1, 1); break;\ndefault:\n// Exhaustive variants validate the fallback payload before leaving its arm.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(2, 2); break;\n} });',
+    body: 'test("variants", () => { switch (process.env.MODE) { case "left":\n// Exhaustive variants validate this distinct payload before leaving its arm.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(1, 1); break;\ndefault:\n// Exhaustive variants validate the fallback payload before leaving its arm.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(2, 2); break;\n} });',
     expected: [],
   },
   {
     name: "optional assertion with generic explanation",
-    body: 'test("optional", () => { assert.equal(1, 1); if (process.env.MAYBE !== undefined) {\n// Exhaustive platform variants need this assertion boundary for their native contracts.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(2, 2);\n} });',
+    body: 'test("optional", () => { assert.equal(1, 1); if (process.env.MAYBE !== undefined) {\n// Exhaustive platform variants need this assertion boundary for their native contracts.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(2, 2);\n} });',
     expected: [["node-test(valid-exceptions)", 6]],
   },
   {
     name: "exhaustive arms",
-    body: 'test("variants", () => { if (process.env.MODE === "left") {\n// Exhaustive variants validate both payloads and cannot skip their assertions.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(1, 1);\n} else {\n// Exhaustive variants validate both payloads and cannot skip their assertions.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(2, 2);\n} });',
+    body: 'test("variants", () => { if (process.env.MODE === "left") {\n// Exhaustive variants validate both payloads and cannot skip their assertions.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(1, 1);\n} else {\n// Exhaustive variants validate both payloads and cannot skip their assertions.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(2, 2);\n} });',
     expected: [],
   },
   {
     name: "unconditional assertion does not make empty variant exhaustive",
-    body: 'test("variants", () => { assert.equal(1, 1); if (process.env.MODE === "left") {\n// Exhaustive variants supposedly validate every payload without optional branches.\n// oxlint-disable-next-line node-test/no-conditional-assertions\nassert.equal(2, 2);\n} else { console.log("unchecked payload"); } });',
+    body: 'test("variants", () => { assert.equal(1, 1); if (process.env.MODE === "left") {\n// Exhaustive variants supposedly validate every payload without optional branches.\n// oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.\nassert.equal(2, 2);\n} else { console.log("unchecked payload"); } });',
     expected: [["node-test(valid-exceptions)", 6]],
   },
 ] satisfies readonly {
@@ -761,7 +761,7 @@ const originCases = [
   readonly expected: readonly (readonly [string, number, number?])[];
 }[];
 for (const [index, probe] of originCases.entries()) {
-  test(`configured declarations retain canonical origin isolation ${index}`, async () => {
+  nodeTest(`configured declarations retain canonical origin isolation ${index}`, async () => {
     const support =
       'import assert from "node:assert/strict"; export function expectDiagnostics(): void { assert.equal(1, 1); } export async function inProbe(_files: unknown, run: () => Promise<void>): Promise<void> { await run(); }';
     const foreign =
@@ -785,7 +785,7 @@ for (const [index, probe] of originCases.entries()) {
 }
 
 for (const probe of exceptionCases) {
-  test(`conditional exception proof: ${probe.name}`, async () => {
+  nodeTest(`conditional exception proof: ${probe.name}`, async () => {
     await inProbe(
       {
         ".oxlintrc.json": frameworkConfig(),

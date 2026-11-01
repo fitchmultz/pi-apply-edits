@@ -171,6 +171,7 @@ function createPatchTool(preview: boolean, getCwd: (() => string) | undefined): 
       const input = getCwd === undefined ? raw.input : bindPatchPaths(raw.input, getCwd());
       return { ...raw, input };
     },
+    // oxlint-disable-next-line max-params -- QX-002: Pi owns this five-parameter SDK callback.
     async execute(_id, params, signal, onUpdate, ctx) {
       return toolResult(
         await applyPatchToFiles(params.input, ctx.cwd, preview, signal, (summary) => {
@@ -211,6 +212,7 @@ function createReplaceTool(getCwd: (() => string) | undefined): ReplaceTool {
       const cwd = getCwd?.();
       return { ...input, files: input.files.map((file: unknown) => prepareReplaceFile(file, cwd)) };
     },
+    // oxlint-disable-next-line max-params -- QX-002: Pi owns this five-parameter SDK callback.
     async execute(_id, params, signal, onUpdate, ctx) {
       return toolResult(
         await replaceTextInFiles(params, ctx.cwd, signal, (summary) => {
@@ -243,6 +245,7 @@ function createWriteTool(getCwd: (() => string) | undefined): WriteTool {
       const cwd = getCwd?.();
       return { ...input, files: input.files.map((file: unknown) => prepareWriteFile(file, cwd)) };
     },
+    // oxlint-disable-next-line max-params -- QX-002: Pi owns this five-parameter SDK callback.
     async execute(_id, params, signal, onUpdate, ctx) {
       return toolResult(
         await writeFiles(params, ctx.cwd, signal, (summary) => {
