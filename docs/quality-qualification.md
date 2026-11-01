@@ -2,10 +2,12 @@
 
 ## Revision and status
 
-The adoption starts from `e988520` and targets standard 5.1.2. The implementation
-is an adoption candidate until the integrated acceptance command and required
-hosted reviews and compatibility checks pass. The delivery PR records its exact
-head and hosted run identities.
+The adoption starts from `e988520` and targets standard 5.1.2. Local qualification
+passed for implementation commit `9a3179de77ac1bd302c878a08bd50b0410a6c201`, tree
+`8119620f6365a1f39c1584fde4b8ff9ab9d4dffc`. The macOS mirror's independently
+written Git tree matches this tree. Required hosted acceptance and independent
+reviews remain merge requirements. The delivery PR records their exact head and
+run identities.
 
 The supplied guide's original SHA-256 is
 `41b6d505b36007218ca56b7b3443fcbd96d994715da5a83aaca52b58af47d3d6`.
@@ -29,6 +31,34 @@ the locked official Pi 1.0.0 and TypeBox 1.3.34 cohort. Hosted qualification
 resolves each target independently. At adoption, latest official Pi resolves to
 1.4.0 and the Fitch fork to `0a0e06fb18ba206866d4051870c8f5cb420c9be9`.
 These resolved values do not substitute for executing the selected host.
+
+## Recorded local results
+
+Commands use the declared npm 12.2.0. All commands below exited zero except the
+intentional faults described under disposable qualification.
+
+| Environment and command                      | Result                                                                     |
+| -------------------------------------------- | -------------------------------------------------------------------------- |
+| macOS, clean `npm ci`                        | Passed                                                                     |
+| macOS, `npm run check:compat`                | All seven gates passed; 620 tests passed, zero failed, nine platform skips |
+| Android, clean `npm ci`                      | Passed                                                                     |
+| Android, eleven runtime suites               | 301 tests passed, zero failed, 51 platform skips                           |
+| macOS, two formatter runs                    | Source bytes unchanged after each run                                      |
+| macOS, native lint fix followed by formatter | Both passed; source bytes unchanged                                        |
+
+The Android command selects the shipped runtime and filesystem boundaries, not
+the unsupported Android-native quality binaries:
+
+```sh
+node --test test/apply-edits.test.ts test/editor.test.ts test/entry-queue.test.ts \
+  test/extension.test.ts test/file-system.test.ts test/native-paths.test.ts \
+  test/patch.test.ts test/restore.test.ts test/runtime.test.ts \
+  test/transport.test.ts test/macos-acl.test.ts
+```
+
+Both installations report three advisories in the retained development SDK
+graph. They also report blocked dependency lifecycle scripts under npm's native
+policy. These notices are not hidden by the acceptance runner.
 
 ## Normal acceptance controls
 
@@ -109,12 +139,28 @@ real compiler projects, and the actual `npm run check:compat` command. Each faul
 must produce its intended diagnostic, fail the aggregate, and still reach every
 independent gate. These mutations are qualification inputs, not shipped source.
 
-The faults cover native lint, semantic lint, each compiler project, formatting,
-a real failed Node assertion, and omitted maintained-source policy. Native
-exception ablation removes the actual QX-002 and QX-003 site directives and
-checks the original arity and conditional-assertion findings. Formatting
-qualification verifies two stable formatter runs and the normal lint-fix then
-format sequence against unchanged source bytes.
+All seven independent fault runs exited one and reached all seven gates. Each
+failed only the intended gate; all other gates passed.
+
+| Fault                                                        | Intended finding and failed gate                                                       |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| Numeric loose equality                                       | `eslint(eqeqeq)` at `src/guide-control.ts:2:15`; lint                                  |
+| Assign parsed JSON directly to a string                      | `typescript(no-unsafe-assignment)` at `src/guide-control.ts:1:14`; lint                |
+| Assign string to numeric export                              | TS2322 at `src/guide-control.ts:1:14`; main compiler                                   |
+| Incorrect pointer-return JSDoc                               | TS2322 at `src/macos-acl.js:30:3`, with TS2345 at both pointer consumers; JXA compiler |
+| Unformatted numeric export                                   | Oxfmt identifies `src/guide-control.ts`; formatter                                     |
+| `assert.equal(1, 2, "guide acceptance assertion must fail")` | Native Node assertion failure; test                                                    |
+| Maintained root `unassigned.js` outside compiler projects    | Missing checked-project ownership at line 1; policy                                    |
+
+Native exception ablation removes the actual QX-002 and QX-003 site directives.
+It exits one with exactly five original arity and 23 original conditional-assertion
+diagnostics. No other native diagnostic is accepted. Formatting qualification
+checks two stable formatter runs and the normal lint-fix then format sequence
+against the source's Git index, with zero diff each time.
+
+Full logs, the source-copy qualification runner, and its JSON report are retained
+with the task evidence at `~/workspaces/pa-evidence/` in the authoring environment.
+The normal regression owners above remain part of repository acceptance.
 
 ## Retained and lost detection
 
