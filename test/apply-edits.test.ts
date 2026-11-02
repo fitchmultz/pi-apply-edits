@@ -211,6 +211,28 @@ nodeTest("range anchors use existing line-ending and indentation correction", ()
   assert.equal(result.matches[0]?.strategy, "indent-normalized");
 });
 
+nodeTest("range ends are searched and made unique only after oldText", () => {
+  const html =
+    '<section id="intro">\n  <p>hi</p>\n</section>\n<section id="old">\n  <p>legacy</p>\n</section>\n';
+  assert.equal(
+    applyTargetedEdits(
+      html,
+      [{ oldText: '<section id="old">\n', endText: "</section>\n", newText: "" }],
+      "page.html",
+    ).text,
+    '<section id="intro">\n  <p>hi</p>\n</section>\n',
+  );
+  assert.throws(
+    () =>
+      applyTargetedEdits(
+        "END\nSTART\none\nEND\ntwo\nEND\n",
+        [{ oldText: "START\n", endText: "END\n", newText: "" }],
+        "file.txt",
+      ),
+    /endText matched 2 locations in file\.txt \(lines 4, 6\)/,
+  );
+});
+
 nodeTest("range edits reject ambiguous, missing, reversed, and incompatible anchors", () => {
   assert.throws(
     () =>
@@ -246,7 +268,7 @@ nodeTest("range edits reject ambiguous, missing, reversed, and incompatible anch
         [{ oldText: "START\n", endText: "END\n", newText: "" }],
         "file.txt",
       ),
-    /endText must match after oldText/,
+    /endText must match after oldText in file\.txt \(oldText line 3, endText line 1\)/,
   );
   assert.throws(
     () =>

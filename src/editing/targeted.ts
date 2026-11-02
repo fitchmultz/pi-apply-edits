@@ -11,7 +11,7 @@ import {
 } from "./contracts.ts";
 import { findMatch, toReplacement, type MatchAttempt } from "./matching.ts";
 import { missingEditMessage } from "./diagnostics.ts";
-import { hasFinalLineEnding } from "./text.ts";
+import { hasFinalLineEnding, lineNumbersAt } from "./text.ts";
 import { applyReplacements, hasOverlaps } from "./replacements.ts";
 
 function validateEditStrings(edit: ReadonlyTargetedEdit, index: number): void {
@@ -91,6 +91,52 @@ function assertUniqueRange(
     `edits[${location.index}].${field} matched ${match.replacements.length} locations in ${location.path} (lines ${lines.join(", ")}${suffix}). Add enough surrounding text to make the range ${direction} unique. ${allNote}No changes were written.`,
   );
 }
+/** Searches only after oldText, so earlier occurrences cannot make the range end ambiguous. */
+function endMatchAfter(
+  content: string,
+  start: Replacement,
+  endText: string,
+  location: EditLocation,
+): MatchResult {
+  const search = {
+    oldText: endText,
+    newText: "",
+    applyAll: false,
+    maxResultLength: Number.MAX_SAFE_INTEGER,
+    field: "endText" as const,
+  };
+  const offset = start.matchEnd;
+  const endMatch = findMatch(content.slice(offset), search);
+  if (endMatch.strategy === "missing") {
+    const earlier = findMatch(content, search);
+    if (earlier.strategy !== "missing") {
+      throw new Error(
+        `edits[${location.index}].endText must match after oldText in ${location.path} (oldText line ${start.line}, endText line ${required(earlier.replacements[0]).line}). No changes were written.`,
+      );
+    }
+    throw new Error(
+      missingEditMessage(content, {
+        ...location,
+        oldText: endText,
+        newText: "",
+        field: "endText",
+        correctionSkipped: endMatch.correctionSkipped || earlier.correctionSkipped,
+      }),
+    );
+  }
+  const lineOffset = required(lineNumbersAt(content, [offset])[0]) - 1;
+  return {
+    strategy: endMatch.strategy,
+    replacements: endMatch.replacements.map((item) => ({
+      start: item.start + offset,
+      end: item.end + offset,
+      matchStart: item.matchStart + offset,
+      matchEnd: item.matchEnd + offset,
+      text: item.text,
+      line: item.line + lineOffset,
+    })),
+  };
+}
 function rangeMatch(
   content: string,
   edit: ReadonlyTargetedEdit,
@@ -106,33 +152,10 @@ function rangeMatch(
     return startMatch;
   }
   assertUniqueRange(startMatch, location, "oldText");
-  const endText = required(edit.endText);
-  const endMatch = findMatch(content, {
-    oldText: endText,
-    newText: "",
-    applyAll: false,
-    maxResultLength: Number.MAX_SAFE_INTEGER,
-    field: "endText",
-  });
-  if (endMatch.strategy === "missing") {
-    throw new Error(
-      missingEditMessage(content, {
-        ...location,
-        oldText: endText,
-        newText: "",
-        field: "endText",
-        correctionSkipped: endMatch.correctionSkipped,
-      }),
-    );
-  }
-  assertUniqueRange(endMatch, location, "endText");
   const start = required(startMatch.replacements[0]);
+  const endMatch = endMatchAfter(content, start, required(edit.endText), location);
+  assertUniqueRange(endMatch, location, "endText");
   const end = required(endMatch.replacements[0]);
-  if (end.matchStart < start.matchEnd) {
-    throw new Error(
-      `edits[${location.index}].endText must match after oldText in ${location.path} (oldText line ${start.line}, endText line ${end.line}). No changes were written.`,
-    );
-  }
   return {
     strategy: combinedStrategy(startMatch.strategy, endMatch.strategy),
     replacements: [
