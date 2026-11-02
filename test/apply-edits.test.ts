@@ -17,7 +17,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir, userInfo } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test as nodeTest } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -3158,6 +3158,26 @@ nodeTest("literal Unicode spaces and leading @ path segments are never rewritten
       process.platform === "win32" ? literalTilde : `${directory}/./~`,
     );
     assert.equal(await realpath(resolveInputPath("./~", directory)), await realpath(literalTilde));
+  });
+});
+
+nodeTest("literal ~ paths are not reported as home paths", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const created = await writeFiles(
+      { files: [{ path: "~/settings.json", content: "{}\n", mode: "create" }] },
+      directory,
+    );
+    assert.equal(created.summary, "Created 1 file (+1/-0): ./~/settings.json.");
+    assert.equal(await readFile(join(directory, "~", "settings.json"), "utf8"), "{}\n");
+
+    const missing = await replaceTextInFiles(
+      { files: [{ path: "~/.zshrc", edits: [{ oldText: "a", newText: "b" }] }] },
+      directory,
+    );
+    assert.equal(
+      missing.details.error,
+      `files[0]: Cannot edit missing file ./~/.zshrc. Paths are literal, so ~ is not expanded. To edit a file in the home directory, use its absolute path: ${join(homedir(), ".zshrc")}.`,
+    );
   });
 });
 

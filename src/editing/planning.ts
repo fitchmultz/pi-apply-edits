@@ -1,4 +1,6 @@
 import { lstat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   assertSafeToReplace,
   assertSnapshotCurrent,
@@ -113,6 +115,12 @@ async function entryContent(
     matches: result.matches,
   };
 }
+function missingFileHint(displayPath: string): string {
+  if (displayPath !== "./~" && !displayPath.startsWith("./~/")) {
+    return 'Use write_files with mode: "create" to create it.';
+  }
+  return `Paths are literal, so ~ is not expanded. To edit a file in the home directory, use its absolute path: ${join(homedir(), displayPath.slice(3))}.`;
+}
 function assertSourceMode(
   input: MutationInput,
   snapshot: ReadonlyFileSnapshot | undefined,
@@ -124,9 +132,7 @@ function assertSourceMode(
     );
   }
   if (snapshot === undefined && (input.edits !== undefined || input.patch !== undefined)) {
-    throw new Error(
-      `Cannot edit missing file ${displayPath}. Use write_files with mode: "create" to create it.`,
-    );
+    throw new Error(`Cannot edit missing file ${displayPath}. ${missingFileHint(displayPath)}`);
   }
   if (snapshot === undefined && input.onMissing !== "create") {
     throw new Error(
