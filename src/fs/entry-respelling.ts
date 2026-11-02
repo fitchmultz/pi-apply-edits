@@ -1,6 +1,6 @@
 import type { BigIntStats } from "node:fs";
 import { lstat, readdir, rename, stat } from "node:fs/promises";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type {
   MoveReplacement,
   ReadonlyEntryMovePlan,
@@ -73,13 +73,16 @@ async function verifyRespelling(plan: ReadonlyEntryMovePlan, source: BigIntStats
     lstat(plan.destination.targetPath, { bigint: true }),
     readdir(plan.entry.parentPath),
   ]);
+  const target = basename(plan.destination.targetPath);
   const renamed = sameIdentity(source, published);
-  if (renamed && names.includes(basename(plan.destination.targetPath))) {
+  if (renamed && names.includes(target)) {
     return;
   }
-  if (renamed && names.includes(basename(plan.entry.actualPath))) {
+  // The stored spelling can differ from the one the patch used to address the source.
+  const kept = names.find((name) => foldName(name) === foldName(target));
+  if (renamed && kept !== undefined) {
     throw new SpellingKeptError(
-      `The filesystem kept the name ${plan.entry.inputPath}; it cannot change only the spelling of a name.`,
+      `The filesystem kept the name ${join(plan.entry.parentPath, kept)}; it cannot change only the spelling of a name.`,
     );
   }
   throw new Error(`Move destination could not be verified: ${plan.destination.inputPath}`);

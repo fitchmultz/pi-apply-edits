@@ -191,8 +191,9 @@ nodeTest(
         );
       },
       async (module) => {
+        // The patch may address the source by another spelling than the stored one.
         const pure = await module.applyPatchToFiles(
-          patch("*** Update File: readme.md\n*** Move to: README.md"),
+          patch("*** Update File: README.md\n*** Move to: Readme.md"),
           cwd,
         );
         assert.match(
