@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { Socket } from "node:net";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { errorMessage, throwIfAborted } from "./errors.ts";
@@ -12,9 +13,28 @@ interface PendingReply {
 
 export const macosAclScript = fileURLToPath(new URL("../macos-acl.js", import.meta.url));
 const sessions = new AsyncLocalStorage<MacosAclSession>();
+// Owners that keep a finished batch's helper for the next batch, and that idle helper.
+const retainers = new Set<object>();
+let idleHelper: AclProcess | undefined;
 
 export function currentMacosAclSession(): MacosAclSession | undefined {
   return sessions.getStore();
+}
+
+/** Keeps one finished batch's helper for the next batch until `owner` releases it. */
+export function retainMacosAclHelper(owner: object): void {
+  retainers.add(owner);
+}
+
+/** Ends the idle helper once no owner retains it. */
+export async function releaseMacosAclHelper(owner: object): Promise<void> {
+  retainers.delete(owner);
+  if (retainers.size > 0) {
+    return;
+  }
+  const helper = idleHelper;
+  idleHelper = undefined;
+  await helper?.end();
 }
 
 function ignoreSettlement(): void {
@@ -89,9 +109,25 @@ class AclProcess {
   }
 
   end(): Promise<void> {
+    // Waiting for the exit keeps the host running until the helper closes.
+    this.reference(true);
     this.#stopping = true;
     this.#child.stdin.end();
     return this.closed;
+  }
+
+  /** An idle helper must not keep the host running; it exits when the host closes its stdin. */
+  reference(held: boolean): void {
+    const pipes = [this.#child.stdin, this.#child.stdout, this.#child.stderr].filter(
+      (pipe): pipe is Socket => pipe instanceof Socket,
+    );
+    for (const handle of [this.#child, ...pipes]) {
+      if (held) {
+        handle.ref();
+      } else {
+        handle.unref();
+      }
+    }
   }
 
   #listen(): void {
@@ -165,7 +201,19 @@ class AclProcess {
   }
 }
 
-/** Serves one editing batch's ACL transfers through at most one lazily started helper. */
+/** Takes the idle helper unless it exited while idle, or starts one. */
+async function takeHelper(): Promise<AclProcess> {
+  const helper = idleHelper;
+  idleHelper = undefined;
+  if (helper?.usable === true) {
+    helper.reference(true);
+    return helper;
+  }
+  await helper?.closed;
+  return AclProcess.start();
+}
+
+/** Serves one editing batch's ACL transfers through at most one helper, held exclusively. */
 export class MacosAclSession {
   #process: AclProcess | undefined;
   #nextId = 1;
@@ -188,6 +236,11 @@ export class MacosAclSession {
     await this.#tail;
     const helper = this.#process;
     this.#process = undefined;
+    if (helper?.usable === true && retainers.size > 0 && idleHelper === undefined) {
+      helper.reference(false);
+      idleHelper = helper;
+      return;
+    }
     await helper?.end();
   }
 
@@ -216,7 +269,7 @@ export class MacosAclSession {
       await this.#process.closed;
       this.#process = undefined;
     }
-    this.#process ??= await AclProcess.start();
+    this.#process ??= await takeHelper();
     return this.#process;
   }
 }

@@ -247,9 +247,11 @@ The package name, extension entry path, and keep-builtins switches are unchanged
 - Existing ownership, ordinary permissions, ACLs, and extended attributes are
   preserved using native copying on macOS and Linux. macOS also uses the system
   `osascript` command to retain inherited ACL entries exactly. One `osascript` process serves
-  an editing call's ACL transfers one at a time and always exits before the call returns.
-  Cancelling an in-flight transfer stops that process and waits for it to exit before the
-  transfer's private files are cleaned up. Text formatting is preserved
+  an editing call's ACL transfers one at a time. Later editing calls in the same Pi agent
+  run reuse it, and it exits when the run settles or the session shuts down. Direct API
+  callers get a process that exits before each call returns. An idle process never keeps
+  Pi running. Cancelling an in-flight transfer stops that process and waits for it to exit
+  before the transfer's private files are cleaned up. Text formatting is preserved
   by default as described above. Setuid and setgid files are rejected without
   mutation. Linux also requires `getcap` and
   rejects capability-bearing files because the kernel can clear capabilities

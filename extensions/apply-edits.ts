@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SourceInfo } from "@earendil-works/pi-coding-agent";
-import { supportsExistingFileReplacement } from "../src/file-system.ts";
+import {
+  releaseMacosAclHelper,
+  retainMacosAclHelper,
+  supportsExistingFileReplacement,
+} from "../src/file-system.ts";
 import { createEditingTools } from "../src/tools.ts";
 
 export default function editingExtension(pi: ExtensionAPI): void {
@@ -64,6 +68,7 @@ export default function editingExtension(pi: ExtensionAPI): void {
       nativeContext = ctx;
     }
   });
+  reuseAclHelperPerRun(pi);
   pi.on("session_before_compact", (event) => {
     for (const message of [
       ...event.preparation.messagesToSummarize,
@@ -83,6 +88,20 @@ export default function editingExtension(pi: ExtensionAPI): void {
         }
       }
     }
+  });
+}
+
+/** Edit calls in one agent run reuse a macOS ACL helper, which exits once the run settles. */
+function reuseAclHelperPerRun(pi: ExtensionAPI): void {
+  const owner = {};
+  pi.on("agent_start", () => {
+    retainMacosAclHelper(owner);
+  });
+  pi.on("agent_settled", async () => {
+    await releaseMacosAclHelper(owner);
+  });
+  pi.on("session_shutdown", async () => {
+    await releaseMacosAclHelper(owner);
   });
 }
 
