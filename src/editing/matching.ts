@@ -248,13 +248,16 @@ function collectBlockMatches(
 ): Replacement[] {
   const matches: Replacement[] = [];
   let projectedLength = content.length;
+  // all: true applies only non-overlapping windows, so only those count toward expansion.
+  let countedEnd = 0;
   for (let start = 0; start <= block.lines.length - block.size; start++) {
     const match = matchWindow(block, start);
     if (match === undefined) {
       continue;
     }
-    if (search.applyAll || matches.length === 0) {
+    if (search.applyAll ? match.matchStart >= countedEnd : matches.length === 0) {
       projectedLength = projectedSize(content.length, projectedLength, match, search);
+      countedEnd = match.matchEnd;
     }
     matches.push(match);
     assertMatchCount(matches.length, search.field ?? "oldText", true);

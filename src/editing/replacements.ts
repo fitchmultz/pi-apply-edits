@@ -6,6 +6,19 @@ export function hasOverlaps(replacements: readonly Replacement[]): boolean {
     (item, index) => index > 0 && item.matchStart < (ordered[index - 1]?.matchEnd ?? 0),
   );
 }
+/** Selects matches left to right, skipping any that overlap an earlier selection, like `replaceAll`. */
+export function nonOverlapping(replacements: readonly Replacement[]): Replacement[] {
+  const ordered = [...replacements].sort((left, right) => left.matchStart - right.matchStart);
+  const selected: Replacement[] = [];
+  let end = 0;
+  for (const item of ordered) {
+    if (item.matchStart >= end) {
+      selected.push(item);
+      end = item.matchEnd;
+    }
+  }
+  return selected;
+}
 export function throwExpansionError(): never {
   throw new Error(
     `Ordered edits would expand the result by more than ${MAX_EDIT_EXPANSION_CHARS.toLocaleString()} characters. Use write_files or smaller edits. No changes were written.`,
