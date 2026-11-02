@@ -4,6 +4,7 @@
 
 - Report a replacement conflict truthfully: when the earlier content changes during commit, the error now says the edit was published to the target, instead of saying the target was left untouched.
 - Refuse edits, creates, and moves before staging on filesystems that cannot support verified publication, such as FAT and exFAT on macOS and Docker Desktop's VirtioFS. No private copies are left behind, and Pi's built-in `edit` and `write` tools become active again for the session.
+- Rename a file with `apply_patch` when only its letter case or Unicode normalization changes on a case-insensitive volume, such as default macOS APFS. The entry is renamed in place, with any content changes published first.
 - Give `apply_patch` its own advice when a patch names one file twice, such as Delete File followed by Add File: use one Update File section, or `write_files` with `mode: "replace"`. The reference lists this as a Codex difference.
 - Make `replace_text` `all: true` select every non-overlapping match from left to right, as its description states and as `String.prototype.replaceAll` does. Self-overlapping patterns, such as collapsing blank-line runs or converting two-space indentation, no longer fail with an overlap error.
 - Show literal working-directory `~` paths as `./~/...` in receipts and errors, and state in the `path` schema that `~` is not expanded. Editing a missing `~/...` file now names the absolute home path before suggesting `write_files` create for the literal path.

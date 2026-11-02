@@ -76,6 +76,10 @@ header. Changes may follow; omitting them performs a pure move. Add and Move nev
 overwrite an existing destination. Directory operations are rejected. Moves stay
 on one filesystem and retain source metadata. A move publishes its destination
 before removing its source, so a failed source removal can leave both entries.
+On a case- or normalization-insensitive volume, a move that only respells the
+name, such as `readme.md` to `README.md`, renames the entry in place. Content
+changes are published first; if the rename then fails, the receipt reports the
+content change.
 
 Unlike Codex, a patch can name each file once, including Move destinations, so
 Delete File followed by Add File cannot rewrite a file. Use one Update File

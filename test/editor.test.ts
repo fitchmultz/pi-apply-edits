@@ -26,6 +26,18 @@ const patch = (...operations: readonly string[]) =>
   `*** Begin Patch\n${operations.join("\n")}\n*** End Patch`;
 const update = (path: string, before: string, after: string) =>
   `*** Update File: ${path}\n@@\n-${before}\n+${after}`;
+const caseInsensitiveTmp = await (async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-edit-case-"));
+  try {
+    await writeFile(join(directory, "probe"), "");
+    return await lstat(join(directory, "PROBE")).then(
+      () => true,
+      () => false,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+})();
 
 nodeTest(
   "patch plans and applies create/update/move/delete with verified absolute receipts",
@@ -87,6 +99,36 @@ nodeTest("a patch naming one file twice gets patch-specific recovery advice", as
   }
   assert.equal(await readFile(join(cwd, "a.txt"), "utf8"), "old\n");
 });
+
+nodeTest(
+  "case-only moves respell the entry in place, with or without content changes",
+  { skip: !caseInsensitiveTmp && "requires a case-insensitive temporary directory" },
+  async (t) => {
+    const cwd = await fixture(t);
+    await writeFile(join(cwd, "readme.md"), "# hi\n");
+    await chmod(join(cwd, "readme.md"), 0o640);
+    const before = await lstat(join(cwd, "readme.md"));
+    const rename = patch("*** Update File: readme.md\n*** Move to: README.md");
+    const preview = await applyPatchToFiles(rename, cwd, true);
+    assert.equal(preview.details.error, undefined, preview.summary);
+    assert.deepEqual(await readdir(cwd), ["readme.md"]);
+
+    const moved = await applyPatchToFiles(rename, cwd);
+    assert.equal(moved.summary, "Moved 1 file: readme.md \u2192 README.md.");
+    assert.deepEqual(await readdir(cwd), ["README.md"]);
+    const after = await lstat(join(cwd, "README.md"));
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.mode & 0o777, 0o640);
+
+    const edited = await applyPatchToFiles(
+      patch("*** Update File: README.md\n*** Move to: Readme.md\n@@\n-# hi\n+# hello"),
+      cwd,
+    );
+    assert.equal(edited.details.error, undefined, edited.summary);
+    assert.deepEqual(await readdir(cwd), ["Readme.md"]);
+    assert.equal(await readFile(join(cwd, "Readme.md"), "utf8"), "# hello\n");
+  },
+);
 
 nodeTest("patch BOM rejection leaves update and move sources untouched", async (t) => {
   const cwd = await fixture(t);

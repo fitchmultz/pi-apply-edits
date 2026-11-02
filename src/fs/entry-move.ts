@@ -9,6 +9,7 @@ import type {
   ReadonlyEntryMovePlan,
   ReadonlyEntryPublishHooks,
   ReadonlyEntrySnapshot,
+  ReadonlyNewFilePlan,
 } from "./contracts.ts";
 import {
   assertCreatedDirectoryOwner,
@@ -41,6 +42,7 @@ import {
 } from "./planning.ts";
 import { linkEntry, movePreparedFileNoReplace, replacementSupportInfo } from "./platform.ts";
 import { assertMoveSnapshot, prepareMoveReplacement } from "./preparation.ts";
+import { isRespelling, publishRespelling } from "./entry-respelling.ts";
 import { assertPublicationFilesystem } from "./volume-support.ts";
 import {
   assertEntryCurrent,
@@ -60,11 +62,7 @@ export async function planEntryMove<Entry extends ReadonlyEntrySnapshot>(
   await assertEntryCurrent(entry);
   assertPlannedPathBudget(destinationPath, [operationPath(destinationPath)]);
   const destination = await planNewFile(destinationPath, !preview);
-  if (await lstatIfExists(destination.targetPath)) {
-    throw new Error(
-      `Move destination already exists: ${destination.inputPath}. No changes were written.`,
-    );
-  }
+  const respelling = await existingRespelling(entry, destination);
   if (entry.stats.dev !== destination.ancestorDev) {
     throw new Error(
       `Cross-device moves are not supported: ${entry.inputPath} -> ${destination.inputPath}. No changes were written.`,
@@ -78,20 +76,49 @@ export async function planEntryMove<Entry extends ReadonlyEntrySnapshot>(
   if (!preview) {
     assertEntryMovePathBudget(entry.actualPath, destination, entry.inputPath);
     await assertDirectoryWritableForPublish(entry.parentPath, entry.inputPath);
-    if (process.platform === "android") {
-      const support = await replacementSupportInfo();
-      if (!support.supported || support.strategy !== "exchange") {
-        throw new Error(
-          "No-clobber entry moves require supported Termux coreutils. No changes were written.",
-        );
-      }
+    // A respelling renames the entry in place, so it needs no hard links.
+    if (respelling) {
+      await assertPublicationFilesystem(entry.parentPath, destination.inputPath, false);
     } else {
-      await assertPublicationFilesystem(destination.ancestorPath, destination.inputPath, true);
-      await probeEntryLink(entry, destination.ancestorPath, destination.inputPath);
+      await assertNoClobberMoveSupport(entry, destination);
     }
   }
   throwIfAborted(signal);
-  return { entry, destination };
+  return respelling ? { entry, destination, respelling } : { entry, destination };
+}
+
+/** Returns whether an existing destination is the source respelled; any other entry fails. */
+async function existingRespelling(
+  entry: ReadonlyEntrySnapshot,
+  destination: ReadonlyNewFilePlan,
+): Promise<boolean> {
+  const existing = await lstatIfExists(destination.targetPath);
+  if (existing === undefined) {
+    return false;
+  }
+  if (await isRespelling(entry, destination.targetPath, existing)) {
+    return true;
+  }
+  throw new Error(
+    `Move destination already exists: ${destination.inputPath}. No changes were written.`,
+  );
+}
+
+async function assertNoClobberMoveSupport(
+  entry: ReadonlyEntrySnapshot,
+  destination: ReadonlyNewFilePlan,
+): Promise<void> {
+  if (process.platform !== "android") {
+    await assertPublicationFilesystem(destination.ancestorPath, destination.inputPath, true);
+    await probeEntryLink(entry, destination.ancestorPath, destination.inputPath);
+    return;
+  }
+  const support = await replacementSupportInfo();
+  if (!support.supported || support.strategy !== "exchange") {
+    throw new Error(
+      "No-clobber entry moves require supported Termux coreutils. No changes were written.",
+    );
+  }
 }
 
 async function probeEntryLink(
@@ -343,6 +370,9 @@ export async function publishDirectEntryMove(
   signal?: AbortSignal,
   hooks?: ReadonlyEntryPublishHooks,
 ): Promise<string[]> {
+  if (plan.respelling === true) {
+    return publishRespelling(plan, replacement, signal, hooks);
+  }
   if (!replacement) {
     return publishMoveDestination(
       plan,

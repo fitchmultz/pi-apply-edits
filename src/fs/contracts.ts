@@ -105,6 +105,8 @@ export interface EntrySnapshot {
 export interface EntryMovePlan<Entry extends ReadonlyEntrySnapshot = EntrySnapshot> {
   entry: Entry;
   destination: NewFilePlan;
+  /** The destination names the source entry itself under another case or normalization. */
+  respelling?: boolean | undefined;
 }
 
 export interface EntryPublishHooks {
@@ -140,6 +142,7 @@ export interface ReadonlyPlannedNewFile {
 export interface ReadonlyEntryMovePlan {
   readonly entry: ReadonlyEntrySnapshot;
   readonly destination: ReadonlyNewFilePlan;
+  readonly respelling?: boolean | undefined;
 }
 export type ReadonlyPreparedNestedFiles = Readonly<
   Omit<
