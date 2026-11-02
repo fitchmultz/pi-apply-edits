@@ -9,6 +9,7 @@ import { assertPublishedDirectoriesCurrent, unlinkOwnedPath } from "./cleanup.ts
 import {
   AtomicMoveUncertainError,
   errorMessage,
+  fallbackAllowed,
   isCode,
   PublicationError,
   throwIfAborted,
@@ -279,13 +280,4 @@ class NestedFilePublication {
       );
     }
   }
-}
-
-export function fallbackAllowed(error: unknown): boolean {
-  return (
-    isCode(error, "EACCES") ||
-    isCode(error, "EPERM") ||
-    isCode(error, "ENOTSUP") ||
-    isCode(error, "ENOSYS")
-  );
 }

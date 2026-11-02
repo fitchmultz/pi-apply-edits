@@ -41,6 +41,7 @@ import {
 } from "./planning.ts";
 import { linkEntry, movePreparedFileNoReplace, replacementSupportInfo } from "./platform.ts";
 import { assertMoveSnapshot, prepareMoveReplacement } from "./preparation.ts";
+import { assertPublicationFilesystem } from "./volume-support.ts";
 import {
   assertEntryCurrent,
   assertEntryParentCurrent,
@@ -85,6 +86,7 @@ export async function planEntryMove<Entry extends ReadonlyEntrySnapshot>(
         );
       }
     } else {
+      await assertPublicationFilesystem(destination.ancestorPath, destination.inputPath, true);
       await probeEntryLink(entry, destination.ancestorPath, destination.inputPath);
     }
   }

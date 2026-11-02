@@ -40,6 +40,21 @@ function isEditingModule(value: unknown): value is EditingModule {
   );
 }
 
+/**
+ * Private modules probe each filesystem once, before their first publication there. Probing the
+ * temporary filesystem first keeps the probe's private files out of the syscalls a test intercepts.
+ */
+async function probeTemporaryFilesystem(source: string): Promise<void> {
+  const loaded: unknown = await import(pathToFileURL(join(source, "file-system.ts")).href);
+  assert(isFileSystemModule(loaded), "private filesystem module exports differ from source");
+  const directory = await mkdtemp(join(tmpdir(), "pi-edit-race-probe-"));
+  try {
+    await loaded.planNewFile(join(directory, "probe"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function withPrivateSources(
   patch: (tracker: MockTracker) => void,
   run: (source: string) => Promise<void>,
@@ -54,6 +69,7 @@ async function withPrivateSources(
       join(directory, "node_modules"),
       "junction",
     );
+    await probeTemporaryFilesystem(join(directory, "src"));
     patch(mock);
     syncBuiltinESMExports();
     await run(join(directory, "src"));

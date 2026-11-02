@@ -15,12 +15,12 @@ import {
 import {
   AtomicMoveUncertainError,
   errorMessage,
+  fallbackAllowed,
   isCode,
   PublicationError,
   throwIfAborted,
 } from "./errors.ts";
 import { publishExclusiveCreate } from "./exclusive-create.ts";
-import { fallbackAllowed } from "./nested-file.ts";
 import {
   assertPreparedFileCurrent,
   readStableFile,

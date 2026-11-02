@@ -24,6 +24,16 @@ active. Preview-only selections do not hide writers or run publication probes.
 To retain the default writers too, use `--apply-edits-with-builtins` or
 `PI_APPLY_EDITS_KEEP_BUILTINS=1`.
 
+On macOS and Linux, the first publication on each filesystem probes it with
+private files in the target directory: it writes a file, links it, and renames a
+replacement over it. A filesystem that changes a new file's identity while it
+is written, or reports inconsistent identity or link counts after the rename,
+such as FAT and exFAT on macOS or Docker Desktop's VirtioFS, refuses every
+edit, create, and move before staging. A filesystem without hard links, such as
+Linux vfat, refuses edits and moves; creates use their exclusive-write fallback.
+Deletes work on all of them. After a refusal, the extension reactivates the
+default writers it hid, because they write in place.
+
 With `pi-change-working-dir`, use version 0.5.0 or later. Paths are bound to the
 selected directory before approval hooks run, so a directory change while approval
 waits cannot redirect the admitted operation. Without that extension, paths use

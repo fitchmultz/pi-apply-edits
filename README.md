@@ -49,6 +49,9 @@ Keep the default tools with `pi --apply-edits-with-builtins`.
 You can also set `PI_APPLY_EDITS_KEEP_BUILTINS=1`.
 Custom and remote tools retain their existing selections.
 
+Some filesystems do not keep the file identity and hard links that verified writes need, such as FAT, exFAT, and Docker Desktop's VirtioFS mounts.
+The tools refuse those writes before anything is written, and Pi's default `edit` and `write` tools become active again for the session.
+
 Use [pi-change-working-dir](https://github.com/fitchmultz/pi-change-working-dir) version 0.5.0 or later if you need directory changes.
 Paths bind to its selected directory before approval. Without that extension, paths use Pi's session directory.
 

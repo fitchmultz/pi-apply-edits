@@ -10,6 +10,7 @@ import type {
   ReadonlyFileSnapshot,
 } from "./contracts.ts";
 import { assertDirectoryWritableForPublish } from "./planning.ts";
+import { assertPublicationFilesystem } from "./volume-support.ts";
 import { isCode } from "./errors.ts";
 import {
   lstatIfExists,
@@ -200,6 +201,7 @@ export async function assertSafeToReplace(
     throw new Error(`${support.reason}. No changes were written.`);
   }
   await assertDirectoryWritableForPublish(dirname(snapshot.actualPath), snapshot.inputPath);
+  await assertPublicationFilesystem(dirname(snapshot.actualPath), snapshot.inputPath, true);
   if (process.platform === "linux") {
     await assertNoLinuxCapabilities(snapshot.actualPath, signal);
   } else if (support.strategy === "exchange") {

@@ -39,6 +39,16 @@ export function isCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
+/** Link and rename refusals that a filesystem or platform reports for an unsupported operation. */
+export function fallbackAllowed(error: unknown): boolean {
+  return (
+    isCode(error, "EACCES") ||
+    isCode(error, "EPERM") ||
+    isCode(error, "ENOTSUP") ||
+    isCode(error, "ENOSYS")
+  );
+}
+
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : describeUnknown(error);
 }
