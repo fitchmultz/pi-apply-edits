@@ -5,6 +5,7 @@ import { realpathSync } from "node:fs";
 export interface CompilerProject {
   readonly files: ReadonlySet<string>;
   readonly checkJs: boolean;
+  readonly skipLibCheck: boolean;
 }
 
 export function compilerProjects(paths: readonly string[]): readonly CompilerProject[] {
@@ -33,11 +34,37 @@ function readProject(path: string): CompilerProject {
   if (!record(configuration) || !record(configuration.compilerOptions)) {
     throw new Error(`Invalid effective compiler configuration for ${path}`);
   }
-  if (
-    configuration.compilerOptions.strict !== true ||
-    configuration.compilerOptions.noImplicitReturns !== true
-  ) {
-    throw new Error(`${path} must retain strict and noImplicitReturns`);
+  for (const option of [
+    "strict",
+    "noImplicitReturns",
+    "noFallthroughCasesInSwitch",
+    "noImplicitOverride",
+    "noUncheckedIndexedAccess",
+    "exactOptionalPropertyTypes",
+    "noUncheckedSideEffectImports",
+    "forceConsistentCasingInFileNames",
+  ]) {
+    if (configuration.compilerOptions[option] !== true) {
+      throw new Error(`${path} must retain ${option}: true (standard section 4.2)`);
+    }
+  }
+  if (configuration.compilerOptions.noCheck !== false) {
+    throw new Error(`${path} must retain noCheck: false`);
+  }
+  for (const option of [
+    "alwaysStrict",
+    "noImplicitAny",
+    "noImplicitThis",
+    "strictBindCallApply",
+    "strictBuiltinIteratorReturn",
+    "strictFunctionTypes",
+    "strictNullChecks",
+    "strictPropertyInitialization",
+    "useUnknownInCatchVariables",
+  ]) {
+    if (configuration.compilerOptions[option] === false) {
+      throw new Error(`${path} must not disable ${option}`);
+    }
   }
   const files = new Set(
     compilerOutput(path, "--listFilesOnly")
@@ -45,7 +72,13 @@ function readProject(path: string): CompilerProject {
       .filter((file) => file.length > 0)
       .map((file) => realpathSync(file)),
   );
-  return { files, checkJs: configuration.compilerOptions.checkJs === true };
+  return {
+    files,
+    checkJs:
+      configuration.compilerOptions.checkJs === true &&
+      configuration.compilerOptions.allowJs === true,
+    skipLibCheck: configuration.compilerOptions.skipLibCheck === true,
+  };
 }
 
 function record(value: unknown): value is Readonly<Record<string, unknown>> {

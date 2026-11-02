@@ -1,17 +1,17 @@
 export interface CallBinding {
   readonly kind: "import" | "function" | "parameter" | "unknown" | "native";
   readonly name: string;
-  readonly source?: string;
-  readonly target?: number;
+  readonly source?: string | undefined;
+  readonly target?: number | undefined;
   readonly parameter?: number;
-  readonly owner?: number;
-  readonly member?: string;
+  readonly owner?: number | undefined;
+  readonly member?: string | undefined;
 }
 export interface ConditionalControl {
   readonly parts: readonly number[];
   readonly exhaustive: boolean;
-  readonly guard?: number;
-  readonly compared?: readonly [string, string];
+  readonly guard?: number | undefined;
+  readonly compared?: readonly [string, string] | undefined;
 }
 export interface CallEvent {
   readonly offset: number;
@@ -25,14 +25,14 @@ export interface CallEvent {
   readonly handlers: readonly number[];
   readonly catches: readonly number[];
   readonly finalizers: readonly number[];
-  readonly parallel?: number;
+  readonly parallel?: number | undefined;
   readonly arguments: readonly string[];
   readonly stableArguments: boolean;
   readonly controls: readonly ConditionalControl[];
   readonly deferred?: boolean;
   readonly producers?: readonly number[];
   readonly producer?: number;
-  readonly promiseCallbacks?: readonly number[];
+  readonly promiseCallbacks?: readonly number[] | undefined;
   readonly promiseSources?: readonly number[];
   readonly promise?: boolean;
   readonly settles?: boolean;
@@ -69,7 +69,7 @@ export interface FunctionFlow {
 export interface Registration {
   readonly offset: number;
   readonly line: number;
-  readonly target?: number;
+  readonly target?: number | undefined;
 }
 export interface FlowSummary {
   readonly asserts: boolean;

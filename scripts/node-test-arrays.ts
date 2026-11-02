@@ -3,8 +3,8 @@ import { bindingValue, calleeBinding, transparentExpression } from "./node-test-
 import type { ControlView } from "./test-controls.ts";
 
 interface ArrayView extends ControlView {
-  readonly argument?: ControlView | null;
-  readonly elements?: readonly (ArrayView | null)[];
+  readonly argument?: ControlView | null | undefined;
+  readonly elements?: readonly (ArrayView | null)[] | undefined;
 }
 
 export function arrayLength(

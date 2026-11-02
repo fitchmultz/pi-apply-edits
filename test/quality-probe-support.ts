@@ -8,9 +8,13 @@ import { readFileSync } from "node:fs";
 const root = resolve(import.meta.dirname, "..");
 const policy: unknown = JSON.parse(readFileSync(join(root, ".oxlintrc.json"), "utf8"));
 export const lintExecutable = join(root, "node_modules", ".bin", "oxlint");
+const compilerPolicy: unknown = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8"));
+assert(record(compilerPolicy));
+assert(record(compilerPolicy.compilerOptions));
+const compilerOptions = compilerPolicy.compilerOptions;
 
 export interface Diagnostic {
-  readonly code: string;
+  readonly identity: string;
   readonly filename: string;
   readonly line: number;
   readonly column: number;
@@ -95,17 +99,7 @@ export async function inProbe<T>(
     const inputs = {
       "package.json": '{"type":"module"}',
       "tsconfig.json": JSON.stringify({
-        compilerOptions: {
-          strict: true,
-          noImplicitReturns: true,
-          target: "ES2024",
-          module: "NodeNext",
-          moduleResolution: "NodeNext",
-          noEmit: true,
-          skipLibCheck: true,
-          allowImportingTsExtensions: true,
-          types: ["node"],
-        },
+        compilerOptions,
         include: ["**/*.ts"],
       }),
       ...files,
@@ -134,7 +128,8 @@ export function lint(directory: string, paths: readonly string[] = ["."]): Probe
   assert(Array.isArray(output.diagnostics), result.stdout);
   const diagnostics = output.diagnostics.map((item: unknown) => {
     assert(record(item));
-    assert.equal(typeof item.code, "string");
+    const identity: unknown = typeof item.code === "string" ? item.code : item.message;
+    assert.equal(typeof identity, "string");
     assert.equal(typeof item.filename, "string");
     assert(Array.isArray(item.labels));
     const label: unknown = item.labels[0];
@@ -143,7 +138,7 @@ export function lint(directory: string, paths: readonly string[] = ["."]): Probe
     assert.equal(typeof label.span.line, "number");
     assert.equal(typeof label.span.column, "number");
     if (
-      typeof item.code !== "string" ||
+      typeof identity !== "string" ||
       typeof item.filename !== "string" ||
       typeof label.span.line !== "number" ||
       typeof label.span.column !== "number"
@@ -151,7 +146,7 @@ export function lint(directory: string, paths: readonly string[] = ["."]): Probe
       throw new Error("Invalid diagnostic shape");
     }
     return {
-      code: item.code,
+      identity,
       filename: item.filename,
       line: label.span.line,
       column: label.span.column,
@@ -175,8 +170,8 @@ export function expectDiagnostics(
     result.diagnostics
       .map((diagnostic) =>
         columns
-          ? [diagnostic.code, diagnostic.line, diagnostic.column]
-          : [diagnostic.code, diagnostic.line],
+          ? [diagnostic.identity, diagnostic.line, diagnostic.column]
+          : [diagnostic.identity, diagnostic.line],
       )
       .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
     [...expected].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),

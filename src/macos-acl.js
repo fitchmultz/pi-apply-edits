@@ -1,5 +1,6 @@
 // Run by macOS /usr/bin/osascript, not Node. The native ACL API preserves UUIDs and
 // entry order without translating principals through ls/chmod's name-based format.
+/// <reference path="./macos-acl-runtime.d.ts" />
 ObjC.import("Foundation");
 ObjC.bindFunction("acl_get_file", ["void *", ["char *", "int"]]);
 ObjC.bindFunction("acl_init", ["void *", ["int"]]);
@@ -13,12 +14,23 @@ ObjC.bindFunction("__error", ["int *", []]);
 ObjC.bindFunction("strerror", ["char *", ["int"]]);
 
 // sys/acl.h: ACL_TYPE_EXTENDED and ACL_ENTRY_ONLY_INHERIT are both 0x100.
+/** @param {number} result @param {string} operation */
 function check(result, operation) {
   if (result !== 0) {
     throw new Error(operation + ": " + $.strerror($.__error()[0]));
   }
 }
 
+/** @param {NativeReference} reference @returns {NativePointer} */
+function referencePointer(reference) {
+  const pointer = reference[0];
+  if (pointer === undefined) {
+    throw new Error("Native ACL call returned no pointer");
+  }
+  return pointer;
+}
+
+/** @param {string} path */
 function readAcl(path) {
   const acl = $.acl_get_file(path, 0x100);
   const readError = $.__error()[0];
@@ -32,6 +44,7 @@ function readAcl(path) {
   throw new Error("Read ACL: " + $.strerror(readError));
 }
 
+/** @param {import("./fs/acl-protocol.ts").AclMode} mode @param {string} source @param {string} target */
 function transfer(mode, source, target) {
   let acl = readAcl(source);
   if (acl === undefined) {
@@ -53,8 +66,8 @@ function transfer(mode, source, target) {
       const entry = Ref();
       for (let position = 0; $.acl_get_entry(acl, position, entry) === 0; position = -1) {
         const flags = Ref();
-        check($.acl_get_flagset_np(entry[0], flags), "Read ACL flags");
-        check($.acl_add_flag_np(flags[0], 0x100), "Set inherit-only flag");
+        check($.acl_get_flagset_np(referencePointer(entry), flags), "Read ACL flags");
+        check($.acl_add_flag_np(referencePointer(flags), 0x100), "Set inherit-only flag");
       }
     }
     // Replacement copies retain the complete source ACL, including inherited entries
@@ -65,8 +78,39 @@ function transfer(mode, source, target) {
   }
 }
 
+/** @param {string} line @returns {import("./fs/acl-protocol.ts").AclRequest} */
+function readRequest(line) {
+  /** @type {unknown} */
+  const value = JSON.parse(line);
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("id" in value) ||
+    typeof value.id !== "number"
+  ) {
+    throw new Error("Invalid ACL request");
+  }
+  return { id: value.id, ...readTransfer(value) };
+}
+
+/** @param {object} value @returns {Omit<import("./fs/acl-protocol.ts").AclRequest, "id">} */
+function readTransfer(value) {
+  if (
+    !("mode" in value) ||
+    (value.mode !== "inherit" && value.mode !== "copy") ||
+    !("source" in value) ||
+    typeof value.source !== "string" ||
+    !("target" in value) ||
+    typeof value.target !== "string"
+  ) {
+    throw new Error("Invalid ACL request");
+  }
+  return { mode: value.mode, source: value.source, target: value.target };
+}
+
+/** @param {string} line */
 function reply(line) {
-  const request = JSON.parse(line);
+  const request = readRequest(line);
   try {
     transfer(request.mode, request.source, request.target);
     return { id: request.id };
@@ -88,7 +132,7 @@ function serve() {
     if (!decoded.isNil()) {
       bytes = $.NSMutableData.data;
       const lines = (text + ObjC.unwrap(decoded)).split("\n");
-      text = lines.pop();
+      text = lines.pop() ?? "";
       for (const line of lines) {
         const data = $(JSON.stringify(reply(line)) + "\n").dataUsingEncoding(
           $.NSUTF8StringEncoding,
@@ -99,10 +143,17 @@ function serve() {
   }
 }
 
+/** @param {readonly string[]} args */
 function run(args) {
   if (args.length === 0) {
     serve();
   } else {
-    transfer(args[0], args[1], args[2]);
+    const mode = args[0];
+    const source = args.at(1);
+    const target = args.at(2);
+    if (source === undefined || target === undefined) {
+      throw new Error("Expected ACL mode, source, and target");
+    }
+    transfer(mode === "inherit" ? "inherit" : "copy", source, target);
   }
 }

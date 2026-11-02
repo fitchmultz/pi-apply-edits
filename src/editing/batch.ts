@@ -39,7 +39,7 @@ import {
 
 interface ResolvedMutation extends QueueTarget {
   readonly file: MutationInput;
-  readonly destination?: QueueTarget;
+  readonly destination?: QueueTarget | undefined;
 }
 interface ResolvedBatch {
   readonly resolved: readonly ResolvedMutation[];
@@ -160,7 +160,6 @@ class EditingBatch {
     for (const item of this.resolved.resolved) {
       try {
         // Preserve progress callback/cancellation order before planning the next file.
-        // oxlint-disable-next-line no-await-in-loop
         const contents = await planFile(item.file, item.inputPath, this.options);
         const plan = { ...contents, lockKey: item.destination?.targetKey ?? item.targetKey };
         this.plans.push(plan);
@@ -191,7 +190,6 @@ class EditingBatch {
         target.inputPath === input.inputPath &&
         (input.file.delete === true || input.file.patch?.moveTo !== undefined);
       // Native traversal is checked in request order so failures identify the first target.
-      // oxlint-disable-next-line no-await-in-loop
       const sourceIndex = await changedLinkInPath(
         entrySource ? dirname(target.inputPath) : target.inputPath,
         (key) => removedLinks.get(key),
@@ -254,7 +252,6 @@ class EditingBatch {
       try {
         const entries = group.map((index) => preparedEntry(required(this.plans[index])));
         // Prepare every subtree before publishing any target; failure cleanup owns prior groups.
-        // oxlint-disable-next-line no-await-in-loop
         const prepared = await this.acl.run(() =>
           preparePlannedNestedFiles(entries, this.options.signal),
         );
@@ -297,7 +294,6 @@ class EditingBatch {
         continue;
       }
       // Publication order determines partial receipts and the next cancellation boundary.
-      // oxlint-disable-next-line no-await-in-loop
       await this.publishGroup(index, plan);
     }
   }
@@ -306,7 +302,6 @@ class EditingBatch {
     for (const prepared of this.prepared.values()) {
       try {
         // Discard each owned group completely before advancing to the next cleanup boundary.
-        // oxlint-disable-next-line no-await-in-loop
         await discardPreparedNestedFiles(prepared);
       } catch (error) {
         failures.push(errorMessage(error));

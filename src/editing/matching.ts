@@ -146,7 +146,7 @@ interface BlockSearch {
   readonly lines: readonly TextLine[];
   readonly size: number;
   readonly signature: readonly string[];
-  readonly normalized?: readonly string[];
+  readonly normalized?: readonly string[] | undefined;
   readonly bodies: readonly string[];
   readonly includeFinalEnding: boolean;
   readonly fallbackEnding: () => LineEnding;

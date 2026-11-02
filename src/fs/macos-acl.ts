@@ -4,14 +4,7 @@ import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { errorMessage, throwIfAborted } from "./errors.ts";
-
-type AclMode = "inherit" | "copy";
-interface AclRequest {
-  readonly id: number;
-  readonly mode: AclMode;
-  readonly source: string;
-  readonly target: string;
-}
+import type { AclMode, AclRequest } from "./acl-protocol.ts";
 interface PendingReply {
   readonly request: AclRequest;
   readonly reply: PromiseWithResolvers<void>;

@@ -2,7 +2,11 @@ import { StringEnum, type JsonValue } from "@earendil-works/pi-ai";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import type { ApplyEditsBatchDetails } from "./apply-edits.ts";
-import type { ReadonlyEditingExecution } from "./editing/contracts.ts";
+import type {
+  ReadonlyEditingExecution,
+  ReadonlyFileReceipt,
+  ReadonlyAppliedEditDetail,
+} from "./editing/contracts.ts";
 import { mutableDetails } from "./editing/receipts.ts";
 
 const matchSchema = Type.Object({
@@ -87,28 +91,26 @@ function previewDiff(
   };
 }
 
-function structuredDetails(result: ReadonlyEditingExecution): ApplyEditsBatchDetails {
-  const details = mutableDetails(result.details);
-  for (const file of details.files) {
-    if (file.preview === undefined) {
-      delete file.preview;
-    }
-    if (file.moveTo === undefined) {
-      delete file.moveTo;
-    }
-    if (file.addedLines === undefined) {
-      delete file.addedLines;
-    }
-    if (file.deletedLines === undefined) {
-      delete file.deletedLines;
-    }
-    for (const match of file.matches) {
-      if (match.linesTruncated === undefined) {
-        delete match.linesTruncated;
-      }
-    }
-  }
-  return details;
+function structuredMatch(match: ReadonlyAppliedEditDetail): Static<typeof matchSchema> {
+  const { linesTruncated, ...fields } = match;
+  return {
+    ...fields,
+    lines: [...fields.lines],
+    ...(linesTruncated === undefined ? {} : { linesTruncated }),
+  };
+}
+
+function structuredFile(file: ReadonlyFileReceipt): Static<typeof fileReceiptSchema> {
+  const { preview, moveTo, addedLines, deletedLines, matches, warnings, ...fields } = file;
+  return {
+    ...fields,
+    matches: matches.map(structuredMatch),
+    warnings: [...warnings],
+    ...(preview === undefined ? {} : { preview }),
+    ...(moveTo === undefined ? {} : { moveTo }),
+    ...(addedLines === undefined ? {} : { addedLines }),
+    ...(deletedLines === undefined ? {} : { deletedLines }),
+  };
 }
 
 export function toolResult(result: ReadonlyEditingExecution): {
@@ -123,15 +125,18 @@ export function toolResult(result: ReadonlyEditingExecution): {
     content.push({ type: "text", text: preview.text });
   }
   // Separate copies keep details and structuredContent independently mutable by hooks and callers.
-  const receipt = structuredDetails(result);
+  const receipt = {
+    modifiedFiles: [...result.details.modifiedFiles],
+    files: result.details.files.map(structuredFile),
+  };
   const structuredContent: Static<typeof receiptSchema> = {
     summary:
       result.details.error === undefined
         ? result.summary
         : `Editing failed (${result.details.modifiedFiles.length} verified committed paths). Inspect error and per-file outcomes before retrying.`,
     modifiedFiles: receipt.modifiedFiles,
-    ...(receipt.preview === true ? { preview: true } : {}),
-    ...(receipt.error === undefined ? {} : { error: receipt.error }),
+    ...(result.details.preview === true ? { preview: true } : {}),
+    ...(result.details.error === undefined ? {} : { error: result.details.error }),
     ...(preview === undefined ? {} : { previewDiff: preview.text }),
     ...(preview?.truncated === true ? { previewDiffTruncated: true } : {}),
     files: receipt.files,

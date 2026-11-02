@@ -9,9 +9,9 @@ import { arrayLength, arraySnapshotSafe } from "./node-test-arrays.ts";
 import { nonemptyLiteral, type ControlView } from "./test-controls.ts";
 
 interface PromiseView extends ControlView {
-  readonly init?: PromiseView | null;
-  readonly async?: boolean;
-  readonly argument?: ControlView | null;
+  readonly init?: PromiseView | null | undefined;
+  readonly async?: boolean | undefined;
+  readonly argument?: ControlView | null | undefined;
   readonly typeAnnotation?: {
     readonly typeAnnotation?: {
       readonly returnType?: {

@@ -87,7 +87,6 @@ class NestedPublication {
       await this.reserveDirectories();
       for (const entry of this.prepared.entries) {
         // A shared reserved root and truthful partial receipts require ordered target publication.
-        // oxlint-disable-next-line no-await-in-loop
         await this.publishEntry(entry, support);
       }
       await this.finalizeDirectories();
@@ -105,7 +104,6 @@ class NestedPublication {
   private async assertPlansCurrent(): Promise<void> {
     for (const { plan } of this.prepared.entries) {
       // Keep phase order visible and complete validation before invoking later hooks.
-      // oxlint-disable-next-line no-await-in-loop
       await assertNewFilePlanCurrent(plan);
     }
   }
@@ -169,7 +167,6 @@ class NestedPublication {
       .sort(([left], [right]) => left.length - right.length);
     for (const [path] of relative) {
       // Parents must be reserved before descendants, with identity revalidation after each claim.
-      // oxlint-disable-next-line no-await-in-loop
       await this.reserveDirectory(join(this.prepared.publishRoot, path));
     }
   }
@@ -345,7 +342,6 @@ class NestedPublication {
       const parentMode = modes.get(dirname(path)) ?? ancestorMode;
       const mode = (staged.mode & 0o777n) | (parentMode & 0o2000n);
       // Restore parent modes before descendants so setgid inheritance follows the intended tree.
-      // oxlint-disable-next-line no-await-in-loop
       await chmodOwnedDirectory(path, stats, Number(mode));
       modes.set(path, mode);
     }
@@ -353,7 +349,6 @@ class NestedPublication {
       ([left], [right]) => right.length - left.length,
     )) {
       // Durability sync proceeds from descendants to their already-finalized parents.
-      // oxlint-disable-next-line no-await-in-loop
       const warning = await syncDirectory(path);
       if (warning !== undefined) {
         this.stagingOwner.warnings.push(warning);
@@ -417,7 +412,6 @@ class NestedPublication {
     for (const [path, stats] of [...this.directories].reverse()) {
       try {
         // Release reserved children before their parents; never remove unrelated substituted entries.
-        // oxlint-disable-next-line no-await-in-loop
         await removeEmptyOwnedDirectory(path, stats, "Reserved create directory");
       } catch (cleanupError) {
         failures.push(`${path}: ${errorMessage(cleanupError)}`);

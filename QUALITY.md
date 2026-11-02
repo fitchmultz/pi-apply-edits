@@ -1,20 +1,14 @@
-# Code quality and maintainability
+# Quality coverage
 
-Oxlint owns code quality; Oxfmt owns supported-file formatting. TypeScript,
-behavioral tests, package qualification, and review are separate gates.
+[The engineering standard](docs/engineering-standard.md), version 5.1.2, owns the
+lint, compiler, formatting, exception, and verification requirements. Appendix B
+records this repository's mappings and decisions.
 
-## Development and acceptance
+## Acceptance
 
-Use the declared npm version, Node 24.15 or newer for development, Git, Go
-1.26 or newer, and Rust 1.99.0. CI pins Go 1.27.1 and Rust 1.99.0. Go and Rust
-build the corrected **development checkers**, not the production extension.
-On macOS and Linux, the native Oxlint checker build also requires CMake for its
-mimalloc allocator; make `cmake` available on `PATH`.
-Install Rust's `llvm-tools` component as CI does to support native debug stripping:
-
-```sh
-rustup component add llvm-tools
-```
+Use Node 24.15 or newer, Git, and the npm version in `package.json` for development.
+The extension's runtime floor is Node 24.0. The published Oxlint, oxlint-tsgolint,
+and Oxfmt packages run directly from the locked dependency tree.
 
 ```sh
 npm ci
@@ -24,157 +18,98 @@ npm run format
 npm run check:compat
 ```
 
-With lifecycle scripts intentionally disabled, run `npm run quality:prepare`
-after `npm ci --ignore-scripts`. Preparation builds and installs the pinned
-checker corrections reproducibly; lint also prepares them. Do not bypass this
-step in editors. The workspace's Oxc extension uses the project-installed
-Oxlint/Oxfmt and enables type-aware linting. Disable competing formatters for
-these file types. Oxc supplies editor lint diagnostics; the TypeScript language
-service supplies compiler diagnostics. The canonical typecheck remains an
-independent acceptance gate. A production-only install does not build the checker.
-The verified native build caches live outside the repository under
-`~/.cache/pi-apply-edits/`; see the [type-aware checker correction](patches/tsgolint/README.md)
-and [native import-graph correction](patches/oxlint/README.md).
+`npm run check:compat` runs these independent gates through `scripts/check.ts`:
 
-Isolated host qualification uses a private `HOME`. Put the physical Rust
-toolchain's `bin` directory on `PATH` before invoking the qualifier, rather than
-passing rustup shims that depend on the original home:
+| Gate                               | Owner                               |
+| ---------------------------------- | ----------------------------------- |
+| Policy and coverage                | `scripts/check-policy.ts`           |
+| Full semantic lint                 | `oxlint --deny-warnings .`          |
+| Supported-file formatting          | `oxfmt --check .`                   |
+| Main compiler project              | `tsc --noEmit`                      |
+| JXA and declaration project        | `tsc --noEmit -p tsconfig.jxa.json` |
+| Behavior and installed-tool probes | `node --test test/*.test.ts`        |
+| Distribution inventory             | `npm pack --dry-run`                |
 
-```sh
-export PATH="$(rustc --print sysroot)/bin:$PATH"
-```
+Every gate runs even when an earlier independent gate fails. Any failed gate
+makes the aggregate fail. The package uses native TypeScript, with no separate
+transpilation build or generated application source.
 
-`check:compat` composes suppression/scope policy, strict lint, formatting,
-canonical `tsc --noEmit`, the Node test suite (including installed-CLI quality
-probes), and `npm pack --dry-run`. The package ships native TypeScript, so there
-is no separate transpilation build. The existing qualification workflow runs
-this contract against each host, then loads a fresh Git consumer through the
-real Pi CLI. Child failures propagate; CI never modifies source with fixes.
+CI runs the contract on the declared official Pi cohort and the latest official
+release on macOS, and the current Fitch fork on Linux. The host qualifier also
+loads a fresh Git consumer through the real Pi CLI. Local results do not replace
+these hosted checks.
 
-## Maintained-code inventory
+## Maintained files
 
-| Files                                       | Quality owner                  | Semantic/compiler coverage                                                |
-| ------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------- |
-| `src/**/*.ts`, `extensions/**/*.ts`         | Oxlint / Oxfmt                 | Type-aware lint, strict TypeScript, behavioral tests                      |
-| `scripts/**/*.ts`, handwritten declarations | Oxlint / Oxfmt                 | Type-aware lint, strict TypeScript, policy/CLI probes                     |
-| `test/**/*.ts`                              | Oxlint / Oxfmt                 | Type-aware lint, strict TypeScript, Node test/assertion checks            |
-| `src/macos-acl.js`                          | Oxlint / Oxfmt                 | Unchecked JXA; applicable non-type-aware rules and real macOS ACL tests   |
-| JSON, Markdown, YAML                        | Oxfmt                          | Configuration/provenance checks where applicable                          |
-| `test/fixtures/reject-xattr.c`              | Existing C fixture conventions | Compiled and exercised by native Linux metadata tests; unsupported by Oxc |
+| Files                               | Lint and formatting                                        | Compiler and behavior                                                    |
+| ----------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `extensions/**/*.ts`, `src/**/*.ts` | Oxlint and Oxfmt, production profile                       | `tsconfig.json`, runtime tests                                           |
+| `scripts/**/*.ts`                   | Oxlint and Oxfmt, production profile                       | `tsconfig.json`, policy and CLI probes                                   |
+| `test/**/*.ts`                      | Oxlint and Oxfmt, test profile                             | `tsconfig.json`, Node assertion checks and tests                         |
+| `src/macos-acl.js`                  | Semantic Oxlint and Oxfmt, production profile, JXA globals | `tsconfig.jxa.json` with `allowJs` and `checkJs`, native macOS ACL tests |
+| `src/macos-acl-runtime.d.ts`        | Applicable Oxlint and Oxfmt, declaration profile           | `tsconfig.jxa.json` with `skipLibCheck: false`                           |
+| JSON, Markdown, and YAML            | Oxfmt                                                      | Config validation where applicable                                       |
+| `package-lock.json`                 | npm                                                        | Clean locked installation                                                |
+| `test/fixtures/reject-xattr.c`      | Established C fixture style                                | Compiled by native Linux metadata tests                                  |
 
-Unchecked JavaScript is not excluded. Only installed-metadata type-dependent
-rules and unexpressible TypeScript-syntax requirements are disabled for its
-exact scope. Project membership, inherited `checkJs`, and `@ts-check` determine
-semantic checking; probes separately exercise lint and compiler diagnostics,
-including checked consumers importing unchecked JavaScript.
+The policy gate inventories existing tracked and untracked files that Git does
+not ignore. It resolves compiler settings and imported-file membership through
+TypeScript, checks every maintained JavaScript and TypeScript file, and rejects
+literal relative production imports or re-exports of test-only support. New unassigned source
+fails coverage. Handwritten declarations must belong to a project that actually
+checks declarations. JXA runs under `osascript`, so its compiler project uses
+script detection, ES2024 libraries, and narrow native bridge declarations.
 
-There is no generated application source or vendored JavaScript. Dependency
-files and the pinned external checker build cache are not maintained source.
-`package-lock.json` remains npm-owned, not formatter-owned. Fixture string bytes
-retain their behavioral meaning; no fixture expectations are refreshed merely
-to satisfy tooling.
+Root quality settings are compared with the adopted standard and the explicit
+mappings in `scripts/quality-config.ts`. Additional nested configs, ignore files,
+compiler projects, and reduced acceptance commands require an explicit mapping
+change. `package-lock.json` has npm ownership. There are no generated or vendored
+JavaScript or TypeScript files to exempt from maintained-source checks.
 
-## Enforcement and exceptions
+## Ownership and exceptions
 
-Production limits remain complexity 10, depth 3, four parameters, 40 statements,
-80 function lines and 500 file lines (excluding comments/blank lines). Tests and
-approved test-only helpers retain complexity 15, depth 4, six parameters, but
-have no size/statement limits. Handwritten declarations retain type/API checks
-without structural metrics.
+Editing and filesystem implementations borrow caller data through readonly
+views. Public named requests, plans, hooks, and receipts retain their mutable
+contracts, including explicit `undefined` in optional fields. Prepared operations
+retain the caller's original references. Result adapters detach mutable SDK
+receipts from internal results and from each other.
 
-Function parameters use readonly types. Editing, patch execution, and filesystem
-publication read caller-owned inputs through explicit readonly views. Public
-named request, plan, and result types remain mutable; retained references keep
-the caller's input type. Literal inputs can narrow the returned alias, and some
-signature-derived inputs, results, and hook payloads remain readonly as described
-in the changelog. Completed receipts transfer ownership to the caller. Native parameter types are exempt only by verified declaration
-origin; `Promise` input permission never permits floating work.
-Generic containers are not blanket-allowlisted, and internal lifecycle owners
-stay explicit.
+The standard's production and test structural profiles apply without a finding
+budget. The bounded exceptions are:
 
-- Qualified `node:test` registration is framework-owned. `context.test()` and
-  ordinary asynchronous work still need handling.
-- Native Node/Pi/schema declarations have positive and same-name foreign-origin
-  negative probes. The checker correction must pass these probes after a clean
-  install; configuration schema acceptance is insufficient.
-- Sequential publication, locks, filesystem traversal, and ordered fault
-  injection use explained, exact `no-await-in-loop` exceptions. Independent
-  observations may run concurrently; dependent persistence does not.
-- Retained external positional callbacks/compatibility functions have exact
-  boundary-file arity overrides; internal APIs keep the ordinary limit.
-- Meaningful positional `undefined`, documented no-ops, fail-closed variant
-  assertions, and intentional control validation have only their demonstrated
-  narrow handling. No blanket disables, `@ts-ignore`, or `@ts-nocheck` are allowed.
-- Automatic fail-closed discriminator proof compares saved values immediately
-  after a strict native assertion. Snapshot calls or property reads first:
-  repeated calls and getters can produce different values, and assertion
-  argument evaluation must not mutate the discriminator. This conservative
-  proof does not classify every plain data property as unsafe; it avoids
-  claiming effect analysis that the assertion checker does not perform.
-- Comment-aware policy distinguishes real directives from strings and isolated
-  checker fixtures. Unused disables fail. Negative compiler suppressions belong
-  only in described dedicated type tests.
+- `QX-001`: the declaration-qualified `nodeTest` registration allowance. Use
+  `import { test as nodeTest } from "node:test"` for registrations and context
+  methods for subtests. Context subtests and ordinary asynchronous work still
+  require ownership.
+- `QX-002`: the two public five-parameter compatibility functions and three
+  five-parameter Pi `execute` callbacks, enumerated by operation.
+- `QX-003`: enumerated exhaustive variant assertions. Optional branches do not
+  qualify merely because another assertion executes first.
+- `QX-004`: the `run` entrypoint in `src/macos-acl.js`, invoked by `osascript`.
+  Other names and files retain unused-symbol checks.
 
-The root configs, ignore paths, checker patches, suppression/test policy,
-package scripts, and CI are owner-reviewed surfaces in `.github/CODEOWNERS`.
-Additional relaxations need concrete evidence and explicit approval.
+Appendix B contains the comparisons, evidence, and remaining protection.
+`scripts/quality-exceptions.json` binds each directive to its file, rule, ID,
+enclosing operation, and duplication bound. Native unused-disable checks remain
+active. Strings and documentation examples are not directives. Described negative
+compiler expectations belong only in dedicated type tests.
 
-## Responsibility boundaries: before and after
+## Tool limits
 
-### Patch interpretation
+Published native checks provide their documented guarantees, not universal
+immutability or effect analysis. The readonly-parameter rule is off under the
+standard, while readonly views, private-member checks, and direct parameter
+mutation checks remain. Stock `import/no-cycle` is qualified for the static and
+type-only cycles exercised by the probes. The retired custom dynamic and external
+cycle detection is not claimed as stock behavior.
 
-Before: `parsePatch` owned the envelope, header/path offsets, operation dispatch,
-chunk grammar, anchors and EOF transitions in one branched function;
-`applyPatchUpdate` mixed matching with replacement rendering and expansion state.
+The registration allowance matches declaration origin and local import name,
+not the runtime calling context. Calling imported `nodeTest` inside a running
+test can create a subtest without a floating-Promise finding. Use the test
+context's methods there. The assertion plugin uses conservative native scope and
+code-path facts. It does not prove arbitrary getters, repeated calls, or effects
+stable. Save a discriminator before asserting and branching on it.
 
-After: `PatchParser` owns its cursor and header spans; operation/chunk readers
-consume their own grammar. `PatchMatcher` owns immutable original-source matching
-and bounded normalization. `PatchUpdater` owns suffix advancement, expansion
-accounting and byte/EOL reconstruction. `src/patch.ts` retains the public exports.
-A grammar change stays in the parser; a matching change stays in the matcher.
-
-### Editing batches
-
-Before: `registerEditsBatch` combined canonical path discovery, reservations,
-planning, alias conflicts, shared subtree preparation, publication, partial
-receipts and cleanup. Text matching and diagnostics shared the same large module.
-
-After: `EditingBatch` owns one invocation's lifecycle and expresses its phases;
-queue/path resolution, content planning, matching/indentation, bounded diagnostics
-and receipts have focused owners under `src/editing/`. The receipt ledger owns
-status updates. Every file is still planned before any target is published;
-prepared shared roots are discarded on failure, and partial/uncertain outcomes
-remain visible rather than being replayed automatically.
-
-### Filesystem publication
-
-Before: `file-system.ts` mixed snapshot/identity checks, platform support and
-metadata, create planning, entry moves/deletes, replacement recovery, nested
-staging/publication and guarded cleanup.
-
-After: the facade preserves the established API. `src/fs/` separates observation,
-snapshots, planning, platform primitives, preparation, replacement, entry moves,
-entry deletion, nested staging/publication and owned cleanup. Publication owners
-retain their resources and failure state until cleanup finishes. Cancellation,
-no-clobber publication, metadata preservation and inode-identity guards remain
-independent guarantees, exercised by real syscall/race tests. Private module
-loading in tests follows the whole owner graph so platform caches cannot mask
-fault injection after decomposition.
-
-### SDK tools and presentation
-
-Before: tool construction mixed schemas, path binding, execution, receipt
-adaptation and detailed result rendering in one module.
-
-After: `src/tools.ts` owns typed tool construction, argument validation and path
-binding, and execution. `src/tool-results.ts` adapts editing results to compact
-model-facing content with bounded previews, SDK details, and the complete generated
-receipt as native structured content. `src/tool-rendering.ts` owns
-presentation of previews and verified, failed or unattempted outcomes. The
-adapter consumes readonly editing results and transfers detached mutable
-receipts to SDK callers; details and structured content are separate copies of the
-same per-file evidence. Presentation changes no longer touch publication.
-
-These are maintainability improvements, not claims that every removed diagnostic
-was a runtime bug. Formatting consistency, checker-integrity corrections, safer
-contracts and any independently demonstrated runtime fixes are reported separately.
+The Oxc editor extension uses the workspace's installed tools. Keep its
+project-aware linting enabled and use the TypeScript language service for
+compiler diagnostics. Acceptance remains the full command above.

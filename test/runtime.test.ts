@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   contentText,
@@ -109,7 +109,7 @@ function scriptCalls(session: AgentSession, steps: readonly (readonly ScriptedCa
 }
 
 // Only the provider response is scripted: loading, validation, policy, execution, and settlement are real Pi.
-test(
+nodeTest(
   "native codemode scripts read full receipts and output selected fields",
   { timeout: 30_000 },
   async (t) => {
@@ -118,6 +118,8 @@ test(
     await mkdir(cwd);
     await writeFile(join(cwd, "other.txt"), "other\n");
     const runtime = await offlineRuntime(root);
+    const model = runtime.getModel("offline-test", "scripted");
+    assert(model);
     const settings = SettingsManager.inMemory({
       compaction: { enabled: false },
       retry: { enabled: false },
@@ -144,7 +146,7 @@ test(
       agentDir: join(root, "agent"),
       resourceLoader: loader,
       modelRuntime: runtime,
-      model: runtime.getModel("offline-test", "scripted"),
+      model,
       tools: ["codemode", "write_files", "replace_text"],
       sessionManager: manager,
       settingsManager: settings,
@@ -321,7 +323,7 @@ return [...[preview, created, edited, failed].map(select), {
   },
 );
 
-test(
+nodeTest(
   "native loader executes focused tools with policy, errors, previews, and ordered publication",
   { timeout: 30_000 },
   async (t) => {
@@ -349,6 +351,8 @@ test(
       ["ordered-a", "ordered-b"].map((name) => writeFile(join(cwd, name), "initial\n")),
     );
     const runtime = await offlineRuntime(root);
+    const model = runtime.getModel("offline-test", "scripted");
+    assert(model);
     const settings = SettingsManager.inMemory({
       compaction: { enabled: false },
       retry: { enabled: false },
@@ -382,7 +386,6 @@ test(
                 { input: patch("same.txt", "before", "nested"), preview: true },
               ]) {
                 // Each nested call's identifier and policy result depends on prior registration order.
-                // oxlint-disable-next-line no-await-in-loop
                 const result = await ctx.executeTool(
                   input.preview === true ? "preview_patch" : "apply_patch",
                   { input: input.input },
@@ -427,7 +430,7 @@ test(
       agentDir,
       resourceLoader: loader,
       modelRuntime: runtime,
-      model: runtime.getModel("offline-test", "scripted"),
+      model,
       thinkingLevel: "off",
       sessionManager: manager,
       settingsManager: settings,
@@ -614,7 +617,7 @@ test(
 );
 
 for (const bind of [true, false]) {
-  test(
+  nodeTest(
     `execution directory is bound before policy in ${bind ? "normal sessions" : "bare SDK prompts"}`,
     { timeout: 30_000 },
     async (t) => {
@@ -641,6 +644,8 @@ for (const bind of [true, false]) {
         }),
       );
       const runtime = await offlineRuntime(root);
+      const model = runtime.getModel("offline-test", "scripted");
+      assert(model);
       const settings = SettingsManager.inMemory({
         compaction: { enabled: false },
         retry: { enabled: false },
@@ -698,7 +703,7 @@ for (const bind of [true, false]) {
         agentDir,
         resourceLoader: loader,
         modelRuntime: runtime,
-        model: runtime.getModel("offline-test", "scripted"),
+        model,
         thinkingLevel: "off",
         sessionManager: manager,
         settingsManager: settings,
@@ -720,12 +725,12 @@ for (const bind of [true, false]) {
           },
         });
         // Exhaustive session-binding variants resolve the owner's directory or retain the uninitialized guard.
-        // oxlint-disable-next-line node-test/no-conditional-assertions
+        // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
         assert.partialDeepStrictEqual(prepare(args), { files: [{ path: join(a, "same.txt") }] });
         ownerQueries.length = 0;
       } else {
         // Exhaustive session-binding variants must stay uninitialized before the first bare SDK prompt.
-        // oxlint-disable-next-line node-test/no-conditional-assertions
+        // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
         assert.throws(() => prepare(args), /not initialized/);
       }
       scriptCalls(session, [
@@ -831,7 +836,7 @@ for (const scenario of [
   "disabled",
   "unrelated",
 ] as const) {
-  test(`directory-owner provenance: ${scenario}`, { timeout: 30_000 }, async (t) => {
+  nodeTest(`directory-owner provenance: ${scenario}`, { timeout: 30_000 }, async (t) => {
     const root = await mkdtemp(join(tmpdir(), "pi-apply-edits-owner-"));
     const sessions: AgentSession[] = [];
     t.after(async () => {
@@ -906,7 +911,7 @@ for (const scenario of [
       modelRuntime: await offlineRuntime(root),
       settingsManager: settings,
       sessionManager: SessionManager.inMemory(root),
-      excludeTools: scenario.startsWith("excluded") ? ["change_dir"] : undefined,
+      ...(scenario.startsWith("excluded") ? { excludeTools: ["change_dir"] } : {}),
     });
     sessions.push(session);
     await session.bindExtensions({ mode: "print", onError: (error) => assert.fail(error.error) });
@@ -916,22 +921,22 @@ for (const scenario of [
     const args = { files: [{ path: "fixture.txt", content: "content", mode: "create" }] };
     if (scenario === "disabled" || scenario === "unrelated") {
       // Exhaustive provenance variants either prepare against the local root or reject a legacy directory owner.
-      // oxlint-disable-next-line node-test/no-conditional-assertions
+      // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
       assert.partialDeepStrictEqual(prepare(args), {
         files: [{ path: join(root, "fixture.txt") }],
       });
       // Exhaustive provenance variants distinguish a disabled package from an unrelated command owner.
-      // oxlint-disable-next-line node-test/no-conditional-assertions
+      // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
       assert.equal(
         api.getCommands().some((command) => command.name === "cwd"),
         scenario === "unrelated",
       );
     } else {
       // Exhaustive provenance variants reject every loaded legacy directory owner.
-      // oxlint-disable-next-line node-test/no-conditional-assertions
+      // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
       assert.throws(() => prepare(args), /Update pi-change-working-dir and restart Pi/);
       // Exhaustive provenance variants retain the legacy command, including collision-qualified names.
-      // oxlint-disable-next-line node-test/no-conditional-assertions
+      // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
       assert(api.getCommands().some((command) => /^cwd(?::\d+)?$/.test(command.name)));
     }
     assert.equal(

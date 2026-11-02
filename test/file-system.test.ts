@@ -17,7 +17,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import {
   captureEntrySnapshot,
   captureSnapshot,
@@ -85,7 +85,7 @@ function outcome(modifiedFiles: readonly string[], uncertainFiles: readonly stri
   };
 }
 
-test(
+nodeTest(
   "replacement errors distinguish no commit, unverified publication and verified cleanup failure",
   {
     skip: replacementUnsupported,
@@ -93,7 +93,6 @@ test(
   async (t) => {
     for (const phase of ["beforeRename", "afterRename", "beforeRecoveryCleanup"] as const) {
       // Each fault phase finishes its private recovery lifecycle before starting the next case.
-      // oxlint-disable-next-line no-await-in-loop
       await t.test(phase, async () => {
         await fixture(async (directory) => {
           const path = join(directory, phase);
@@ -130,7 +129,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "replacement retains concurrent macOS resource-fork writes on the original inode",
   {
     skip: process.platform !== "darwin",
@@ -180,7 +179,7 @@ test(
 );
 
 for (const phase of ["afterRename", "beforeRecoveryCleanup"] as const) {
-  test(
+  nodeTest(
     `replacement retains descriptor xattr writes in ${phase}`,
     { skip: process.platform !== "darwin" },
     async () => {
@@ -229,7 +228,7 @@ assert libc.fsetxattr(3, b"${attribute}", value, len(value), 0, 0) == 0, ctypes.
           });
           if (phase === "afterRename") {
             // Exhaustive replacement phases require a conflict receipt here or retained-metadata warnings below.
-            // oxlint-disable-next-line node-test/no-conditional-assertions
+            // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
             await assert.rejects(publication, (error: unknown) => {
               assert(outcome([path], [])(error));
               assert.match(error.message, /File versions changed during commit/);
@@ -240,7 +239,7 @@ assert libc.fsetxattr(3, b"${attribute}", value, len(value), 0, 0) == 0, ctypes.
             const warnings = await publication;
             const preserved = /preserved at (.+)$/.exec(warnings.join(" "))?.[1];
             // Exhaustive replacement phases require warnings to identify the retained recovery inode.
-            // oxlint-disable-next-line node-test/no-conditional-assertions
+            // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
             assert.ok(
               preserved !== undefined && preserved.length > 0,
               "cleanup must report the retained metadata",
@@ -266,7 +265,7 @@ assert libc.fsetxattr(3, b"${attribute}", value, len(value), 0, 0) == 0, ctypes.
   );
 }
 
-test(
+nodeTest(
   "post-commit cancellation keeps a verified replacement receipt",
   { skip: replacementUnsupported },
   async () => {
@@ -284,50 +283,56 @@ test(
   },
 );
 
-test("single create reports an unverified committed entry without inventing a verified path", async () => {
-  await fixture(async (directory) => {
-    const path = join(directory, "file");
-    await assert.rejects(
-      publishNewFile(path, Buffer.from("new"), undefined, await planNewFile(path), {
-        afterFilePublish: () => {
-          throw new Error("fixture observer failed");
-        },
-      }),
-      outcome([], [path]),
-    );
-    assert.equal(await readFile(path, "utf8"), "new");
-  });
-});
-
-test("grouped partial creation separates verified files from claimed but unverified entries", async () => {
-  await fixture(async (directory) => {
-    const first = join(directory, "new", "first");
-    const second = join(directory, "new", "second");
-    const prepared = await preparePlannedNestedFiles(
-      [
-        { plan: await planNewFile(first), bytes: Buffer.from("first") },
-        { plan: await planNewFile(second), bytes: Buffer.from("second") },
-      ],
-      undefined,
-      {
-        afterFilePublish: ({ target }) => {
-          if (target === second) {
+nodeTest(
+  "single create reports an unverified committed entry without inventing a verified path",
+  async () => {
+    await fixture(async (directory) => {
+      const path = join(directory, "file");
+      await assert.rejects(
+        publishNewFile(path, Buffer.from("new"), undefined, await planNewFile(path), {
+          afterFilePublish: () => {
             throw new Error("fixture observer failed");
-          }
-        },
-      },
-    );
-    await assert.rejects(publishPreparedNestedFiles(prepared), (error: unknown) => {
-      assert.ok(error instanceof PartialCreatePublishError);
-      assert.equal(error.publishedFiles, 2);
-      return outcome([first], [second])(error);
+          },
+        }),
+        outcome([], [path]),
+      );
+      assert.equal(await readFile(path, "utf8"), "new");
     });
-    assert.equal(await readFile(first, "utf8"), "first");
-    assert.equal(await readFile(second, "utf8"), "second");
-  });
-});
+  },
+);
 
-test("delete removes only a regular entry and never accepts a directory", async () => {
+nodeTest(
+  "grouped partial creation separates verified files from claimed but unverified entries",
+  async () => {
+    await fixture(async (directory) => {
+      const first = join(directory, "new", "first");
+      const second = join(directory, "new", "second");
+      const prepared = await preparePlannedNestedFiles(
+        [
+          { plan: await planNewFile(first), bytes: Buffer.from("first") },
+          { plan: await planNewFile(second), bytes: Buffer.from("second") },
+        ],
+        undefined,
+        {
+          afterFilePublish: ({ target }) => {
+            if (target === second) {
+              throw new Error("fixture observer failed");
+            }
+          },
+        },
+      );
+      await assert.rejects(publishPreparedNestedFiles(prepared), (error: unknown) => {
+        assert.ok(error instanceof PartialCreatePublishError);
+        assert.equal(error.publishedFiles, 2);
+        return outcome([first], [second])(error);
+      });
+      assert.equal(await readFile(first, "utf8"), "first");
+      assert.equal(await readFile(second, "utf8"), "second");
+    });
+  },
+);
+
+nodeTest("delete removes only a regular entry and never accepts a directory", async () => {
   await fixture(async (directory) => {
     const path = join(directory, "file");
     await writeFile(path, "old");
@@ -340,7 +345,7 @@ test("delete removes only a regular entry and never accepts a directory", async 
   });
 });
 
-test(
+nodeTest(
   "delete of dangling and directory symlinks preserves their targets",
   { skip: process.platform === "win32" },
   async () => {
@@ -363,56 +368,64 @@ test(
   },
 );
 
-test("delete cancellation before commit and failure after commit report different outcomes", async () => {
-  await fixture(async (directory) => {
-    const path = join(directory, "file");
-    await writeFile(path, "old");
-    const entry = await captureEntrySnapshot(path);
-    assert.ok(entry);
-    const abort = new AbortController();
-    await assert.rejects(
-      publishEntryDelete(entry, abort.signal, { beforeCommit: () => abort.abort() }),
-      outcome([], []),
-    );
-    assert.equal(await readFile(path, "utf8"), "old");
-    await assert.rejects(
-      publishEntryDelete(entry, undefined, {
-        afterCommit: () => {
-          throw new Error("cleanup unavailable");
-        },
-      }),
-      outcome([path], []),
-    );
-    await assert.rejects(lstat(path), { code: "ENOENT" });
-    const retainedDirectory = (await readdir(directory))[0];
-    assert.equal(await readFile(join(directory, retainedDirectory, "entry"), "utf8"), "old");
-  });
-});
+nodeTest(
+  "delete cancellation before commit and failure after commit report different outcomes",
+  async () => {
+    await fixture(async (directory) => {
+      const path = join(directory, "file");
+      await writeFile(path, "old");
+      const entry = await captureEntrySnapshot(path);
+      assert.ok(entry);
+      const abort = new AbortController();
+      await assert.rejects(
+        publishEntryDelete(entry, abort.signal, { beforeCommit: () => abort.abort() }),
+        outcome([], []),
+      );
+      assert.equal(await readFile(path, "utf8"), "old");
+      await assert.rejects(
+        publishEntryDelete(entry, undefined, {
+          afterCommit: () => {
+            throw new Error("cleanup unavailable");
+          },
+        }),
+        outcome([path], []),
+      );
+      await assert.rejects(lstat(path), { code: "ENOENT" });
+      const retainedDirectory = (await readdir(directory))[0];
+      assert(retainedDirectory !== undefined);
+      assert.equal(await readFile(join(directory, retainedDirectory, "entry"), "utf8"), "old");
+    });
+  },
+);
 
-test("delete keeps its committed receipt when retained-entry cleanup is already complete", async () => {
-  await fixture(async (directory) => {
-    const path = join(directory, "file");
-    await writeFile(path, "old");
-    const entry = await captureEntrySnapshot(path);
-    assert.ok(entry);
-    await assert.rejects(
-      publishEntryDelete(entry, undefined, {
-        afterCommit: async () => {
-          const retainedDirectory = (await readdir(directory))[0];
-          await rm(join(directory, retainedDirectory, "entry"));
+nodeTest(
+  "delete keeps its committed receipt when retained-entry cleanup is already complete",
+  async () => {
+    await fixture(async (directory) => {
+      const path = join(directory, "file");
+      await writeFile(path, "old");
+      const entry = await captureEntrySnapshot(path);
+      assert.ok(entry);
+      await assert.rejects(
+        publishEntryDelete(entry, undefined, {
+          afterCommit: async () => {
+            const retainedDirectory = (await readdir(directory))[0];
+            assert(retainedDirectory !== undefined);
+            await rm(join(directory, retainedDirectory, "entry"));
+          },
+        }),
+        (error: unknown) => {
+          assert(outcome([path], [])(error));
+          assert.match(error.message, /cleanup could not be verified/);
+          return true;
         },
-      }),
-      (error: unknown) => {
-        assert(outcome([path], [])(error));
-        assert.match(error.message, /cleanup could not be verified/);
-        return true;
-      },
-    );
-    assert.deepEqual(await readdir(directory), []);
-  });
-});
+      );
+      assert.deepEqual(await readdir(directory), []);
+    });
+  },
+);
 
-test("pure move preserves inode, exact bytes and source metadata", async () => {
+nodeTest("pure move preserves inode, exact bytes and source metadata", async () => {
   await fixture(async (directory) => {
     const source = join(directory, "source");
     const target = join(directory, "target");
@@ -432,7 +445,7 @@ test("pure move preserves inode, exact bytes and source metadata", async () => {
   });
 });
 
-test(
+nodeTest(
   "entry paths canonicalize their parent without dereferencing a final link",
   { skip: process.platform === "win32" },
   async () => {
@@ -453,7 +466,7 @@ test(
   },
 );
 
-test("move never overwrites a destination present at planning or publication", async () => {
+nodeTest("move never overwrites a destination present at planning or publication", async () => {
   await fixture(async (directory) => {
     const source = join(directory, "source");
     const target = join(directory, "target");
@@ -469,7 +482,7 @@ test("move never overwrites a destination present at planning or publication", a
   });
 });
 
-test(
+nodeTest(
   "move rejects cross-device plans before publication",
   { skip: process.platform === "win32" },
   async (t) => {
@@ -491,7 +504,7 @@ test(
   },
 );
 
-test("move cancellation before publication leaves the source untouched", async () => {
+nodeTest("move cancellation before publication leaves the source untouched", async () => {
   await fixture(async (directory) => {
     const source = join(directory, "source");
     const target = join(directory, "target");
@@ -509,7 +522,7 @@ test("move cancellation before publication leaves the source untouched", async (
   });
 });
 
-test("move finishes source removal after a post-publication abort", async () => {
+nodeTest("move finishes source removal after a post-publication abort", async () => {
   await fixture(async (directory) => {
     const source = join(directory, "source");
     const target = join(directory, "target");
@@ -525,7 +538,7 @@ test("move finishes source removal after a post-publication abort", async () => 
   });
 });
 
-test(
+nodeTest(
   "content move preserves source metadata and uses provided bytes",
   { skip: replacementUnsupported },
   async () => {
@@ -552,7 +565,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "content move failures leave original content intact and report only a published destination",
   { skip: replacementUnsupported },
   async () => {
@@ -585,7 +598,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "content moves preserve macOS ACLs and extended attributes",
   { skip: process.platform !== "darwin" },
   async () => {
@@ -611,36 +624,39 @@ test(
   },
 );
 
-test("mixed grouped moves and creates share a prebuilt missing root and truthful partial receipt", async () => {
-  await fixture(async (directory) => {
-    const source = join(directory, "source");
-    const target = join(directory, "new", "moved");
-    const created = join(directory, "new", "created");
-    await writeFile(source, "source");
-    const entry = await captureEntrySnapshot(source);
-    assert.ok(entry);
-    const move = await planEntryMove(entry, target);
-    const prepared = await preparePlannedNestedFiles(
-      [
-        { plan: move.destination, bytes: Buffer.alloc(0), move: { entry } },
-        { plan: await planNewFile(created), bytes: Buffer.from("created") },
-      ],
-      undefined,
-      {
-        beforeFilePublish: () => {
-          throw new Error("second operation unavailable");
+nodeTest(
+  "mixed grouped moves and creates share a prebuilt missing root and truthful partial receipt",
+  async () => {
+    await fixture(async (directory) => {
+      const source = join(directory, "source");
+      const target = join(directory, "new", "moved");
+      const created = join(directory, "new", "created");
+      await writeFile(source, "source");
+      const entry = await captureEntrySnapshot(source);
+      assert.ok(entry);
+      const move = await planEntryMove(entry, target);
+      const prepared = await preparePlannedNestedFiles(
+        [
+          { plan: move.destination, bytes: Buffer.alloc(0), move: { entry } },
+          { plan: await planNewFile(created), bytes: Buffer.from("created") },
+        ],
+        undefined,
+        {
+          beforeFilePublish: () => {
+            throw new Error("second operation unavailable");
+          },
         },
-      },
-    );
-    await assert.rejects(lstat(join(directory, "new")), { code: "ENOENT" });
-    await assert.rejects(publishPreparedNestedFiles(prepared), outcome([target, source], []));
-    assert.equal(await readFile(target, "utf8"), "source");
-    await assert.rejects(lstat(source), { code: "ENOENT" });
-    await assert.rejects(lstat(created), { code: "ENOENT" });
-  });
-});
+      );
+      await assert.rejects(lstat(join(directory, "new")), { code: "ENOENT" });
+      await assert.rejects(publishPreparedNestedFiles(prepared), outcome([target, source], []));
+      assert.equal(await readFile(target, "utf8"), "source");
+      await assert.rejects(lstat(source), { code: "ENOENT" });
+      await assert.rejects(lstat(created), { code: "ENOENT" });
+    });
+  },
+);
 
-test(
+nodeTest(
   "grouped link moves preserve the link entry and target",
   { skip: process.platform === "win32" },
   async () => {
@@ -658,7 +674,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "symlink-content moves reject without altering either entry or target",
   { skip: replacementUnsupported },
   async () => {
@@ -684,7 +700,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "entry source cleanup and content staging budgets fail before mutation",
   {
     skip: !["darwin", "linux", "android"].includes(process.platform),
@@ -728,7 +744,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "move destination probe and missing-root budgets fail before private probes",
   {
     skip: !["darwin", "linux", "android"].includes(process.platform),
@@ -759,7 +775,6 @@ test(
       };
       for (const nested of [false, true]) {
         // Building each long path changes shared ancestors; inspect one budget case completely first.
-        // oxlint-disable-next-line no-await-in-loop
         await verifyDestinationBudget(nested);
       }
       assert.equal(await readFile(source, "utf8"), "old");
@@ -767,7 +782,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "direct moves budget their actual destination probes without create-only staging",
   {
     skip: !["darwin", "linux"].includes(process.platform),
@@ -789,7 +804,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "preview entry planning reads non-writable directories without staging or probes",
   {
     skip: process.platform === "win32" || process.getuid?.() === 0,

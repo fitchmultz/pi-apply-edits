@@ -7,7 +7,7 @@ export interface PatchChunk {
 export type PatchOperation =
   | { kind: "add"; path: string; content: string }
   | { kind: "delete"; path: string }
-  | { kind: "update"; path: string; moveTo?: string; chunks: PatchChunk[] };
+  | { kind: "update"; path: string; moveTo?: string | undefined; chunks: PatchChunk[] };
 
 export type PatchUpdate = Extract<PatchOperation, { kind: "update" }>;
 /** Read views for patch internals; parsed values remain owned by the caller. */

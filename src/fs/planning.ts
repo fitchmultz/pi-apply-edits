@@ -68,11 +68,9 @@ async function captureTraversalParents(
     if (!missing.has(parent)) {
       if (requireWritable) {
         // Validate required traversal parents in native traversal order.
-        // oxlint-disable-next-line no-await-in-loop
         await assertDirectoryWritableForPublish(parent, targetPath);
       }
       // The parent snapshot is captured only after its permission check finishes.
-      // oxlint-disable-next-line no-await-in-loop
       parents.set(parent, await stat(parent, { bigint: true }));
     }
   }
@@ -91,7 +89,6 @@ async function findCreateAncestor(
   let current = parent;
   while (true) {
     // Discover one parent at a time because the next address depends on the previous result.
-    // oxlint-disable-next-line no-await-in-loop
     const stats = await createParentStats(current, targetPath);
     if (!stats) {
       const next = dirname(current);
@@ -105,10 +102,8 @@ async function findCreateAncestor(
       continue;
     }
     // Canonical resolution requires the successful ancestor discovery above.
-    // oxlint-disable-next-line no-await-in-loop
     const path = await canonicalCreateAncestor(current, stats, targetPath);
     // The canonical target must be a directory, not just a resolvable entry.
-    // oxlint-disable-next-line no-await-in-loop
     const ancestorStats = await stat(path, { bigint: true });
     if (!ancestorStats.isDirectory()) {
       throw new Error(
@@ -188,7 +183,6 @@ export async function assertNewFilePlanCurrent(plan: ReadonlyNewFilePlan): Promi
     current = join(current, part);
     try {
       // Each directory address depends on the previous component and stops at the first missing entry.
-      // oxlint-disable-next-line no-await-in-loop
       const stats = await lstat(current, { bigint: true });
       if (stats.isSymbolicLink() || !stats.isDirectory()) {
         throw new Error(
@@ -230,14 +224,12 @@ export class TraversalDirectories {
         continue;
       }
       // Revalidate ancestors and finish each traversal-directory claim before proceeding.
-      // oxlint-disable-next-line no-await-in-loop
       await this.claim(path, parents, signal);
     }
     await assertPublishedDirectoriesCurrent(parents);
     await assertPublishedDirectoriesCurrent(this.created);
     for (const plan of plans) {
       // Planned targets are rechecked after all prerequisite traversal directories exist.
-      // oxlint-disable-next-line no-await-in-loop
       await assertNewFilePlanCurrent(plan);
     }
   }
@@ -274,7 +266,6 @@ export class TraversalDirectories {
     for (const [path, stats] of [...this.created].reverse()) {
       try {
         // Remove child directories before their parents and retain every cleanup failure.
-        // oxlint-disable-next-line no-await-in-loop
         await removeEmptyOwnedDirectory(path, stats, "Create traversal directory");
       } catch (error) {
         failures.push(`${path}: ${errorMessage(error)}`);

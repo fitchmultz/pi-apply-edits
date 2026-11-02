@@ -12,21 +12,21 @@ import {
 } from "./test-flow.ts";
 
 export interface ControlView extends ExpressionView {
-  readonly test?: ControlView | null;
-  readonly left?: ControlView;
-  readonly right?: ControlView;
-  readonly operator?: string;
-  readonly consequent?: ControlView | readonly ExpressionView[];
-  readonly alternate?: ControlView | null;
-  readonly block?: ControlView;
-  readonly handler?: ControlView | null;
-  readonly finalizer?: ExpressionView | null;
-  readonly cases?: readonly ControlView[];
-  readonly expression?: ControlView | boolean;
-  readonly elements?: readonly (ControlView | null)[];
-  readonly body?: ExpressionView | readonly ExpressionView[];
-  readonly callee?: ControlView;
-  readonly arguments?: readonly ControlView[];
+  readonly test?: ControlView | null | undefined;
+  readonly left?: ControlView | undefined;
+  readonly right?: ControlView | undefined;
+  readonly operator?: string | undefined;
+  readonly consequent?: ControlView | readonly ExpressionView[] | undefined;
+  readonly alternate?: ControlView | null | undefined;
+  readonly block?: ControlView | undefined;
+  readonly handler?: ControlView | null | undefined;
+  readonly finalizer?: ExpressionView | null | undefined;
+  readonly cases?: readonly ControlView[] | undefined;
+  readonly expression?: ControlView | boolean | undefined;
+  readonly elements?: readonly (ControlView | null)[] | undefined;
+  readonly body?: ExpressionView | readonly ExpressionView[] | undefined;
+  readonly callee?: ControlView | undefined;
+  readonly arguments?: readonly ControlView[] | undefined;
 }
 export interface ControlFacts {
   readonly controls: readonly ConditionalControl[];

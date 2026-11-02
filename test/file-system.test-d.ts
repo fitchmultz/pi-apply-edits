@@ -24,11 +24,18 @@ async function reviseMutableResults(path: string): Promise<void> {
     plan.traversalParents.set(path, snapshot.stats);
   }
   const published: string[] = [];
-  const hooks: NewFilePublishHooks = {};
+  const hooks: NewFilePublishHooks = {
+    beforeDirectoryPublish: undefined,
+    beforeDirectoryCommit: undefined,
+    beforeRootReserve: undefined,
+    afterRootReserve: undefined,
+    beforeFilePublish: undefined,
+    afterFilePublish: undefined,
+  };
   hooks.afterFilePublish = ({ target }) => {
     published.push(target);
   };
-  const entries: PlannedNewFile[] = [{ plan, bytes: Buffer.from("content") }];
+  const entries: PlannedNewFile[] = [{ plan, bytes: Buffer.from("content"), move: undefined }];
   const prepared: PreparedNestedFiles = await preparePlannedNestedFiles(entries, undefined, hooks);
   prepared.warnings.push("recorded");
   prepared.entries.push({ plan, bytes: Buffer.from("other") });
@@ -38,6 +45,11 @@ async function reviseMutableResults(path: string): Promise<void> {
   inline.entries.push({ plan, bytes: Buffer.from("other") });
   inline.firstPlan.traversalParents.clear();
   const entry = await captureEntrySnapshot(path);
+  if (entry) {
+    entry.linkTarget = undefined;
+    const move: PlannedNewFile["move"] = { entry, snapshot: undefined, hooks: undefined };
+    entries.push({ plan, bytes: Buffer.from("move"), move });
+  }
   if (entry) {
     const move: EntryMovePlan = await planEntryMove(entry, path);
     move.entry.inputPath = path;

@@ -116,7 +116,6 @@ export async function captureSnapshot(
   }
   for (let attempt = 0; attempt < 2; attempt++) {
     // A failed stable read must finish and close its descriptor before retrying.
-    // oxlint-disable-next-line no-await-in-loop
     const state = await tryReadSnapshot(actualPath, inputPath, requireWritable);
     if (state) {
       return {

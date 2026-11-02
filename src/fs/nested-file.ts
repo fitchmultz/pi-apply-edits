@@ -29,7 +29,7 @@ export interface NestedFileDestination {
   readonly candidate: string;
   readonly stagedIdentity: BigIntStats | undefined;
   readonly directories: ReadonlyMap<string, BigIntStats>;
-  readonly hooks?: ReadonlyNewFilePublishHooks;
+  readonly hooks?: ReadonlyNewFilePublishHooks | undefined;
   readonly rememberStaging: (stats: BigIntStats) => void;
   readonly warn: (message: string) => void;
 }

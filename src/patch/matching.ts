@@ -22,7 +22,7 @@ function prefixTable(pattern: readonly string[]): Uint32Array {
   const prefix = new Uint32Array(pattern.length);
   for (let i = 1, j = 0; i < pattern.length; i++) {
     while (j > 0 && pattern[i] !== pattern[j]) {
-      j = prefix[j - 1];
+      j = prefix[j - 1] ?? 0;
     }
     if (pattern[i] === pattern[j]) {
       j++;
@@ -44,7 +44,7 @@ function occurrences(
   const first = eof ? Math.max(start, source.length - pattern.length) : start;
   for (let i = first, j = 0; i < source.length; i++) {
     while (j > 0 && source[i] !== pattern[j]) {
-      j = prefix[j - 1];
+      j = prefix[j - 1] ?? 0;
     }
     if (source[i] === pattern[j]) {
       j++;
@@ -54,7 +54,7 @@ function occurrences(
       if (found.length === 2) {
         break;
       }
-      j = prefix[j - 1];
+      j = prefix[j - 1] ?? 0;
     }
   }
   return found;
@@ -106,8 +106,9 @@ export class PatchMatcher {
           `Ambiguous ${scope.label}: matches at lines ${candidates.map((line) => line + 1).join(", ")}. Add unique anchors or surrounding context.`,
         );
       }
-      if (candidates.length === 1) {
-        return { line: candidates[0] + 1, strategy: pass.strategy, includesBom };
+      const line = candidates[0];
+      if (line !== undefined) {
+        return { line: line + 1, strategy: pass.strategy, includesBom };
       }
     }
     throw new Error(missingPatchMessage(this.#source, pattern, scope, fuzzyAllowed));
@@ -148,14 +149,16 @@ export class PatchMatcher {
     return (
       this.#hasBom &&
       scope.start === 0 &&
-      pattern[0].startsWith("\uFEFF") &&
+      pattern[0]?.startsWith("\uFEFF") === true &&
       pattern.length <= this.#source.length &&
       (!scope.eof || pattern.length === this.#source.length) &&
-      pattern.every(
-        (line, index) =>
-          pass.normalize(index === 0 ? line.slice(1) : line) ===
-          pass.normalize(this.#source[index]),
-      )
+      pattern.every((line, index) => {
+        const source = this.#source[index];
+        return (
+          source !== undefined &&
+          pass.normalize(index === 0 ? line.slice(1) : line) === pass.normalize(source)
+        );
+      })
     );
   }
 }

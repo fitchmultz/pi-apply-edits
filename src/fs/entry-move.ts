@@ -132,8 +132,8 @@ async function probeEntryLink(
 export interface MoveCandidate {
   readonly path: string;
   readonly stats: BigIntStats;
-  readonly replacement?: MoveReplacement;
-  readonly hooks?: ReadonlyEntryPublishHooks;
+  readonly replacement?: MoveReplacement | undefined;
+  readonly hooks?: ReadonlyEntryPublishHooks | undefined;
 }
 
 export async function publishMoveDestination(
@@ -268,7 +268,6 @@ class DestinationMove {
         : await this.removeLinkedSource();
     for (const directory of new Set([entry.parentPath, dirname(destination.targetPath)])) {
       // Source and destination cleanup durability follows completed source removal.
-      // oxlint-disable-next-line no-await-in-loop
       const warning = await syncDirectory(directory);
       if (warning !== undefined) {
         warnings.push(warning);

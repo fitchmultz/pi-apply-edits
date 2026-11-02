@@ -88,7 +88,6 @@ class StagedTreeInspection {
       const relative =
         relativeDirectory.length > 0 ? join(relativeDirectory, entry.name) : entry.name;
       // Complete each bounded tree inspection before following another directory entry.
-      // oxlint-disable-next-line no-await-in-loop
       await this.inspectEntry(join(directory, entry.name), relative);
     }
   }

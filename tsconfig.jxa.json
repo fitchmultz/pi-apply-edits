@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "skipLibCheck": false,
+    "types": [],
+    "lib": ["ES2024"],
+    "moduleDetection": "legacy"
+  },
+  "include": ["src/macos-acl.js", "src/macos-acl-runtime.d.ts", "src/fs/acl-protocol.ts"],
+  "exclude": []
+}

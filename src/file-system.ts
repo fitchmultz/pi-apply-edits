@@ -75,6 +75,7 @@ export async function publishPlannedNestedFiles(
 }
 
 // Retain the established positional boundary, including optional plan and observer hooks.
+// oxlint-disable-next-line max-params -- QX-002: Preserve the public positional filesystem API.
 export async function publishNewFile(
   inputTargetPath: string,
   bytes: Buffer,

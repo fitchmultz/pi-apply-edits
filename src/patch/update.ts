@@ -137,7 +137,7 @@ class PatchUpdater {
     return (
       run.start === this.#lines.length &&
       run.start > 0 &&
-      this.#lines[run.start - 1].ending.length === 0 &&
+      this.lineAt(run.start - 1)?.ending === "" &&
       run.added.length > 0 &&
       this.#replacements.at(-1)?.end !== this.#body.length
     );
@@ -152,11 +152,14 @@ class PatchUpdater {
         run.includesBom && run.start === 0 && index === 0 && line.startsWith("\uFEFF")
           ? line.slice(1)
           : line;
-      const originalEnding =
-        index < run.end - run.start ? this.#lines[run.start + index].ending : "";
+      const originalEnding = this.originalEnding(run, index);
       parts.push(text, originalEnding.length > 0 ? originalEnding : ending);
     }
     return parts.join("");
+  }
+
+  private originalEnding(run: ReplacementRun, index: number): string {
+    return index < run.end - run.start ? (this.lineAt(run.start + index)?.ending ?? "") : "";
   }
 
   private replace(run: ReplacementRun): void {

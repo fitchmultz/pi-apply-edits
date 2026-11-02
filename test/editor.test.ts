@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { type TestContext } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import { applyPatchToFiles, replaceTextInFiles, writeFiles } from "../src/apply-edits.ts";
 
 async function fixture(t: TestContext): Promise<string> {
@@ -27,46 +27,51 @@ const patch = (...operations: readonly string[]) =>
 const update = (path: string, before: string, after: string) =>
   `*** Update File: ${path}\n@@\n-${before}\n+${after}`;
 
-test("patch plans and applies create/update/move/delete with verified absolute receipts", async (t) => {
-  const cwd = await fixture(t);
-  await writeFile(join(cwd, "source"), "\uFEFFbefore\r\nlast");
-  await chmod(join(cwd, "source"), 0o751);
-  await writeFile(join(cwd, "obsolete"), "delete\n");
-  await writeFile(join(cwd, "plain"), "old\n");
-  const result = await applyPatchToFiles(
-    patch(
-      "*** Update File: source\n*** Move to: nested/moved\n@@\n-before\n+after",
-      "*** Add File: nested/new\n+created",
-      "*** Delete File: obsolete",
-      update("plain", "old", "new"),
-    ),
-    cwd,
-  );
-  assert.equal(result.details.error, undefined, result.summary);
-  assert.deepEqual(
-    new Set(result.details.modifiedFiles),
-    new Set(
-      ["source", "nested/moved", "nested/new", "obsolete", "plain"].map((path) => join(cwd, path)),
-    ),
-  );
-  assert.deepEqual(
-    result.details.files.map((file) => [file.operation, file.status]),
-    [
-      ["move", "applied"],
-      ["create", "applied"],
-      ["delete", "applied"],
-      ["patch", "applied"],
-    ],
-  );
-  assert.equal(await readFile(join(cwd, "nested/moved"), "utf8"), "\uFEFFafter\r\nlast");
-  assert.equal((await lstat(join(cwd, "nested/moved"))).mode & 0o777, 0o751);
-  assert.equal(await readFile(join(cwd, "nested/new"), "utf8"), "created\n");
-  await Promise.all(
-    ["source", "obsolete"].map((name) => assert.rejects(lstat(join(cwd, name)), /ENOENT/)),
-  );
-});
+nodeTest(
+  "patch plans and applies create/update/move/delete with verified absolute receipts",
+  async (t) => {
+    const cwd = await fixture(t);
+    await writeFile(join(cwd, "source"), "\uFEFFbefore\r\nlast");
+    await chmod(join(cwd, "source"), 0o751);
+    await writeFile(join(cwd, "obsolete"), "delete\n");
+    await writeFile(join(cwd, "plain"), "old\n");
+    const result = await applyPatchToFiles(
+      patch(
+        "*** Update File: source\n*** Move to: nested/moved\n@@\n-before\n+after",
+        "*** Add File: nested/new\n+created",
+        "*** Delete File: obsolete",
+        update("plain", "old", "new"),
+      ),
+      cwd,
+    );
+    assert.equal(result.details.error, undefined, result.summary);
+    assert.deepEqual(
+      new Set(result.details.modifiedFiles),
+      new Set(
+        ["source", "nested/moved", "nested/new", "obsolete", "plain"].map((path) =>
+          join(cwd, path),
+        ),
+      ),
+    );
+    assert.deepEqual(
+      result.details.files.map((file) => [file.operation, file.status]),
+      [
+        ["move", "applied"],
+        ["create", "applied"],
+        ["delete", "applied"],
+        ["patch", "applied"],
+      ],
+    );
+    assert.equal(await readFile(join(cwd, "nested/moved"), "utf8"), "\uFEFFafter\r\nlast");
+    assert.equal((await lstat(join(cwd, "nested/moved"))).mode & 0o777, 0o751);
+    assert.equal(await readFile(join(cwd, "nested/new"), "utf8"), "created\n");
+    await Promise.all(
+      ["source", "obsolete"].map((name) => assert.rejects(lstat(join(cwd, name)), /ENOENT/)),
+    );
+  },
+);
 
-test("patch BOM rejection leaves update and move sources untouched", async (t) => {
+nodeTest("patch BOM rejection leaves update and move sources untouched", async (t) => {
   const cwd = await fixture(t);
   const original = "heading\n\uFEFFpayload\n";
   await writeFile(join(cwd, "source"), original);
@@ -85,13 +90,12 @@ test("patch BOM rejection leaves update and move sources untouched", async (t) =
   for (const preview of [false, true]) {
     for (const move of ["", "*** Move to: moved\n"]) {
       // Both variants reuse the source and must verify its retained bytes before the next attempt.
-      // oxlint-disable-next-line no-await-in-loop
       await verifyBomRejection(preview, move);
     }
   }
 });
 
-test(
+nodeTest(
   "pure moves and deletes operate on link entries, including dangling links",
   { skip: process.platform === "win32" },
   async (t) => {
@@ -119,7 +123,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "batch refuses to delete a link used by another requested path",
   { skip: process.platform === "win32" },
   async (t) => {
@@ -142,14 +146,13 @@ test(
         [creation, deletion],
       ]) {
         // Each order is attempted against the same link and must verify no publication first.
-        // oxlint-disable-next-line no-await-in-loop
         await verifyTraversalRejection(operations);
       }
     }
   },
 );
 
-test(
+nodeTest(
   "batch refuses to delete a link before deleting an entry through it",
   { skip: process.platform === "win32" },
   async (t) => {
@@ -187,124 +190,136 @@ test(
   },
 );
 
-test("a planning failure publishes no earlier file and identifies unattempted operations", async (t) => {
-  const cwd = await fixture(t);
-  await writeFile(join(cwd, "first"), "before\n");
-  await writeFile(join(cwd, "second"), "actual\n");
-  const result = await applyPatchToFiles(
-    patch(
-      update("first", "before", "after"),
-      update("second", "wrong", "after"),
-      "*** Add File: third\n+new",
-    ),
-    cwd,
-  );
-  assert(result.details.error !== undefined && result.details.error.length > 0);
-  assert.deepEqual(result.details.modifiedFiles, []);
-  assert.deepEqual(
-    result.details.files.map((file) => file.status),
-    ["unattempted", "failed", "unattempted"],
-  );
-  assert.equal(await readFile(join(cwd, "first"), "utf8"), "before\n");
-  assert.deepEqual((await readdir(cwd)).sort(), ["first", "second"]);
-});
+nodeTest(
+  "a planning failure publishes no earlier file and identifies unattempted operations",
+  async (t) => {
+    const cwd = await fixture(t);
+    await writeFile(join(cwd, "first"), "before\n");
+    await writeFile(join(cwd, "second"), "actual\n");
+    const result = await applyPatchToFiles(
+      patch(
+        update("first", "before", "after"),
+        update("second", "wrong", "after"),
+        "*** Add File: third\n+new",
+      ),
+      cwd,
+    );
+    assert(result.details.error !== undefined && result.details.error.length > 0);
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.deepEqual(
+      result.details.files.map((file) => file.status),
+      ["unattempted", "failed", "unattempted"],
+    );
+    assert.equal(await readFile(join(cwd, "first"), "utf8"), "before\n");
+    assert.deepEqual((await readdir(cwd)).sort(), ["first", "second"]);
+  },
+);
 
-test("cancellation retains earlier committed receipts and never misreports a final committed write", async (t) => {
-  const cwd = await fixture(t);
-  await Promise.all(["a", "b", "c"].map((path) => writeFile(join(cwd, path), "before\n")));
-  const controller = new AbortController();
-  const result = await writeFiles(
-    { files: ["a", "b", "c"].map((path) => ({ path, content: "after\n", mode: "replace" })) },
-    cwd,
-    controller.signal,
-    (summary) => {
-      if (summary.startsWith("Completed 1/")) {
-        controller.abort();
-      }
-    },
-  );
-  assert(result.details.error !== undefined && result.details.error.length > 0);
-  assert.deepEqual(result.details.modifiedFiles, [join(cwd, "a")]);
-  assert.deepEqual(
-    result.details.files.map((file) => file.status),
-    ["applied", "failed", "unattempted"],
-  );
-  assert.equal(await readFile(join(cwd, "b"), "utf8"), "before\n");
-  const finalAbort = new AbortController();
-  const last = await writeFiles(
-    { files: [{ path: "b", content: "after\n", mode: "replace" }] },
-    cwd,
-    finalAbort.signal,
-    (summary) => {
-      if (summary.startsWith("Completed")) {
-        finalAbort.abort();
-      }
-    },
-  );
-  assert.equal(last.details.error, undefined, last.summary);
-  assert.deepEqual(last.details.modifiedFiles, [join(cwd, "b")]);
-});
+nodeTest(
+  "cancellation retains earlier committed receipts and never misreports a final committed write",
+  async (t) => {
+    const cwd = await fixture(t);
+    await Promise.all(["a", "b", "c"].map((path) => writeFile(join(cwd, path), "before\n")));
+    const controller = new AbortController();
+    const result = await writeFiles(
+      { files: ["a", "b", "c"].map((path) => ({ path, content: "after\n", mode: "replace" })) },
+      cwd,
+      controller.signal,
+      (summary) => {
+        if (summary.startsWith("Completed 1/")) {
+          controller.abort();
+        }
+      },
+    );
+    assert(result.details.error !== undefined && result.details.error.length > 0);
+    assert.deepEqual(result.details.modifiedFiles, [join(cwd, "a")]);
+    assert.deepEqual(
+      result.details.files.map((file) => file.status),
+      ["applied", "failed", "unattempted"],
+    );
+    assert.equal(await readFile(join(cwd, "b"), "utf8"), "before\n");
+    const finalAbort = new AbortController();
+    const last = await writeFiles(
+      { files: [{ path: "b", content: "after\n", mode: "replace" }] },
+      cwd,
+      finalAbort.signal,
+      (summary) => {
+        if (summary.startsWith("Completed")) {
+          finalAbort.abort();
+        }
+      },
+    );
+    assert.equal(last.details.error, undefined, last.summary);
+    assert.deepEqual(last.details.modifiedFiles, [join(cwd, "b")]);
+  },
+);
 
-test("compact replacements, exact writes, and unchanged receipts share the publication path", async (t) => {
-  const cwd = await fixture(t);
-  await writeFile(join(cwd, "file"), "\uFEFFold\r\nSTART\r\nlarge body\r\nEND\r\nold\n");
-  const replaced = await replaceTextInFiles(
-    {
-      files: [
-        {
-          path: "file",
-          edits: [
-            { oldText: "old", newText: "new", all: true },
-            { oldText: "START", endText: "END", newText: "range" },
-          ],
-        },
-      ],
-    },
-    cwd,
-  );
-  assert.equal(replaced.details.error, undefined, replaced.summary);
-  assert.equal(await readFile(join(cwd, "file"), "utf8"), "\uFEFFnew\r\nrange\r\nnew\n");
-  const content = "exact\nbytes\r\n";
-  const exact = await writeFiles(
-    { files: [{ path: "file", content, mode: "replace", preserveFormatting: false }] },
-    cwd,
-  );
-  assert.equal(exact.details.error, undefined, exact.summary);
-  assert.equal(await readFile(join(cwd, "file"), "utf8"), content);
-  const unchanged = await writeFiles(
-    { files: [{ path: "file", content, mode: "replace", preserveFormatting: false }] },
-    cwd,
-  );
-  assert.equal(unchanged.details.files[0]?.status, "unchanged");
-  assert.deepEqual(unchanged.details.modifiedFiles, []);
-  const createConflict = await writeFiles(
-    { files: [{ path: "file", content: "bad", mode: "create" }] },
-    cwd,
-  );
-  assert(createConflict.details.error !== undefined && createConflict.details.error.length > 0);
-  assert.equal(await readFile(join(cwd, "file"), "utf8"), content);
-});
+nodeTest(
+  "compact replacements, exact writes, and unchanged receipts share the publication path",
+  async (t) => {
+    const cwd = await fixture(t);
+    await writeFile(join(cwd, "file"), "\uFEFFold\r\nSTART\r\nlarge body\r\nEND\r\nold\n");
+    const replaced = await replaceTextInFiles(
+      {
+        files: [
+          {
+            path: "file",
+            edits: [
+              { oldText: "old", newText: "new", all: true },
+              { oldText: "START", endText: "END", newText: "range" },
+            ],
+          },
+        ],
+      },
+      cwd,
+    );
+    assert.equal(replaced.details.error, undefined, replaced.summary);
+    assert.equal(await readFile(join(cwd, "file"), "utf8"), "\uFEFFnew\r\nrange\r\nnew\n");
+    const content = "exact\nbytes\r\n";
+    const exact = await writeFiles(
+      { files: [{ path: "file", content, mode: "replace", preserveFormatting: false }] },
+      cwd,
+    );
+    assert.equal(exact.details.error, undefined, exact.summary);
+    assert.equal(await readFile(join(cwd, "file"), "utf8"), content);
+    const unchanged = await writeFiles(
+      { files: [{ path: "file", content, mode: "replace", preserveFormatting: false }] },
+      cwd,
+    );
+    assert.equal(unchanged.details.files[0]?.status, "unchanged");
+    assert.deepEqual(unchanged.details.modifiedFiles, []);
+    const createConflict = await writeFiles(
+      { files: [{ path: "file", content: "bad", mode: "create" }] },
+      cwd,
+    );
+    assert(createConflict.details.error !== undefined && createConflict.details.error.length > 0);
+    assert.equal(await readFile(join(cwd, "file"), "utf8"), content);
+  },
+);
 
-test("preview does not stage directories or delete entries and does not cache a plan", async (t) => {
-  const cwd = await fixture(t);
-  await writeFile(join(cwd, "file"), "before\n");
-  const input = patch(update("file", "before", "after"), "*** Add File: new/child\n+new");
-  const preview = await applyPatchToFiles(input, cwd, true);
-  assert.equal(preview.details.error, undefined, preview.summary);
-  assert.equal(preview.details.preview, true);
-  assert.deepEqual(preview.details.modifiedFiles, []);
-  assert.deepEqual(await readdir(cwd), ["file"]);
-  await writeFile(join(cwd, "file"), "changed\n");
-  const applied = await applyPatchToFiles(input, cwd);
-  assert(applied.details.error !== undefined && applied.details.error.length > 0);
-  assert.deepEqual(applied.details.modifiedFiles, []);
-  assert.deepEqual(await readdir(cwd), ["file"]);
-  const deletion = await applyPatchToFiles(patch("*** Delete File: file"), cwd, true);
-  assert.equal(deletion.details.error, undefined, deletion.summary);
-  assert.equal(await readFile(join(cwd, "file"), "utf8"), "changed\n");
-});
+nodeTest(
+  "preview does not stage directories or delete entries and does not cache a plan",
+  async (t) => {
+    const cwd = await fixture(t);
+    await writeFile(join(cwd, "file"), "before\n");
+    const input = patch(update("file", "before", "after"), "*** Add File: new/child\n+new");
+    const preview = await applyPatchToFiles(input, cwd, true);
+    assert.equal(preview.details.error, undefined, preview.summary);
+    assert.equal(preview.details.preview, true);
+    assert.deepEqual(preview.details.modifiedFiles, []);
+    assert.deepEqual(await readdir(cwd), ["file"]);
+    await writeFile(join(cwd, "file"), "changed\n");
+    const applied = await applyPatchToFiles(input, cwd);
+    assert(applied.details.error !== undefined && applied.details.error.length > 0);
+    assert.deepEqual(applied.details.modifiedFiles, []);
+    assert.deepEqual(await readdir(cwd), ["file"]);
+    const deletion = await applyPatchToFiles(patch("*** Delete File: file"), cwd, true);
+    assert.equal(deletion.details.error, undefined, deletion.summary);
+    assert.equal(await readFile(join(cwd, "file"), "utf8"), "changed\n");
+  },
+);
 
-test("overlapping patch and structured calls observe invocation order", async (t) => {
+nodeTest("overlapping patch and structured calls observe invocation order", async (t) => {
   const cwd = await fixture(t);
   await writeFile(join(cwd, "file"), "one\n");
   const results = await Promise.all([

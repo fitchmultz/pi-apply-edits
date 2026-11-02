@@ -13,12 +13,12 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { applyPatchToFiles, writeFiles } from "../src/apply-edits.ts";
 
 for (const operation of ["delete", "move"] as const) {
-  test(
+  nodeTest(
     `entry ${operation} queues a self-referential link without resolving its target`,
     { skip: process.platform === "win32" },
     async (t) => {
@@ -33,18 +33,18 @@ for (const operation of ["delete", "move"] as const) {
       await assert.rejects(lstat(path), /ENOENT/);
       if (operation === "move") {
         // Exhaustive entry variants preserve the moved link or leave no move destination after deletion.
-        // oxlint-disable-next-line node-test/no-conditional-assertions
+        // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
         assert.equal(await readlink(join(cwd, "moved")), "loop");
       } else {
         // Exhaustive entry variants forbid a move destination when only deletion was requested.
-        // oxlint-disable-next-line node-test/no-conditional-assertions
+        // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
         await assert.rejects(lstat(join(cwd, "moved")), /ENOENT/);
       }
     },
   );
 }
 
-test(
+nodeTest(
   "a later create waits for deletion of an unresolvable link entry",
   { skip: process.platform === "win32" },
   async (t) => {
@@ -70,7 +70,7 @@ test(
 
 for (const operation of ["delete", "move"] as const) {
   for (const path of ["created", "nested/created"]) {
-    test(`entry ${operation} waits for an earlier create of ${path}`, async (t) => {
+    nodeTest(`entry ${operation} waits for an earlier create of ${path}`, async (t) => {
       const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-create-order-")));
       t.after(() => rm(cwd, { recursive: true, force: true }));
       const creation = writeFiles({ files: [{ path, content: "created\n", mode: "create" }] }, cwd);
@@ -85,93 +85,98 @@ for (const operation of ["delete", "move"] as const) {
       await assert.rejects(lstat(join(cwd, path)), /ENOENT/);
       if (operation === "move") {
         // Exhaustive queued-entry variants verify moved bytes or the absence of a delete-only destination.
-        // oxlint-disable-next-line node-test/no-conditional-assertions
+        // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
         assert.equal(await readFile(join(cwd, "moved"), "utf8"), "created\n");
       } else {
         // Exhaustive queued-entry variants forbid a move destination after a delete-only operation.
-        // oxlint-disable-next-line node-test/no-conditional-assertions
+        // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
         await assert.rejects(lstat(join(cwd, "moved")), /ENOENT/);
       }
     });
   }
 }
 
-test("missing entry errors identify the failed operation and state that nothing was written", async (t) => {
-  const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-missing-")));
-  t.after(() => rm(cwd, { recursive: true, force: true }));
-  await writeFile(join(cwd, "first"), "before\n");
-  async function verifyMissingEntry(preview: boolean, entry: string): Promise<void> {
-    const result = await applyPatchToFiles(
-      `*** Begin Patch\n*** Update File: first\n@@\n-before\n+after\n${entry}\n*** End Patch`,
-      cwd,
-      preview,
-    );
-    assert.match(
-      result.summary,
-      /files\[1\]: File does not exist: (?:missing\/)?gone\. No changes were written/,
-    );
-    assert.doesNotMatch(result.summary, /ENOENT/);
-    assert.deepEqual(result.details.modifiedFiles, []);
-    assert.deepEqual(
-      result.details.files.map((file) => file.status),
-      ["unattempted", "failed"],
-    );
-    assert.equal(await readFile(join(cwd, "first"), "utf8"), "before\n");
-  }
-  for (const preview of [false, true]) {
-    for (const entry of [
-      "*** Delete File: gone",
-      "*** Update File: missing/gone\n*** Move to: moved",
-    ]) {
-      // Each variant must settle before another attempt reuses the earlier planned file.
-      // oxlint-disable-next-line no-await-in-loop
-      await verifyMissingEntry(preview, entry);
+nodeTest(
+  "missing entry errors identify the failed operation and state that nothing was written",
+  async (t) => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-missing-")));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    await writeFile(join(cwd, "first"), "before\n");
+    async function verifyMissingEntry(preview: boolean, entry: string): Promise<void> {
+      const result = await applyPatchToFiles(
+        `*** Begin Patch\n*** Update File: first\n@@\n-before\n+after\n${entry}\n*** End Patch`,
+        cwd,
+        preview,
+      );
+      assert.match(
+        result.summary,
+        /files\[1\]: File does not exist: (?:missing\/)?gone\. No changes were written/,
+      );
+      assert.doesNotMatch(result.summary, /ENOENT/);
+      assert.deepEqual(result.details.modifiedFiles, []);
+      assert.deepEqual(
+        result.details.files.map((file) => file.status),
+        ["unattempted", "failed"],
+      );
+      assert.equal(await readFile(join(cwd, "first"), "utf8"), "before\n");
     }
-  }
-});
-
-test("partial move text exposes its verified destination even when source removal fails", async (t) => {
-  const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-partial-")));
-  t.after(() => rm(cwd, { recursive: true, force: true }));
-  const source = join(cwd, "source");
-  const destination = join(cwd, "destination");
-  await writeFile(source, "retained\n");
-  const rename = nodeFs.promises.rename;
-  const mock = t.mock.method(
-    nodeFs.promises,
-    "rename",
-    async (...args: Readonly<Parameters<typeof rename>>) => {
-      if (args[0] === source) {
-        throw new Error("Fixture source removal unavailable");
+    for (const preview of [false, true]) {
+      for (const entry of [
+        "*** Delete File: gone",
+        "*** Update File: missing/gone\n*** Move to: moved",
+      ]) {
+        // Each variant must settle before another attempt reuses the earlier planned file.
+        await verifyMissingEntry(preview, entry);
       }
-      return rename(...args);
-    },
-  );
-  syncBuiltinESMExports();
-  try {
-    // Android moves an unchanged source atomically; a content move still removes the source separately.
-    const patch =
-      process.platform === "android"
-        ? "*** Begin Patch\n*** Update File: source\n*** Move to: destination\n@@\n-retained\n+changed\n*** End Patch"
-        : "*** Begin Patch\n*** Update File: source\n*** Move to: destination\n*** End Patch";
-    const result = await applyPatchToFiles(patch, cwd);
-    assert(result.details.error !== undefined && result.details.error.length > 0);
-    assert.deepEqual(result.details.modifiedFiles, [destination]);
-    assert.equal(result.details.files[0]?.status, "failed");
-    assert.match(result.summary, /after 1 verified path change/);
-    assert(result.summary.includes(`Verified committed paths: ${destination}`));
-    assert.equal(await readFile(source, "utf8"), "retained\n");
-    assert.equal(
-      await readFile(destination, "utf8"),
-      process.platform === "android" ? "changed\n" : "retained\n",
-    );
-  } finally {
-    mock.mock.restore();
-    syncBuiltinESMExports();
-  }
-});
+    }
+  },
+);
 
-test("success summaries distinguish create, delete, and move", async (t) => {
+nodeTest(
+  "partial move text exposes its verified destination even when source removal fails",
+  async (t) => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-partial-")));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    const source = join(cwd, "source");
+    const destination = join(cwd, "destination");
+    await writeFile(source, "retained\n");
+    const rename = nodeFs.promises.rename;
+    const mock = t.mock.method(
+      nodeFs.promises,
+      "rename",
+      async (...args: Readonly<Parameters<typeof rename>>) => {
+        if (args[0] === source) {
+          throw new Error("Fixture source removal unavailable");
+        }
+        return rename(...args);
+      },
+    );
+    syncBuiltinESMExports();
+    try {
+      // Android moves an unchanged source atomically; a content move still removes the source separately.
+      const patch =
+        process.platform === "android"
+          ? "*** Begin Patch\n*** Update File: source\n*** Move to: destination\n@@\n-retained\n+changed\n*** End Patch"
+          : "*** Begin Patch\n*** Update File: source\n*** Move to: destination\n*** End Patch";
+      const result = await applyPatchToFiles(patch, cwd);
+      assert(result.details.error !== undefined && result.details.error.length > 0);
+      assert.deepEqual(result.details.modifiedFiles, [destination]);
+      assert.equal(result.details.files[0]?.status, "failed");
+      assert.match(result.summary, /after 1 verified path change/);
+      assert(result.summary.includes(`Verified committed paths: ${destination}`));
+      assert.equal(await readFile(source, "utf8"), "retained\n");
+      assert.equal(
+        await readFile(destination, "utf8"),
+        process.platform === "android" ? "changed\n" : "retained\n",
+      );
+    } finally {
+      mock.mock.restore();
+      syncBuiltinESMExports();
+    }
+  },
+);
+
+nodeTest("success summaries distinguish create, delete, and move", async (t) => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-summary-")));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const created = await applyPatchToFiles(
@@ -191,7 +196,7 @@ test("success summaries distinguish create, delete, and move", async (t) => {
   assert.match(deleted.summary, /^Deleted 1 file/);
 });
 
-test(
+nodeTest(
   "a batch rejects aliases introduced by a queued link move without holding the create queue",
   {
     skip: process.platform === "win32",
@@ -246,7 +251,6 @@ test(
     }
     for (const preview of [true, false]) {
       // The shared mutation registration queue must release the previous alias scenario first.
-      // oxlint-disable-next-line no-await-in-loop
       await verifyQueuedAlias(preview);
     }
   },

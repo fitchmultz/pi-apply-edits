@@ -143,11 +143,9 @@ export async function changedLinkInPath(
   const walk = async (input: string): Promise<number | undefined> => {
     for (let current = input; current !== dirname(current); current = dirname(current)) {
       // Parent resolution follows native traversal; each next component depends on it.
-      // oxlint-disable-next-line no-await-in-loop
       const directory = await prospectiveDirectory(dirname(current));
       const entry = join(directory, basename(current));
       // The native parent above determines the entry inspected in this iteration.
-      // oxlint-disable-next-line no-await-in-loop
       const stats = await lstat(entry).catch((error: unknown) => {
         if (isMissingPathError(error)) {
           return;
@@ -167,7 +165,6 @@ export async function changedLinkInPath(
       }
       seen.add(key);
       // Resolve this link before traversing its dependent referent path.
-      // oxlint-disable-next-line no-await-in-loop
       const linked = await walk(operationPath(await readlink(entry), directory));
       if (linked !== undefined) {
         return linked;

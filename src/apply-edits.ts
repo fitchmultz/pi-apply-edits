@@ -88,6 +88,7 @@ function patchMutation(operation: ReadonlyPatchOperation): MutationInput {
       return { path: operation.path, patch: operation };
   }
 }
+// oxlint-disable-next-line max-params -- QX-002: Preserve the public positional editing API.
 export async function applyPatchToFiles(
   input: string,
   cwd: string,

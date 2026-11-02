@@ -1,62 +1,73 @@
-import { parseSync } from "oxc-parser";
+import { dirname, resolve, relative } from "node:path";
+import { parseSync, Visitor } from "oxc-parser";
 import type { PolicyFinding } from "./suppression-policy.ts";
-
-/** Only leading single-line pragmas affect TypeScript's JavaScript checking status. */
-export function leadingCheck(path: string, source: string): boolean {
-  const parsed = parseSync(path, source);
-  const first = parsed.program.body[0]?.start ?? source.length;
-  const pragma = parsed.comments.findLast(
-    (comment) =>
-      comment.type === "Line" &&
-      comment.end <= first &&
-      /^\s*@ts-(?:check|nocheck)\b/u.test(comment.value),
-  );
-  return pragma !== undefined && /^\s*@ts-check\b/u.test(pragma.value);
-}
 
 export function checkLanguageScope(
   path: string,
-  source: string,
   project: { readonly assigned: boolean; readonly checkJs: boolean },
 ): readonly PolicyFinding[] {
-  if (/\.[cm]?tsx?$/u.test(path)) {
-    return project.assigned
-      ? []
-      : [
-          {
-            path,
-            line: 1,
-            message: "Maintained TypeScript must belong to a checked compiler project",
-          },
-        ];
-  }
-  if (!/\.[cm]?jsx?$/u.test(path)) {
+  if (!/\.[cm]?[jt]sx?$/u.test(path)) {
     return [];
   }
-  const checked = leadingCheck(path, source) || project.checkJs;
-  if (path === "src/macos-acl.js") {
-    return checked
-      ? [
-          {
-            path,
-            line: 1,
-            message:
-              "JXA became checked; remove its semantic-rule override before opting it into checking",
-          },
-        ]
-      : [];
+  if (!project.assigned) {
+    return [
+      { path, line: 1, message: "Maintained source must belong to a checked compiler project" },
+    ];
   }
-  if (checked) {
-    return project.assigned
-      ? []
-      : [{ path, line: 1, message: "Checked JavaScript must belong to a compiler project" }];
+  if (/\.[cm]?jsx?$/u.test(path) && !project.checkJs) {
+    return [
+      {
+        path,
+        line: 1,
+        message:
+          "Maintained JavaScript requires project-wide allowJs and checkJs (standard section 4.2)",
+      },
+    ];
   }
-  return [
-    {
-      path,
-      line: 1,
-      message:
-        "Classify new JavaScript from effective project settings and add an explicit unchecked-language override when it has no semantic opt-in",
+  return [];
+}
+
+function testOnly(path: string): boolean {
+  return (
+    path.startsWith("test/") || /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)__tests__\/)/u.test(path)
+  );
+}
+
+export function checkSourceProfiles(path: string, source: string): readonly PolicyFinding[] {
+  if (testOnly(path)) {
+    return [];
+  }
+  const findings: PolicyFinding[] = [];
+  const inspect = (specifier: string, start: number): void => {
+    if (
+      specifier.startsWith(".") &&
+      testOnly(relative(process.cwd(), resolve(dirname(path), specifier)))
+    ) {
+      findings.push({
+        path,
+        line: source.slice(0, start).split("\n").length,
+        message:
+          "Production source cannot depend on test-only support; move shared code to production coverage",
+      });
+    }
+  };
+  new Visitor({
+    ImportDeclaration(node) {
+      inspect(node.source.value, node.start);
     },
-  ];
+    ExportNamedDeclaration(node) {
+      if (node.source !== null) {
+        inspect(node.source.value, node.start);
+      }
+    },
+    ExportAllDeclaration(node) {
+      inspect(node.source.value, node.start);
+    },
+    ImportExpression(node) {
+      if (node.source.type === "Literal" && typeof node.source.value === "string") {
+        inspect(node.source.value, node.start);
+      }
+    },
+  }).visit(parseSync(path, source).program);
+  return findings;
 }

@@ -64,7 +64,6 @@ async function executableAvailable(path: string): Promise<boolean> {
 async function firstExecutable(candidates: readonly string[]): Promise<string | undefined> {
   for (const candidate of candidates) {
     // Conventional locations are tried in precedence order, stopping at the first executable.
-    // oxlint-disable-next-line no-await-in-loop
     if (await executableAvailable(candidate)) {
       return candidate;
     }
@@ -131,23 +130,32 @@ function androidToolDirectories(): readonly string[] {
   return [join(prefix, "bin"), nodeBin];
 }
 
+async function androidExecutable(bins: readonly string[], name: string): Promise<string> {
+  const executable = await firstExecutable(bins.map((directory) => resolvePath(directory, name)));
+  if (executable === undefined) {
+    throw new Error(`Atomic replacement on Android/Termux requires executable ${name}`);
+  }
+  return executable;
+}
+
 async function detectAndroidReplacementSupport(): Promise<ReplacementSupport> {
   const bins = androidToolDirectories();
-  const executables: string[] = [];
-  for (const name of ["cp", "mv", "getfacl", "getfattr"]) {
-    const candidates = bins.map((directory) => resolvePath(directory, name));
-    // Return the first missing capability in stable executable order.
-    // oxlint-disable-next-line no-await-in-loop
-    const executable = await firstExecutable(candidates);
-    if (executable === undefined) {
-      return {
-        supported: false,
-        reason: `Atomic replacement on Android/Termux requires executable ${name}`,
-      };
-    }
-    executables.push(executable);
+  try {
+    return await qualifyAndroidTools({
+      supported: true,
+      strategy: "exchange",
+      cp: await androidExecutable(bins, "cp"),
+      mv: await androidExecutable(bins, "mv"),
+      getfacl: await androidExecutable(bins, "getfacl"),
+      getfattr: await androidExecutable(bins, "getfattr"),
+    });
+  } catch (error) {
+    return { supported: false, reason: errorMessage(error) };
   }
-  const [cp, mv, getfacl, getfattr] = executables;
+}
+
+async function qualifyAndroidTools(tools: AndroidReplacementSupport): Promise<ReplacementSupport> {
+  const { cp, mv } = tools;
   try {
     const [cpVersion, mvVersion] = await Promise.all([
       execText(cp, ["--version"]),
@@ -163,7 +171,7 @@ async function detectAndroidReplacementSupport(): Promise<ReplacementSupport> {
       reason: `Atomic replacement on Android/Termux is unavailable: ${errorMessage(error)}`,
     };
   }
-  return { supported: true, strategy: "exchange", cp, mv, getfacl, getfattr };
+  return tools;
 }
 
 async function probeAndroidAtomicMoves(mv: string): Promise<void> {
@@ -286,7 +294,7 @@ function nativeCopyArguments(source: string, target: string): string[] {
 interface CopiedFile {
   readonly source: string;
   readonly target: string;
-  readonly expectedAndroidMetadata?: string;
+  readonly expectedAndroidMetadata?: string | undefined;
 }
 
 async function preserveCopiedMetadata(
