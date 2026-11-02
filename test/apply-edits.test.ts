@@ -2781,7 +2781,7 @@ nodeTest("recovery-side writes retain both versions without automatic rollback",
           await writeFile(recovery, "external\n");
         },
       }),
-      /No automatic rollback was attempted.*current target was left untouched/,
+      /The edit was published to the target; no automatic rollback was attempted\. The earlier content, changed externally during commit, remains at /,
     );
 
     assert.equal(await readFile(path, "utf8"), "agent\n");
@@ -2810,7 +2810,7 @@ nodeTest("a target replaced at the former rollback boundary is never overwritten
           await rename(external, path);
         },
       }),
-      /No automatic rollback was attempted.*current target was left untouched/,
+      /The edit was published to the target; no automatic rollback was attempted\. The earlier content, changed externally during commit, remains at /,
     );
 
     assert.equal(await readFile(path, "utf8"), "external-new-inode\n");
@@ -2837,7 +2837,7 @@ nodeTest("simultaneous old-inode and new-inode writers are both retained", async
           await rename(external, path);
         },
       }),
-      /File versions changed.*No automatic rollback was attempted/,
+      /File versions changed.*no automatic rollback was attempted/,
     );
 
     assert.equal(await readFile(path, "utf8"), "external-new-inode\n");

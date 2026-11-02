@@ -154,7 +154,10 @@ nodeTest(
           }),
           (error: unknown) => {
             assert(outcome([path], [])(error));
-            assert.match(error.message, /File versions changed during commit/);
+            assert.match(
+              error.message,
+              /File versions changed during commit: .*The edit was published to the target; no automatic rollback/,
+            );
             assert.ok(error.message.includes(retained));
             return true;
           },
