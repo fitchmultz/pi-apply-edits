@@ -271,11 +271,17 @@ abstract class NestedStaging {
   private async quarantineStaging(): Promise<
     { readonly path: string; readonly stats: BigIntStats } | undefined
   > {
-    const [, staging, quarantine] = await Promise.all([
-      currentOwnedPath(this.container, this.containerStats, "Staged create container"),
-      currentOwnedPath(this.staging, this.stagingStats, "Staged create directory"),
-      currentOwnedPath(this.quarantine, this.quarantineStats, "Cleanup quarantine slot"),
-    ]);
+    await currentOwnedPath(this.container, this.containerStats, "Staged create container");
+    const staging = await currentOwnedPath(
+      this.staging,
+      this.stagingStats,
+      "Staged create directory",
+    );
+    const quarantine = await currentOwnedPath(
+      this.quarantine,
+      this.quarantineStats,
+      "Cleanup quarantine slot",
+    );
     if (!staging) {
       throw new Error(
         "Staged create directory disappeared before cleanup quarantine; its location is uncertain and the published target may remain linked to private staging",

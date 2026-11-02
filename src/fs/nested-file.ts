@@ -73,15 +73,13 @@ class NestedFilePublication {
         temporary: this.destination.stagedTarget,
         target: this.destination.target,
       });
-      await Promise.all([
-        assertPreparedFileCurrent(
-          this.destination.stagedTarget,
-          this.destination.stagedIdentity,
-          this.entry.bytes,
-          "Staged create file",
-        ),
-        assertPublishedDirectoriesCurrent(this.destination.directories),
-      ]);
+      await assertPreparedFileCurrent(
+        this.destination.stagedTarget,
+        this.destination.stagedIdentity,
+        this.entry.bytes,
+        "Staged create file",
+      );
+      await assertPublishedDirectoriesCurrent(this.destination.directories);
       throwIfAborted(this.signal);
       await this.publishCandidate();
       await this.destination.hooks?.afterFilePublish?.({ target: this.destination.target });
@@ -177,10 +175,8 @@ class NestedFilePublication {
     throwIfAborted(this.signal);
     this.copyHandle = await open(this.destination.target, "wx", 0o666);
     this.published = true;
-    const [opened, pathStats] = await Promise.all([
-      this.copyHandle.stat({ bigint: true }),
-      lstat(this.destination.target, { bigint: true }),
-    ]);
+    const opened = await this.copyHandle.stat({ bigint: true });
+    const pathStats = await lstat(this.destination.target, { bigint: true });
     if (!pathStats.isFile() || pathStats.isSymbolicLink() || !sameIdentity(opened, pathStats)) {
       throw new Error(`Created file path changed during publication: ${this.destination.target}.`);
     }

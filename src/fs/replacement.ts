@@ -190,15 +190,13 @@ class ReplacementPublication {
 
   private async validatePrepared(): Promise<void> {
     throwIfAborted(this.signal);
-    const [current] = await Promise.all([
-      lstat(this.temporary, { bigint: true }),
-      assertSnapshotCurrent(this.snapshot),
-    ]);
+    const current = await lstat(this.temporary, { bigint: true });
     if (!this.temporaryStats || !sameSnapshotStats(this.temporaryStats, current)) {
       throw new Error(
         `Temporary file changed before commit: ${this.temporary}. No changes were written.`,
       );
     }
+    await assertSnapshotCurrent(this.snapshot);
     throwIfAborted(this.signal);
   }
 
@@ -212,10 +210,8 @@ class ReplacementPublication {
       temporary: this.temporary,
     });
     throwIfAborted(this.signal);
-    await Promise.all([
-      assertPreparedFileCurrent(this.temporary, prepared, this.bytes, "Temporary replacement"),
-      assertSnapshotCurrent(this.snapshot),
-    ]);
+    await assertPreparedFileCurrent(this.temporary, prepared, this.bytes, "Temporary replacement");
+    await assertSnapshotCurrent(this.snapshot);
     throwIfAborted(this.signal);
     try {
       await exchangePreparedFiles(
@@ -282,10 +278,8 @@ class ReplacementPublication {
         target: this.snapshot.actualPath,
         recovery: this.recovery,
       });
-      const [recovery, target] = await Promise.all([
-        readStableFile(this.recovery),
-        readStableFile(this.snapshot.actualPath),
-      ]);
+      const recovery = await readStableFile(this.recovery);
+      const target = await readStableFile(this.snapshot.actualPath);
       return { baseline, recovery, target };
     } catch (error) {
       throw new Error(

@@ -79,6 +79,14 @@ function preparedEntry(plan: PlannedMutation): ReadonlyPlannedNewFile {
   }
   return { ...create, move: { entry: required(plan.entry), snapshot: plan.snapshot } };
 }
+async function resolveMoveDestination(
+  moveTo: string,
+  cwd: string,
+  index: number,
+): Promise<QueueTarget> {
+  const inputPath = resolveInputPath(moveTo, cwd);
+  return { inputPath, ...(await mutationQueueKeys(inputPath)), index };
+}
 /** One invocation owns reservations, planning, preparation and receipts until cleanup finishes. */
 class EditingBatch {
   private readonly files: readonly MutationInput[];
@@ -115,23 +123,15 @@ class EditingBatch {
     const inputPath = resolveInputPath(file.path, this.options.cwd);
     try {
       const entryOperation = file.delete === true || file.patch?.moveTo !== undefined;
-      const destinationPath =
+      const sourceKeys = entryOperation
+        ? entryMutationQueueKeys(inputPath)
+        : mutationQueueKeys(inputPath);
+      const destination =
         file.patch?.moveTo === undefined
           ? undefined
-          : resolveInputPath(file.patch.moveTo, this.options.cwd);
-      const [keys, destinationKeys] = await Promise.all([
-        entryOperation ? entryMutationQueueKeys(inputPath) : mutationQueueKeys(inputPath),
-        destinationPath === undefined ? undefined : mutationQueueKeys(destinationPath),
-      ]);
-      const destination =
-        destinationPath === undefined || destinationKeys === undefined
-          ? undefined
-          : {
-              inputPath: destinationPath,
-              ...destinationKeys,
-              index,
-            };
-      return { file, inputPath, ...keys, index, destination };
+          : resolveMoveDestination(file.patch.moveTo, this.options.cwd, index);
+      const [keys] = await Promise.all([sourceKeys, destination?.catch(Boolean)]);
+      return { file, inputPath, ...keys, index, destination: await destination };
     } catch (error) {
       throw this.resolutionFailure(error, inputPath, index);
     }

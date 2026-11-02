@@ -77,10 +77,8 @@ export async function readStableRegularEntry(path: string): Promise<FileState> {
       throw new Error(`Created file path changed during publication: ${path}`);
     }
     const bytes = await handle.readFile();
-    const [after, entryAfter] = await Promise.all([
-      handle.stat({ bigint: true }),
-      lstat(path, { bigint: true }),
-    ]);
+    const after = await handle.stat({ bigint: true });
+    const entryAfter = await lstat(path, { bigint: true });
     if (!sameSnapshotStats(before, after) || !sameSnapshotStats(after, entryAfter)) {
       throw new Error(`Created file changed during publication: ${path}`);
     }
@@ -95,10 +93,8 @@ export async function readStableFile(path: string): Promise<FileState> {
   try {
     const before = await handle.stat({ bigint: true });
     const bytes = await handle.readFile();
-    const [after, pathStats] = await Promise.all([
-      handle.stat({ bigint: true }),
-      lstat(path, { bigint: true }),
-    ]);
+    const after = await handle.stat({ bigint: true });
+    const pathStats = await lstat(path, { bigint: true });
     if (!sameSnapshotStats(before, after) || !sameIdentity(after, pathStats)) {
       throw new Error(`File changed while verifying ${path}`);
     }
