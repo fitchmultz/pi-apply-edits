@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import nodeChildProcess, { type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
@@ -320,6 +322,82 @@ return [...[preview, created, edited, failed].map(select), {
         .map((message) => contentText(message.content)),
       [contentText(script.content)],
     );
+  },
+);
+
+nodeTest(
+  "macOS edit calls in one agent run reuse one ACL helper that exits when the run settles",
+  { skip: process.platform !== "darwin", timeout: 30_000 },
+  async (t) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-acl-helper-")));
+    const helpers: ChildProcess[] = [];
+    const originalSpawn = nodeChildProcess.spawn;
+    const spawn = t.mock.method(
+      nodeChildProcess,
+      "spawn",
+      (...args: Readonly<[string, readonly string[]]>) => {
+        const child = originalSpawn(...args);
+        if (args[0] === "/usr/bin/osascript") {
+          helpers.push(child);
+        }
+        return child;
+      },
+    );
+    syncBuiltinESMExports();
+    const runtime = await offlineRuntime(root);
+    const model = runtime.getModel("offline-test", "scripted");
+    assert(model);
+    const settings = SettingsManager.inMemory({
+      compaction: { enabled: false },
+      retry: { enabled: false },
+    });
+    const loader = new DefaultResourceLoader({
+      cwd: root,
+      agentDir: join(root, "agent"),
+      settingsManager: settings,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      extensionFactories: [applyEditsExtension],
+    });
+    await loader.reload({ resolveProjectTrust: async () => false });
+    const { session } = await createAgentSession({
+      cwd: root,
+      agentDir: join(root, "agent"),
+      resourceLoader: loader,
+      modelRuntime: runtime,
+      model,
+      tools: ["replace_text", "write_files"],
+      sessionManager: SessionManager.inMemory(root),
+      settingsManager: settings,
+    });
+    t.after(async () => {
+      session.dispose();
+      spawn.mock.restore();
+      syncBuiltinESMExports();
+      await rm(root, { recursive: true, force: true });
+    });
+    await session.bindExtensions({ mode: "print" });
+    await writeFile(join(root, "edited.txt"), "before\n");
+    const edits = [{ oldText: "before", newText: "after" }];
+    scriptCalls(session, [
+      [call("edit", { files: [{ path: "edited.txt", edits }] }, "replace_text")],
+      [call("create", { files: [{ path: "created.txt", content: "created\n", mode: "create" }] })],
+    ]);
+    await session.prompt("Edit one file, then create another.");
+    await session.waitForIdle();
+    const results = session.messages.filter((message) => message.role === "toolResult");
+    assert.deepEqual(
+      results.map((result) => result.isError),
+      [false, false],
+    );
+    assert.equal(await readFile(join(root, "edited.txt"), "utf8"), "after\n");
+    assert.equal(await readFile(join(root, "created.txt"), "utf8"), "created\n");
+    // Both calls transferred ACLs through one helper, which exited normally once the run settled.
+    assert.equal(helpers.length, 1);
+    assert.equal(helpers[0]?.exitCode, 0);
   },
 );
 
