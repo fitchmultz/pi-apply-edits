@@ -112,7 +112,8 @@ nothing is published until all succeed. Anchors must be unique unless `all: true
 explicitly selects every non-overlapping match.
 
 Use `endText` for a large range without resending its body. Both anchors are
-included, unique, and ordered. It cannot be combined with `all: true` or `insert`:
+included. `oldText` must be unique in the file; `endText` is searched only after
+`oldText` and must be unique there. It cannot be combined with `all: true` or `insert`:
 
 ```json
 {
