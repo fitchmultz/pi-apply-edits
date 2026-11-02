@@ -73,13 +73,15 @@ class NestedFilePublication {
         temporary: this.destination.stagedTarget,
         target: this.destination.target,
       });
-      await assertPreparedFileCurrent(
-        this.destination.stagedTarget,
-        this.destination.stagedIdentity,
-        this.entry.bytes,
-        "Staged create file",
-      );
-      await assertPublishedDirectoriesCurrent(this.destination.directories);
+      await Promise.all([
+        assertPreparedFileCurrent(
+          this.destination.stagedTarget,
+          this.destination.stagedIdentity,
+          this.entry.bytes,
+          "Staged create file",
+        ),
+        assertPublishedDirectoriesCurrent(this.destination.directories),
+      ]);
       throwIfAborted(this.signal);
       await this.publishCandidate();
       await this.destination.hooks?.afterFilePublish?.({ target: this.destination.target });
@@ -175,8 +177,10 @@ class NestedFilePublication {
     throwIfAborted(this.signal);
     this.copyHandle = await open(this.destination.target, "wx", 0o666);
     this.published = true;
-    const opened = await this.copyHandle.stat({ bigint: true });
-    const pathStats = await lstat(this.destination.target, { bigint: true });
+    const [opened, pathStats] = await Promise.all([
+      this.copyHandle.stat({ bigint: true }),
+      lstat(this.destination.target, { bigint: true }),
+    ]);
     if (!pathStats.isFile() || pathStats.isSymbolicLink() || !sameIdentity(opened, pathStats)) {
       throw new Error(`Created file path changed during publication: ${this.destination.target}.`);
     }
@@ -223,12 +227,14 @@ class NestedFilePublication {
   }
 
   private async verify(): Promise<void> {
-    const state = await readStableRegularEntry(this.destination.target);
+    const [state, staged] = await Promise.all([
+      readStableRegularEntry(this.destination.target),
+      this.publication === "copy" ? undefined : readStableFile(this.destination.stagedTarget),
+    ]);
     if (!state.bytes.equals(this.entry.bytes)) {
       throw new Error(`Created file changed during publication: ${this.destination.target}.`);
     }
-    if (this.publication !== "copy") {
-      const staged = await readStableFile(this.destination.stagedTarget);
+    if (staged !== undefined) {
       const identity = this.publication === "link" ? staged.stats : this.movedIdentity;
       if (
         !identity ||

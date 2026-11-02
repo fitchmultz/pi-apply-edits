@@ -45,9 +45,11 @@ export async function captureEntrySnapshot(
     throw new Error(`Entry is not a regular file or symbolic link: ${inputPath}`);
   }
   const parentPath = await nativeRealpath(dirname(inputPath));
-  const parentStats = await stat(parentPath, { bigint: true });
   const actualPath = join(parentPath, basename(inputPath));
-  const stats = await lstat(actualPath, { bigint: true });
+  const [parentStats, stats] = await Promise.all([
+    stat(parentPath, { bigint: true }),
+    lstat(actualPath, { bigint: true }),
+  ]);
   if (!sameSnapshotStats(inputStats, stats)) {
     throw new Error(`Entry changed while reading ${inputPath}`);
   }
@@ -70,11 +72,11 @@ export async function captureEntrySnapshot(
 }
 
 export async function assertEntryParentCurrent(entry: ReadonlyEntrySnapshot): Promise<void> {
-  const parent = await stat(entry.parentPath, { bigint: true });
-  if (
-    !sameIdentity(entry.parentStats, parent) ||
-    (await nativeRealpath(dirname(entry.inputPath))) !== entry.parentPath
-  ) {
+  const [parent, currentParentPath] = await Promise.all([
+    stat(entry.parentPath, { bigint: true }),
+    nativeRealpath(dirname(entry.inputPath)),
+  ]);
+  if (!sameIdentity(entry.parentStats, parent) || currentParentPath !== entry.parentPath) {
     throw new Error(`Entry parent changed before commit: ${entry.inputPath}`);
   }
 }

@@ -217,8 +217,10 @@ class NestedPublication {
     const source = join(this.prepared.staging, relative);
     const target = join(this.prepared.publishRoot, relative);
     const identity = this.prepared.stagedIdentities?.get(relative);
-    await assertPreparedFileCurrent(source, identity, entry.bytes, "Staged create file");
-    await assertPublishedDirectoriesCurrent(this.directories);
+    await Promise.all([
+      assertPreparedFileCurrent(source, identity, entry.bytes, "Staged create file"),
+      assertPublishedDirectoriesCurrent(this.directories),
+    ]);
     try {
       if (entry.move) {
         await this.publishMove(entry, relative, source, identity);
@@ -326,9 +328,12 @@ class NestedPublication {
   }
 
   private async finalizeDirectories(): Promise<void> {
-    await assertPublishedDirectoriesCurrent(this.directories);
-    await inspectPreparedTree(this.prepared, this.stagedAfterPublish);
-    const ancestorMode = (await stat(this.prepared.firstPlan.ancestorPath, { bigint: true })).mode;
+    const [, , ancestor] = await Promise.all([
+      assertPublishedDirectoriesCurrent(this.directories),
+      inspectPreparedTree(this.prepared, this.stagedAfterPublish),
+      stat(this.prepared.firstPlan.ancestorPath, { bigint: true }),
+    ]);
+    const ancestorMode = ancestor.mode;
     const modes = new Map<string, bigint>();
     for (const [path, stats] of [...this.directories].sort(
       ([left], [right]) => left.length - right.length,

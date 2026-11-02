@@ -141,13 +141,19 @@ async function androidExecutable(bins: readonly string[], name: string): Promise
 async function detectAndroidReplacementSupport(): Promise<ReplacementSupport> {
   const bins = androidToolDirectories();
   try {
+    const [cp, mv, getfacl, getfattr] = await Promise.all([
+      androidExecutable(bins, "cp"),
+      androidExecutable(bins, "mv"),
+      androidExecutable(bins, "getfacl"),
+      androidExecutable(bins, "getfattr"),
+    ]);
     return await qualifyAndroidTools({
       supported: true,
       strategy: "exchange",
-      cp: await androidExecutable(bins, "cp"),
-      mv: await androidExecutable(bins, "mv"),
-      getfacl: await androidExecutable(bins, "getfacl"),
-      getfattr: await androidExecutable(bins, "getfattr"),
+      cp,
+      mv,
+      getfacl,
+      getfattr,
     });
   } catch (error) {
     return { supported: false, reason: errorMessage(error) };
@@ -304,9 +310,10 @@ async function preserveCopiedMetadata(
 ): Promise<void> {
   await transferMacosAcl(source, target, "copy", signal);
   if (support.strategy === "exchange") {
-    const sourceMetadata =
-      expectedAndroidMetadata ?? (await readPreservableAndroidMetadata(source, support, signal));
-    const targetMetadata = await readPreservableAndroidMetadata(target, support, signal);
+    const [sourceMetadata, targetMetadata] = await Promise.all([
+      expectedAndroidMetadata ?? readPreservableAndroidMetadata(source, support, signal),
+      readPreservableAndroidMetadata(target, support, signal),
+    ]);
     if (sourceMetadata !== targetMetadata) {
       throw new Error(`Termux could not preserve ACL or SELinux metadata for ${source}`);
     }

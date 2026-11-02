@@ -233,8 +233,10 @@ class SingleCreation {
     await link(this.temporary, this.plan.targetPath);
     this.publicationStarted = true;
     await this.hooks?.afterFilePublish?.({ target: this.plan.targetPath });
-    const state = await this.readPublishedTarget();
-    const temporary = await readStableFile(this.temporary);
+    const [state, temporary] = await Promise.all([
+      this.readPublishedTarget(),
+      readStableFile(this.temporary),
+    ]);
     if (!sameIdentity(temporary.stats, state.stats) || !state.bytes.equals(this.bytes)) {
       throw new Error(`Created file changed during publication: ${this.plan.targetPath}.`);
     }

@@ -115,18 +115,22 @@ class EditingBatch {
     const inputPath = resolveInputPath(file.path, this.options.cwd);
     try {
       const entryOperation = file.delete === true || file.patch?.moveTo !== undefined;
-      const keys = await (entryOperation
-        ? entryMutationQueueKeys(inputPath)
-        : mutationQueueKeys(inputPath));
-      let destination: QueueTarget | undefined;
-      if (file.patch?.moveTo !== undefined) {
-        const destinationPath = resolveInputPath(file.patch.moveTo, this.options.cwd);
-        destination = {
-          inputPath: destinationPath,
-          ...(await mutationQueueKeys(destinationPath)),
-          index,
-        };
-      }
+      const destinationPath =
+        file.patch?.moveTo === undefined
+          ? undefined
+          : resolveInputPath(file.patch.moveTo, this.options.cwd);
+      const [keys, destinationKeys] = await Promise.all([
+        entryOperation ? entryMutationQueueKeys(inputPath) : mutationQueueKeys(inputPath),
+        destinationPath === undefined ? undefined : mutationQueueKeys(destinationPath),
+      ]);
+      const destination =
+        destinationPath === undefined || destinationKeys === undefined
+          ? undefined
+          : {
+              inputPath: destinationPath,
+              ...destinationKeys,
+              index,
+            };
       return { file, inputPath, ...keys, index, destination };
     } catch (error) {
       throw this.resolutionFailure(error, inputPath, index);
