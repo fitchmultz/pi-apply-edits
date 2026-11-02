@@ -3176,7 +3176,7 @@ nodeTest("literal ~ paths are not reported as home paths", async () => {
     );
     assert.equal(
       missing.details.error,
-      `files[0]: Cannot edit missing file ./~/.zshrc. Paths are literal, so ~ is not expanded. To edit a file in the home directory, use its absolute path: ${join(homedir(), ".zshrc")}.`,
+      `files[0]: Cannot edit missing file ./~/.zshrc. Paths are literal, so ~ is not expanded. To edit a file in the home directory, use its absolute path: ${join(homedir(), ".zshrc")}. To create this path under the working directory instead, use write_files with mode: "create".`,
     );
   });
 });

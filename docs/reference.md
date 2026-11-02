@@ -242,7 +242,8 @@ The package name, extension entry path, and keep-builtins switches are unchanged
   Windows keeps native DOS/UNC normalization.
 - Receipts and errors show a working-directory path that starts with `~` as
   `./~/...`, so it is not mistaken for a home-directory path. Editing a missing
-  `~/...` file reports the absolute home path to use instead.
+  `~/...` file reports the absolute home path, as well as how to create the
+  literal path.
 - Overlapping single-file and batch calls retain invocation order and share Pi's
   mutation queue. Calls on unrelated files remain parallel.
 - Existing files are published by same-directory atomic replacement from a
