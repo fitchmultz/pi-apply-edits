@@ -71,6 +71,23 @@ nodeTest(
   },
 );
 
+nodeTest("a patch naming one file twice gets patch-specific recovery advice", async (t) => {
+  const cwd = await fixture(t);
+  await writeFile(join(cwd, "a.txt"), "old\n");
+  for (const operations of [
+    ["*** Delete File: a.txt", "*** Add File: a.txt\n+new"],
+    [update("a.txt", "old", "mid"), update("a.txt", "mid", "new")],
+  ]) {
+    const result = await applyPatchToFiles(patch(...operations), cwd);
+    assert.equal(
+      result.details.error,
+      `files[1] refers to the same file as files[0] (${join(cwd, "a.txt")}). A patch can name each file once. Use one Update File section, or write_files with mode: "replace" to rewrite a file.`,
+    );
+    assert.deepEqual(result.details.modifiedFiles, []);
+  }
+  assert.equal(await readFile(join(cwd, "a.txt"), "utf8"), "old\n");
+});
+
 nodeTest("patch BOM rejection leaves update and move sources untouched", async (t) => {
   const cwd = await fixture(t);
   const original = "heading\n\uFEFFpayload\n";

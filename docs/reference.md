@@ -67,6 +67,10 @@ overwrite an existing destination. Directory operations are rejected. Moves stay
 on one filesystem and retain source metadata. A move publishes its destination
 before removing its source, so a failed source removal can leave both entries.
 
+Unlike Codex, a patch can name each file once, including Move destinations, so
+Delete File followed by Add File cannot rewrite a file. Use one Update File
+section, or `write_files` with `mode: "replace"` for a full rewrite.
+
 Patches preserve existing BOMs, local mixed line endings, final-newline state, and
 untouched/context bytes. Added indentation is literal. Exact matching is tried
 before bounded whitespace and typography correction. Named `@@ anchor` lines
