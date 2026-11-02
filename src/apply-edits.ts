@@ -102,6 +102,8 @@ export async function applyPatchToFiles(
       preview,
       signal,
       onProgress,
+      duplicateTargetHint:
+        'A patch can name each file once. Use one Update File section, or write_files with mode: "replace" to rewrite a file.',
     });
   } catch (error) {
     return failedExecution(error, preview);

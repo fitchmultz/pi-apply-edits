@@ -143,7 +143,7 @@ class EditingBatch {
     const targets = resolved.flatMap((item) =>
       item.destination === undefined ? [item] : [item, item.destination],
     );
-    assertDistinctTargets(targets);
+    assertDistinctTargets(targets, this.options.duplicateTargetHint);
     return { resolved, targets };
   }
   async register(): Promise<{ readonly operation: Promise<EditingExecution> }> {

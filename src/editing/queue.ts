@@ -117,13 +117,16 @@ function rejectAncestorPair(left: QueueTarget, right: QueueTarget): void {
     );
   }
 }
-export function assertDistinctTargets(targets: readonly QueueTarget[]): void {
+export function assertDistinctTargets(
+  targets: readonly QueueTarget[],
+  hint = "Combine edits for one path into a single entry.",
+): void {
   const seen = new Map<string, number>();
   for (const target of targets) {
     const prior = seen.get(target.targetKey);
     if (prior !== undefined) {
       throw new Error(
-        `files[${target.index}] refers to the same file as files[${prior}] (${target.inputPath}). Combine edits for one path into a single entry.`,
+        `files[${target.index}] refers to the same file as files[${prior}] (${target.inputPath}). ${hint}`,
       );
     }
     seen.set(target.targetKey, target.index);

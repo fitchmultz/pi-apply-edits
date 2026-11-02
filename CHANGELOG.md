@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Give `apply_patch` its own advice when a patch names one file twice, such as Delete File followed by Add File: use one Update File section, or `write_files` with `mode: "replace"`. The reference lists this as a Codex difference.
 - Accept `apply_patch` chunks whose final empty context line stands for the file's terminating newline. As in Codex, an unmatched chunk is retried once without that line.
 - Search `replace_text` `endText` only after `oldText`, as its description states. Earlier occurrences of a closing token no longer make a range end ambiguous.
 - Speed up macOS edits by reusing one ACL helper for every editing call in a Pi agent run instead of starting one `osascript` process per file. After the run's first edit, a single-file replacement takes about 12 ms instead of 51 ms. ACLs are still copied exactly through the native API. Cancelling an in-flight transfer stops the helper and waits for it to exit before that transfer's private files are cleaned up. The helper exits when the run settles or the session shuts down, and an idle helper never keeps Pi running. Direct API callers get one helper per call.

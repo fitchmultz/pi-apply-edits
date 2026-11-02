@@ -171,6 +171,8 @@ export interface ExecutionOptions {
   readonly preview: boolean;
   readonly signal?: AbortSignal | undefined;
   readonly onProgress?: ((summary: string) => void) | undefined;
+  /** Recovery advice when two entries name one file; defaults to combining entries. */
+  readonly duplicateTargetHint?: string | undefined;
 }
 export function required<T>(value: T | undefined): T {
   if (value === undefined) {
