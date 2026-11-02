@@ -4,7 +4,6 @@
 
 - Give `apply_patch` its own advice when a patch names one file twice, such as Delete File followed by Add File: use one Update File section, or `write_files` with `mode: "replace"`. The reference lists this as a Codex difference.
 - Make `replace_text` `all: true` select every non-overlapping match from left to right, as its description states and as `String.prototype.replaceAll` does. Self-overlapping patterns, such as collapsing blank-line runs or converting two-space indentation, no longer fail with an overlap error.
-- Show literal working-directory `~` paths as `./~/...` in receipts and errors, and state in the `path` schema that `~` is not expanded. Editing a missing `~/...` file now names the absolute home path instead of suggesting `write_files` create.
 - Show literal working-directory `~` paths as `./~/...` in receipts and errors, and state in the `path` schema that `~` is not expanded. Editing a missing `~/...` file now names the absolute home path before suggesting `write_files` create for the literal path.
 - Accept `apply_patch` chunks whose final empty context line stands for the file's terminating newline. As in Codex, an unmatched chunk is retried once without that line.
 - Search `replace_text` `endText` only after `oldText`, as its description states. Earlier occurrences of a closing token no longer make a range end ambiguous.

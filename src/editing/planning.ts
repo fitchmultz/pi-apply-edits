@@ -116,7 +116,7 @@ async function entryContent(
   };
 }
 function missingFileHint(displayPath: string): string {
-  if (displayPath !== "./~" && !displayPath.startsWith("./~/")) {
+  if (!displayPath.startsWith("./~/")) {
     return 'Use write_files with mode: "create" to create it.';
   }
   return `Paths are literal, so ~ is not expanded. To edit a file in the home directory, use its absolute path: ${join(homedir(), displayPath.slice(3))}. To create this path under the working directory instead, use write_files with mode: "create".`;
