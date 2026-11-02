@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import nodeFs from "node:fs";
 import {
   chmod,
   lstat,
@@ -13,9 +14,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test as nodeTest, type TestContext } from "node:test";
 import { applyPatchToFiles, replaceTextInFiles, writeFiles } from "../src/apply-edits.ts";
+import { withRacingEditing } from "./racing.ts";
 
 async function fixture(t: TestContext): Promise<string> {
   const path = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-contract-")));
@@ -127,6 +129,93 @@ nodeTest(
     assert.equal(edited.details.error, undefined, edited.summary);
     assert.deepEqual(await readdir(cwd), ["Readme.md"]);
     assert.equal(await readFile(join(cwd, "Readme.md"), "utf8"), "# hello\n");
+  },
+);
+
+nodeTest(
+  "a case-only move in an unreadable directory is refused before writing",
+  {
+    skip: caseInsensitiveTmp
+      ? process.getuid?.() === 0 && "root reads every directory"
+      : "requires a case-insensitive temporary directory",
+  },
+  async (t) => {
+    const cwd = await fixture(t);
+    const directory = join(cwd, "drop");
+    await mkdir(directory);
+    await writeFile(join(directory, "readme.md"), "# hi\n");
+    await chmod(directory, 0o300);
+    let result;
+    try {
+      result = await applyPatchToFiles(
+        patch("*** Update File: drop/readme.md\n*** Move to: drop/README.md"),
+        cwd,
+      );
+    } finally {
+      await chmod(directory, 0o700);
+    }
+    assert.match(
+      result.details.error ?? "",
+      /requires a readable directory to verify the new name: .*\. No changes were written\.$/,
+    );
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.deepEqual(await readdir(directory), ["readme.md"]);
+  },
+);
+
+nodeTest(
+  "a filesystem that keeps the old spelling fails the case-only move determinately",
+  { skip: !caseInsensitiveTmp && "requires a case-insensitive temporary directory" },
+  async (t) => {
+    const cwd = await fixture(t);
+    await writeFile(join(cwd, "readme.md"), "# hi\n");
+    const originalRename = nodeFs.promises.rename;
+    await withRacingEditing(
+      (mock) => {
+        // Linux vfat treats a respelling as a rename onto the same file and keeps the old name.
+        mock.method(
+          nodeFs.promises,
+          "rename",
+          async (...args: Readonly<Parameters<typeof originalRename>>) => {
+            const from = String(args[0]);
+            const to = String(args[1]);
+            if (
+              from !== to &&
+              dirname(from) === dirname(to) &&
+              basename(from).toLowerCase() === basename(to).toLowerCase()
+            ) {
+              return;
+            }
+            await originalRename(...args);
+          },
+        );
+      },
+      async (module) => {
+        const pure = await module.applyPatchToFiles(
+          patch("*** Update File: readme.md\n*** Move to: README.md"),
+          cwd,
+        );
+        assert.match(
+          pure.details.error ?? "",
+          /kept the name .*readme\.md; it cannot change only the spelling of a name\. No changes were written\./,
+        );
+        assert.deepEqual(pure.details.modifiedFiles, []);
+        assert.doesNotMatch(pure.summary, /Uncertain paths: (?!none)/);
+
+        const edited = await module.applyPatchToFiles(
+          patch("*** Update File: readme.md\n*** Move to: README.md\n@@\n-# hi\n+# hello"),
+          cwd,
+        );
+        assert.match(
+          edited.details.error ?? "",
+          /The content change was published under the original name\./,
+        );
+        assert.deepEqual(edited.details.modifiedFiles, [join(cwd, "readme.md")]);
+        assert.doesNotMatch(edited.summary, /Uncertain paths: (?!none)/);
+      },
+    );
+    assert.deepEqual(await readdir(cwd), ["readme.md"]);
+    assert.equal(await readFile(join(cwd, "readme.md"), "utf8"), "# hello\n");
   },
 );
 

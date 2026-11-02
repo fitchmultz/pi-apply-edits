@@ -7,12 +7,29 @@ import type {
   ReadonlyEntryPublishHooks,
   ReadonlyEntrySnapshot,
 } from "./contracts.ts";
-import { errorMessage, PublicationError, throwIfAborted } from "./errors.ts";
+import { errorMessage, isCode, PublicationError, throwIfAborted } from "./errors.ts";
 import { sameIdentity, syncDirectory } from "./observation.ts";
 import { publishReplacement } from "./replacement.ts";
 import { assertEntryCurrent, assertEntryParentCurrent } from "./snapshot.ts";
 
 const foldName = (name: string): string => name.normalize("NFC").toUpperCase().toLowerCase();
+
+/** Some filesystems, such as Linux vfat, treat a respelling as a rename onto itself and keep the old name. */
+class SpellingKeptError extends Error {}
+
+async function listNames(directory: string, label: string): Promise<string[]> {
+  try {
+    return await readdir(directory);
+  } catch (error) {
+    if (isCode(error, "EACCES") || isCode(error, "EPERM")) {
+      throw new Error(
+        `Renaming ${label} to a new spelling requires a readable directory to verify the new name: ${directory}. No changes were written.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
 
 /**
  * Case- and normalization-insensitive volumes resolve a respelled name to the source entry.
@@ -33,7 +50,7 @@ export async function isRespelling(
   }
   const [parent, names] = await Promise.all([
     stat(dirname(targetPath), { bigint: true }),
-    readdir(dirname(targetPath)),
+    listNames(dirname(targetPath), entry.inputPath),
   ]);
   return sameIdentity(entry.parentStats, parent) && !names.includes(name);
 }
@@ -56,9 +73,32 @@ async function verifyRespelling(plan: ReadonlyEntryMovePlan, source: BigIntStats
     lstat(plan.destination.targetPath, { bigint: true }),
     readdir(plan.entry.parentPath),
   ]);
-  if (!sameIdentity(source, published) || !names.includes(basename(plan.destination.targetPath))) {
-    throw new Error(`Move destination could not be verified: ${plan.destination.inputPath}`);
+  const renamed = sameIdentity(source, published);
+  if (renamed && names.includes(basename(plan.destination.targetPath))) {
+    return;
   }
+  if (renamed && names.includes(basename(plan.entry.actualPath))) {
+    throw new SpellingKeptError(
+      `The filesystem kept the name ${plan.entry.inputPath}; it cannot change only the spelling of a name.`,
+    );
+  }
+  throw new Error(`Move destination could not be verified: ${plan.destination.inputPath}`);
+}
+
+function verificationFailure(
+  error: unknown,
+  replaced: readonly string[],
+  both: readonly string[],
+): PublicationError {
+  if (error instanceof SpellingKeptError) {
+    const outcome =
+      replaced.length > 0
+        ? "The content change was published under the original name."
+        : "No changes were written.";
+    return new PublicationError(`${error.message} ${outcome}`, replaced, [], error);
+  }
+  const uncertain = both.filter((path) => !replaced.includes(path));
+  return new PublicationError(errorMessage(error), replaced, uncertain, error);
 }
 
 /**
@@ -89,8 +129,7 @@ export async function publishRespelling(
   try {
     await verifyRespelling(plan, source);
   } catch (error) {
-    const uncertain = both.filter((path) => !replaced.includes(path));
-    throw new PublicationError(errorMessage(error), replaced, uncertain, error);
+    throw verificationFailure(error, replaced, both);
   }
   try {
     await hooks?.afterCommit?.();

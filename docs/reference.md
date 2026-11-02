@@ -79,7 +79,9 @@ before removing its source, so a failed source removal can leave both entries.
 On a case- or normalization-insensitive volume, a move that only respells the
 name, such as `readme.md` to `README.md`, renames the entry in place. Content
 changes are published first; if the rename then fails, the receipt reports the
-content change.
+content change. Filesystems that keep the old spelling, such as Linux vfat,
+fail the move without renaming. Verifying the new spelling requires a readable
+directory.
 
 Unlike Codex, a patch can name each file once, including Move destinations, so
 Delete File followed by Add File cannot rewrite a file. Use one Update File
