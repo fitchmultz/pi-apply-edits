@@ -23,7 +23,8 @@ export const EDITING_TOOL_NAMES = [
 ] as const;
 const pathSchema = Type.String({
   minLength: 1,
-  description: "Literal path, relative to the current working directory or absolute.",
+  description:
+    "Literal path, relative to the current working directory or absolute; ~ is not expanded.",
 });
 const previewSchema = Type.Optional(
   Type.Boolean({ description: "Read-only preview. No writes, staging, or publication probes." }),

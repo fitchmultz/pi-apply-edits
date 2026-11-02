@@ -23,6 +23,10 @@ export class BatchPublicationError extends Error {
     this.details = details;
   }
 }
+/** Pi's read tool expands `~` and `~/`, so a literal cwd-relative `~` must not read as home. */
+function literalTilde(display: string): string {
+  return display === "~" || display.startsWith("~/") ? `./${display}` : display;
+}
 export function displayPathFor(path: string, cwd: string): string {
   if (process.platform !== "win32") {
     const prefix = cwd.endsWith(sep) ? cwd : `${cwd}${sep}`;
@@ -30,12 +34,12 @@ export function displayPathFor(path: string, cwd: string): string {
       return path;
     }
     const display = path.slice(prefix.length);
-    return display.length > 0 ? display : ".";
+    return display.length > 0 ? literalTilde(display) : ".";
   }
   const candidate = relative(cwd, path);
   const outside = candidate === ".." || candidate.startsWith(`..${sep}`) || isAbsolute(candidate);
   const display = candidate.length > 0 ? candidate : ".";
-  return (outside ? path : display).split(sep).join("/");
+  return outside ? path.split(sep).join("/") : literalTilde(display.split(sep).join("/"));
 }
 function boundedPatch(path: string, oldText: string, newText: string): string | undefined {
   if (oldText === newText) {
