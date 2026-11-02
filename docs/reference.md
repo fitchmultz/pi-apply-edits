@@ -8,7 +8,7 @@ Detailed tool formats, integration behavior, and filesystem guarantees for pi-ap
 pi install git:github.com/fitchmultz/pi-apply-edits
 ```
 
-On Pi 1.0, `/reload` refreshes extension code. Restart after changing dependencies. A checkout can be loaded with `pi -e /path/to/pi-apply-edits`.
+`/reload` refreshes extension code. Restart after changing dependencies. A checkout can be loaded with `pi -e /path/to/pi-apply-edits`.
 The extension entry remains `extensions/apply-edits.ts` for existing package filters.
 
 On Android/Termux, atomic publication also requires GNU `cp`/`mv`, `getfacl`, and
