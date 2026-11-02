@@ -7,7 +7,7 @@ The tools preserve existing text formats by default and report which changes com
 
 ## Install and start
 
-The extension requires Node 24+ and Pi 1.0.0+. You can use official Pi or Fitch Pi.
+The extension requires Node 24+ and Pi 1.5.0+. You can use official Pi or Fitch Pi.
 See [tool examples](docs/reference.md#choose-a-tool) and [platform requirements](#platform-requirements) for details.
 
 ```sh

@@ -97,33 +97,17 @@ async function harness(
 }
 
 type StartOptions = Readonly<Pick<BuildSystemPromptOptions, "cwd">>;
-type LegacyStartEmitter = (
-  prompt: string,
-  images: undefined,
-  options: StartOptions,
-) => Promise<unknown>;
 type TriggerStartEmitter = (
   trigger: Readonly<{ messageType: "user"; prompt: string }>,
   options: StartOptions,
 ) => Promise<unknown>;
 
-function acceptsStartTrigger(
-  emit: LegacyStartEmitter | TriggerStartEmitter,
-): emit is TriggerStartEmitter {
-  // Pi 1.1.0 takes three arguments; newer hosts take a trigger and options.
-  return emit.length === 2;
-}
-
-async function emitBeforeAgentStart(emit: LegacyStartEmitter | TriggerStartEmitter, cwd: string) {
+async function emitBeforeAgentStart(emit: TriggerStartEmitter, cwd: string) {
   const options = {
     cwd,
     selectedTools: [],
   } satisfies BuildSystemPromptOptions;
-  if (acceptsStartTrigger(emit)) {
-    await emit({ messageType: "user", prompt: "fixture" }, options);
-  } else {
-    await emit("fixture", undefined, options);
-  }
+  await emit({ messageType: "user", prompt: "fixture" }, options);
 }
 
 function renderContext(cwd: string, isError = false) {
@@ -141,6 +125,8 @@ function renderContext(cwd: string, isError = false) {
     isError,
     durationMs: undefined,
     outputPad: 1,
+    keyText: () => "",
+    keyHint: (_keybinding: string, description: string) => description,
     invalidate() {
       // There is no live TUI to invalidate in this rendered-output fixture.
     },
@@ -242,7 +228,7 @@ nodeTest("environment opt-in and later manual selection survive the first turn",
   }
   const fixture = await harness(t);
   const runner = fixture.session.extensionRunner;
-  const emit: LegacyStartEmitter | TriggerStartEmitter = runner.emitBeforeAgentStart.bind(runner);
+  const emit: TriggerStartEmitter = runner.emitBeforeAgentStart.bind(runner);
   await emitBeforeAgentStart(emit, runner.createContext().cwd);
   fixture.state.active = ["read", "write"];
   await emitBeforeAgentStart(emit, runner.createContext().cwd);
