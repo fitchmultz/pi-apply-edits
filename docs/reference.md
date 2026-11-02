@@ -78,6 +78,11 @@ inserts after its anchor (EOF explicitly appends). Chunks refer to the original
 file in order. Deleting an unterminated tail transfers its missing final newline
 to the retained last line.
 
+As in Codex, a final empty context or deletion line can stand for the file's
+terminating newline. When a chunk ending with one does not match, it is retried
+once without that line and without a final empty new line. If no old line remains,
+the chunk follows the additions-only rule above.
+
 Missing-match errors show bounded requested text, the original-source search
 scope, and its first lines (or actual tail for EOF matching). Clipped excerpts are
 marked. Numeric unified-diff headers such as `@@ -1 +1 @@` are not line selectors;

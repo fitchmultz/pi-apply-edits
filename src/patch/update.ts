@@ -1,5 +1,5 @@
 // Adapted from OpenAI Codex's file_update; provenance and license in parser.ts.
-import { PatchMatcher, type ContextMatch } from "./matching.ts";
+import { PatchMatcher, type ContextMatch, type MatchScope } from "./matching.ts";
 import {
   MAX_CHUNKS,
   splitLines,
@@ -11,6 +11,11 @@ import {
 } from "./source.ts";
 
 const MAX_EXPANSION = 8 * 1024 * 1024;
+type ChunkLine = ReadonlyPatchChunk["lines"][number];
+interface LocatedChunk {
+  readonly lines: readonly ChunkLine[];
+  readonly start: ContextMatch;
+}
 interface Replacement {
   readonly start: number;
   readonly end: number;
@@ -26,6 +31,37 @@ interface ReplacementRun {
 export interface PatchUpdateResult {
   text: string;
   matches: PatchMatch[];
+}
+
+const oldSide = (lines: readonly ChunkLine[]): string[] =>
+  lines.filter((line) => line.kind !== "add").map((line) => line.text);
+
+function lineKind(old: boolean, added: boolean): ChunkLine["kind"] | undefined {
+  if (old) {
+    return added ? "context" : "delete";
+  }
+  return added ? "add" : undefined;
+}
+
+/**
+ * Codex retries a chunk without its final old line when that line is empty: in real
+ * diffs it often stands for the region's terminating newline, which source lines do not
+ * represent. A matching final empty new line is dropped too.
+ */
+function withoutFinalNewline(lines: readonly ChunkLine[]): ChunkLine[] | undefined {
+  const oldEnd = lines.findLastIndex((line) => line.kind !== "add");
+  if (lines[oldEnd]?.text !== "") {
+    return undefined;
+  }
+  const newEnd = lines.findLastIndex((line) => line.kind !== "delete");
+  const dropNew = lines[newEnd]?.text === "";
+  return lines.flatMap((line, index) => {
+    const kind = lineKind(
+      line.kind !== "add" && index !== oldEnd,
+      line.kind !== "delete" && !(dropNew && index === newEnd),
+    );
+    return kind === undefined ? [] : [{ kind, text: line.text }];
+  });
 }
 
 /** Plans against original bytes; only this owner advances scope and expansion accounting. */
@@ -69,27 +105,27 @@ class PatchUpdater {
     return index < 0 ? undefined : this.#lines.at(index);
   }
 
-  private match(pattern: readonly string[], eof: boolean, label: string): ContextMatch {
-    return this.#matcher.find(pattern, {
+  private scope(eof: boolean, label: string): MatchScope {
+    return {
       start: this.#cursor,
       eof,
       scopedChars: this.#body.length - this.offsetAt(this.#cursor),
       label,
-    });
+    };
   }
 
   private applyChunk(chunk: ReadonlyPatchChunk, index: number): void {
     for (const anchor of chunk.anchors) {
-      const found = this.match([anchor], false, `anchor in chunk ${index + 1}`);
+      const found = this.#matcher.find([anchor], this.scope(false, `anchor in chunk ${index + 1}`));
       this.#matches.push({ line: found.line, strategy: found.strategy });
       this.#cursor = found.line;
     }
-    const context = chunk.lines.filter((line) => line.kind !== "add").map((line) => line.text);
-    const start = this.chunkStart(chunk, context, index);
+    const { lines, start } = this.locate(chunk, index);
+    this.#matches.push({ line: start.line, strategy: start.strategy });
     let position = start.line - 1;
     let runStart = position;
     let added: string[] = [];
-    for (const line of chunk.lines) {
+    for (const line of lines) {
       if (line.kind === "context") {
         this.replace({ start: runStart, end: position, added, includesBom: start.includesBom });
         position++;
@@ -105,20 +141,34 @@ class PatchUpdater {
     this.#cursor = position;
   }
 
-  private chunkStart(
-    chunk: ReadonlyPatchChunk,
-    context: readonly string[],
-    index: number,
-  ): ContextMatch {
-    if (context.length > 0) {
-      const found = this.match(context, chunk.endOfFile, `context in chunk ${index + 1}`);
-      this.#matches.push({ line: found.line, strategy: found.strategy });
-      return found;
+  private locate(chunk: ReadonlyPatchChunk, index: number): LocatedChunk {
+    const context = oldSide(chunk.lines);
+    if (context.length === 0) {
+      return { lines: chunk.lines, start: this.additionStart(chunk) };
     }
+    const scope = this.scope(chunk.endOfFile, `context in chunk ${index + 1}`);
+    const found = this.#matcher.search(context, scope);
+    if (found !== undefined) {
+      return { lines: chunk.lines, start: found };
+    }
+    const lines = withoutFinalNewline(chunk.lines);
+    if (lines === undefined) {
+      throw this.#matcher.missing(context, scope);
+    }
+    const retryContext = oldSide(lines);
+    const start =
+      retryContext.length === 0
+        ? this.additionStart(chunk)
+        : this.#matcher.search(retryContext, scope);
+    if (start === undefined) {
+      throw this.#matcher.missing(context, scope);
+    }
+    return { lines, start };
+  }
+
+  private additionStart(chunk: ReadonlyPatchChunk): ContextMatch {
     const start = chunk.anchors.length > 0 && !chunk.endOfFile ? this.#cursor : this.#lines.length;
-    const found: ContextMatch = { line: start + 1, strategy: "exact", includesBom: false };
-    this.#matches.push({ line: found.line, strategy: found.strategy });
-    return found;
+    return { line: start + 1, strategy: "exact", includesBom: false };
   }
 
   private replacementEnding(start: number, end: number): string {

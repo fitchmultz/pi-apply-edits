@@ -60,7 +60,7 @@ function occurrences(
   return found;
 }
 
-interface MatchScope {
+export interface MatchScope {
   readonly start: number;
   readonly eof: boolean;
   readonly scopedChars: number;
@@ -91,6 +91,15 @@ export class PatchMatcher {
   }
 
   find(pattern: readonly string[], scope: MatchScope): ContextMatch {
+    const found = this.search(pattern, scope);
+    if (found === undefined) {
+      throw this.missing(pattern, scope);
+    }
+    return found;
+  }
+
+  /** Returns undefined when nothing matches; ambiguity still throws. */
+  search(pattern: readonly string[], scope: MatchScope): ContextMatch | undefined {
     const fuzzyAllowed = this.fuzzyAllowed(pattern, scope);
     for (const pass of passes) {
       if (pass.strategy !== "exact" && !fuzzyAllowed) {
@@ -111,7 +120,13 @@ export class PatchMatcher {
         return { line: line + 1, strategy: pass.strategy, includesBom };
       }
     }
-    throw new Error(missingPatchMessage(this.#source, pattern, scope, fuzzyAllowed));
+    return undefined;
+  }
+
+  missing(pattern: readonly string[], scope: MatchScope): Error {
+    return new Error(
+      missingPatchMessage(this.#source, pattern, scope, this.fuzzyAllowed(pattern, scope)),
+    );
   }
 
   private fuzzyAllowed(pattern: readonly string[], scope: MatchScope): boolean {
