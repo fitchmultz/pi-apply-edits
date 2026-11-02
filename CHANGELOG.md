@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Accept `apply_patch` chunks whose final empty context line stands for the file's terminating newline. As in Codex, an unmatched chunk is retried once without that line.
 - Speed up macOS edits by reusing one ACL helper for every editing call in a Pi agent run instead of starting one `osascript` process per file. After the run's first edit, a single-file replacement takes about 12 ms instead of 51 ms. ACLs are still copied exactly through the native API. Cancelling an in-flight transfer stops the helper and waits for it to exit before that transfer's private files are cleaned up. The helper exits when the run settles or the session shuts down, and an idle helper never keeps Pi running. Direct API callers get one helper per call.
 - Accept readonly editing and patch inputs while preserving mutable public request, parsed-patch, and result types from v1.1.0. Signature-derived input types are readonly; implementations that accept only the former mutable inputs no longer satisfy those function types.
 - Find Termux's atomic-edit tools independently of mise or other Node installations, including when `PREFIX` is unset.

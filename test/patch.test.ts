@@ -544,6 +544,23 @@ nodeTest("terminal-newline preservation deliberately differs from Codex normaliz
   assert.equal(apply("keep\r\ntail", "@@\n-tail").text, "keep");
 });
 
+nodeTest("a final empty old line can stand for the terminating newline, as in Codex", () => {
+  // Codex retries an unmatched chunk without a final empty old line, and without a
+  // final empty new line (file_update.rs compute_replacements at rust-v0.155.1).
+  assert.equal(
+    apply("def a():\n    pass\n", "@@\n def a():\n     pass\n+\n+def b():\n+    pass\n ").text,
+    "def a():\n    pass\n\ndef b():\n    pass\n",
+  );
+  assert.equal(apply("x\nold\n", "@@\n-old\n+new\n \n*** End of File").text, "x\nnew\n");
+  // Only the old side ends with the empty line, so the new side keeps it as an addition.
+  assert.equal(apply("a\nb\n", "@@\n b\n \n+c").text, "a\nb\n\nc\n");
+  assert.equal(apply("a\nb", "@@\n-b\n+B\n-").text, "a\nB");
+  // Intentional difference from Codex, which inserts at the search start: with no old
+  // line left, the chunk follows this parser's additions-only rule and appends.
+  assert.equal(apply("a\nb\n", "@@\n \n+c").text, "a\nb\n\nc\n");
+  assert.throws(() => apply("a\n", "@@\n-missing\n+new\n "), /Requested text:\nmissing\n\n/);
+});
+
 nodeTest("pure additions append, including empty files and absent terminal newlines", () => {
   assert.equal(apply("", "@@\n+first\n+second").text, "first\nsecond\n");
   assert.equal(apply("one\r\ntwo", "@@\n+three\n+four").text, "one\r\ntwo\r\nthree\r\nfour");
