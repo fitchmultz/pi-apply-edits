@@ -3722,12 +3722,21 @@ nodeTest("exact overlapping matches are ambiguous without all", () => {
 });
 
 nodeTest("all: true selects overlapping matches left to right, like replaceAll", () => {
+  // Skipped windows must not count toward the expansion budget: 101 overlapping
+  // windows would exceed it, but the 2 selected windows stay well within it.
+  const large = "y".repeat(100_000);
   for (const [original, edit, text, replacements] of [
     ["banana\n", { oldText: "ana", newText: "X" }, "bXna\n", 1],
     ["a\n\n\n\nb\n", { oldText: "\n\n\n", newText: "\n\n" }, "a\n\n\nb\n", 1],
     ["def f():\n    return 1\n", { oldText: "  ", newText: "\t" }, "def f():\n\t\treturn 1\n", 2],
     ["a   \na   \na   \na   \n", { oldText: "a\na", newText: "b" }, "b\nb\n", 2],
     ["a \na \na \n", { oldText: "a\na", newText: "!", insert: "after" }, "a \na !\na \n", 1],
+    [
+      "x   \n".repeat(200),
+      { oldText: Array.from({ length: 100 }, () => "x").join("\n"), newText: large },
+      `${large}\n${large}\n`,
+      2,
+    ],
   ] as const) {
     const result = applyTargetedEdits(original, [{ ...edit, all: true }], "overlap.txt");
     assert.equal(result.text, text);
