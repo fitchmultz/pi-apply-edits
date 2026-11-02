@@ -227,14 +227,12 @@ class NestedFilePublication {
   }
 
   private async verify(): Promise<void> {
-    const [state, staged] = await Promise.all([
-      readStableRegularEntry(this.destination.target),
-      this.publication === "copy" ? undefined : readStableFile(this.destination.stagedTarget),
-    ]);
+    const state = await readStableRegularEntry(this.destination.target);
     if (!state.bytes.equals(this.entry.bytes)) {
       throw new Error(`Created file changed during publication: ${this.destination.target}.`);
     }
-    if (staged !== undefined) {
+    if (this.publication !== "copy") {
+      const staged = await readStableFile(this.destination.stagedTarget);
       const identity = this.publication === "link" ? staged.stats : this.movedIdentity;
       if (
         !identity ||
