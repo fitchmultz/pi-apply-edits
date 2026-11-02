@@ -12,7 +12,7 @@ import {
 import { findMatch, toReplacement, type MatchAttempt } from "./matching.ts";
 import { missingEditMessage } from "./diagnostics.ts";
 import { hasFinalLineEnding, lineNumbersAt } from "./text.ts";
-import { applyReplacements, hasOverlaps } from "./replacements.ts";
+import { applyReplacements, hasOverlaps, nonOverlapping } from "./replacements.ts";
 
 function validateEditStrings(edit: ReadonlyTargetedEdit, index: number): void {
   if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
@@ -203,7 +203,8 @@ function effectiveReplacements(
   location: EditLocation,
 ): readonly Replacement[] {
   assertUnique(match, edit, location);
-  const candidates = edit.all === true ? match.replacements : match.replacements.slice(0, 1);
+  const candidates =
+    edit.all === true ? nonOverlapping(match.replacements) : match.replacements.slice(0, 1);
   const selected = candidates.map((item) => preserveCrLf(content, item, edit));
   if (hasOverlaps(selected)) {
     throw new Error(

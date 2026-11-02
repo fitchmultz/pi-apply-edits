@@ -113,7 +113,9 @@ context lines require their leading space; stripped prefixes are not repaired.
 
 Edits are ordered within each file. Each sees the result of preceding edits, and
 nothing is published until all succeed. Anchors must be unique unless `all: true`
-explicitly selects every non-overlapping match.
+explicitly selects every non-overlapping match. As with `String.prototype.replaceAll`,
+matches are selected from left to right, and a match that overlaps an earlier
+selected match is skipped.
 
 Use `endText` for a large range without resending its body. Both anchors are
 included. `oldText` must be unique in the file; `endText` is searched only after
@@ -137,8 +139,8 @@ or ranges but is invalid for insertion.
 Exact anchors are preferred. When absent, complete-line matching can correct
 Unicode typography, trailing whitespace, or a uniform indentation shift. Every
 correction is reported. Replacement indentation follows that shift; inserts retain
-literal indentation. Ambiguous matches, overlapping matches, and unrepresentable
-tab corrections fail before publication.
+literal indentation. Ambiguous matches and unrepresentable tab corrections fail
+before publication.
 
 Missing-match errors explain when size or work limits skipped corrective matching;
 retry with exact text rather than assuming correction ran. Clipped nearby blocks
