@@ -254,8 +254,9 @@ The package name, extension entry path, and keep-builtins switches are unchanged
   and Linux an external writer in the final system-call window can still win or
   be overwritten. Android's exchange retains whichever inode occupied the target
   at that instant. Post-publication verification reports success only for the
-  prepared target. If either inode changes, it never attempts rollback: the target
-  is left untouched and a named recovery path retains the earlier version for inspection.
+  prepared target. If either inode changes, it never attempts rollback: the error
+  states whether the published edit is still at the target, and a named recovery
+  path retains the earlier version for inspection.
 - Text edits follow symbolic links without replacing the link itself. Delete and
   pure Move operate on the link entry, including dangling links, leaving its target
   untouched. Combining content changes with a link-entry move is rejected; use

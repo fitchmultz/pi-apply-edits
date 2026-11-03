@@ -301,7 +301,7 @@ class ReplacementPublication {
       !sameSnapshotStats(versions.baseline, versions.recovery.stats) ||
       !versions.recovery.bytes.equals(this.snapshot.bytes)
     ) {
-      await this.reportConflict();
+      await this.reportConflict(targetMatches);
     }
     if (!targetMatches) {
       throw new Error(
@@ -311,7 +311,7 @@ class ReplacementPublication {
     return versions.recovery;
   }
 
-  private async reportConflict(): Promise<never> {
+  private async reportConflict(targetMatches: boolean): Promise<never> {
     try {
       await this.hooks?.beforeConflictReturn?.({
         target: this.snapshot.actualPath,
@@ -324,7 +324,7 @@ class ReplacementPublication {
       );
     }
     throw new Error(
-      `File versions changed during commit: ${this.snapshot.inputPath}. No automatic rollback was attempted; the current target was left untouched, and the earlier external content remains at ${this.recovery}.`,
+      `File versions changed during commit: ${this.snapshot.inputPath}. ${targetMatches ? "The edit was published to the target" : "The edit was published, then the target changed externally"}; no automatic rollback was attempted. The earlier content, changed externally during commit, remains at ${this.recovery}. Inspect both files before retrying.`,
     );
   }
 
