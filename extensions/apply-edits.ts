@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SourceInfo } from "@earendil-works/pi-coding-agent";
 import {
+  onUnsupportedFilesystem,
   releaseMacosAclHelper,
   retainMacosAclHelper,
   supportsExistingFileReplacement,
@@ -36,26 +37,10 @@ export default function editingExtension(pi: ExtensionAPI): void {
           tool.parameters,
     );
 
+  const replaceBuiltins = builtinWriterReplacement(pi, ownsTool);
   const start = async (ctx: ExtensionContext) => {
     nativeContext = ctx;
-    const active = pi.getActiveTools();
-    if (!active.some((name) => name !== "preview_patch" && ownsTool(name)) || keepBuiltins(pi)) {
-      return;
-    }
-    if (!(await supportsExistingFileReplacement())) {
-      return;
-    }
-    const replaceable = new Set(
-      pi
-        .getAllTools()
-        .filter(
-          (item) =>
-            (item.name === "edit" || item.name === "write") &&
-            (item.sourceInfo.source === "builtin" || isDirectoryOwner(item.sourceInfo)),
-        )
-        .map((item) => item.name),
-    );
-    pi.setActiveTools(active.filter((name) => !replaceable.has(name)));
+    await replaceBuiltins();
   };
   pi.on("session_start", async (_event, ctx) => {
     await start(ctx);
@@ -89,6 +74,54 @@ export default function editingExtension(pi: ExtensionAPI): void {
       }
     }
   });
+}
+
+/**
+ * Replace Pi's built-in writers while the editing tools are active. They return when a filesystem
+ * cannot support verified publication, because they write files in place.
+ */
+function builtinWriterReplacement(
+  pi: ExtensionAPI,
+  ownsTool: (name: string) => boolean,
+): () => Promise<void> {
+  const replaced = new Set<string>();
+  let stopWatching: (() => void) | undefined;
+  const restore = () => {
+    const active = pi.getActiveTools();
+    const restored = [...replaced].filter((name) => !active.includes(name));
+    replaced.clear();
+    if (restored.length > 0) {
+      pi.setActiveTools([...active, ...restored]);
+    }
+  };
+  pi.on("session_shutdown", () => {
+    stopWatching?.();
+    stopWatching = undefined;
+  });
+  return async () => {
+    stopWatching ??= onUnsupportedFilesystem(restore);
+    const active = pi.getActiveTools();
+    if (!active.some((name) => name !== "preview_patch" && ownsTool(name)) || keepBuiltins(pi)) {
+      return;
+    }
+    if (!(await supportsExistingFileReplacement())) {
+      return;
+    }
+    const replaceable = new Set(
+      pi
+        .getAllTools()
+        .filter(
+          (item) =>
+            (item.name === "edit" || item.name === "write") &&
+            (item.sourceInfo.source === "builtin" || isDirectoryOwner(item.sourceInfo)),
+        )
+        .map((item) => item.name),
+    );
+    for (const name of active.filter((item) => replaceable.has(item))) {
+      replaced.add(name);
+    }
+    pi.setActiveTools(active.filter((name) => !replaceable.has(name)));
+  };
 }
 
 /** Edit calls in one agent run reuse a macOS ACL helper, which exits once the run settles. */

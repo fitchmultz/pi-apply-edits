@@ -14,6 +14,7 @@ import {
   removeEmptyOwnedDirectory,
 } from "./cleanup.ts";
 import { errorMessage, isCode, throwIfAborted } from "./errors.ts";
+import { assertPublicationFilesystem } from "./volume-support.ts";
 
 /** Bind a missing target to its validated canonical ancestor and traversal preconditions. */
 export async function planNewFile(
@@ -43,6 +44,7 @@ export async function planNewFile(
   const ancestor = await findCreateAncestor(parent, targetPath);
   if (requireWritable) {
     await assertDirectoryWritableForPublish(ancestor.path, targetPath);
+    await assertPublicationFilesystem(ancestor.path, inputPath, false);
   }
   return {
     inputPath,
