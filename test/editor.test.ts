@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import nodeFs from "node:fs";
 import {
   chmod,
   lstat,
@@ -13,9 +14,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test as nodeTest, type TestContext } from "node:test";
 import { applyPatchToFiles, replaceTextInFiles, writeFiles } from "../src/apply-edits.ts";
+import { withRacingEditing } from "./racing.ts";
 
 async function fixture(t: TestContext): Promise<string> {
   const path = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-contract-")));
@@ -26,6 +28,18 @@ const patch = (...operations: readonly string[]) =>
   `*** Begin Patch\n${operations.join("\n")}\n*** End Patch`;
 const update = (path: string, before: string, after: string) =>
   `*** Update File: ${path}\n@@\n-${before}\n+${after}`;
+const caseInsensitiveTmp = await (async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-edit-case-"));
+  try {
+    await writeFile(join(directory, "probe"), "");
+    return await lstat(join(directory, "PROBE")).then(
+      () => true,
+      () => false,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+})();
 
 nodeTest(
   "patch plans and applies create/update/move/delete with verified absolute receipts",
@@ -87,6 +101,124 @@ nodeTest("a patch naming one file twice gets patch-specific recovery advice", as
   }
   assert.equal(await readFile(join(cwd, "a.txt"), "utf8"), "old\n");
 });
+
+nodeTest(
+  "case-only moves respell the entry in place, with or without content changes",
+  { skip: !caseInsensitiveTmp && "requires a case-insensitive temporary directory" },
+  async (t) => {
+    const cwd = await fixture(t);
+    await writeFile(join(cwd, "readme.md"), "# hi\n");
+    await chmod(join(cwd, "readme.md"), 0o640);
+    const before = await lstat(join(cwd, "readme.md"));
+    const rename = patch("*** Update File: readme.md\n*** Move to: README.md");
+    const preview = await applyPatchToFiles(rename, cwd, true);
+    assert.equal(preview.details.error, undefined, preview.summary);
+    assert.deepEqual(await readdir(cwd), ["readme.md"]);
+
+    const moved = await applyPatchToFiles(rename, cwd);
+    assert.equal(moved.summary, "Moved 1 file: readme.md \u2192 README.md.");
+    assert.deepEqual(await readdir(cwd), ["README.md"]);
+    const after = await lstat(join(cwd, "README.md"));
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.mode & 0o777, 0o640);
+
+    const edited = await applyPatchToFiles(
+      patch("*** Update File: README.md\n*** Move to: Readme.md\n@@\n-# hi\n+# hello"),
+      cwd,
+    );
+    assert.equal(edited.details.error, undefined, edited.summary);
+    assert.deepEqual(await readdir(cwd), ["Readme.md"]);
+    assert.equal(await readFile(join(cwd, "Readme.md"), "utf8"), "# hello\n");
+  },
+);
+
+nodeTest(
+  "a case-only move in an unreadable directory is refused before writing",
+  {
+    skip: caseInsensitiveTmp
+      ? process.getuid?.() === 0 && "root reads every directory"
+      : "requires a case-insensitive temporary directory",
+  },
+  async (t) => {
+    const cwd = await fixture(t);
+    const directory = join(cwd, "drop");
+    await mkdir(directory);
+    await writeFile(join(directory, "readme.md"), "# hi\n");
+    await chmod(directory, 0o300);
+    let result;
+    try {
+      result = await applyPatchToFiles(
+        patch("*** Update File: drop/readme.md\n*** Move to: drop/README.md"),
+        cwd,
+      );
+    } finally {
+      await chmod(directory, 0o700);
+    }
+    assert.match(
+      result.details.error ?? "",
+      /requires a readable directory to verify the new name: .*\. No changes were written\.$/,
+    );
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.deepEqual(await readdir(directory), ["readme.md"]);
+  },
+);
+
+nodeTest(
+  "a filesystem that keeps the old spelling fails the case-only move determinately",
+  { skip: !caseInsensitiveTmp && "requires a case-insensitive temporary directory" },
+  async (t) => {
+    const cwd = await fixture(t);
+    await writeFile(join(cwd, "readme.md"), "# hi\n");
+    const originalRename = nodeFs.promises.rename;
+    await withRacingEditing(
+      (mock) => {
+        // Linux vfat treats a respelling as a rename onto the same file and keeps the old name.
+        mock.method(
+          nodeFs.promises,
+          "rename",
+          async (...args: Readonly<Parameters<typeof originalRename>>) => {
+            const from = String(args[0]);
+            const to = String(args[1]);
+            if (
+              from !== to &&
+              dirname(from) === dirname(to) &&
+              basename(from).toLowerCase() === basename(to).toLowerCase()
+            ) {
+              return;
+            }
+            await originalRename(...args);
+          },
+        );
+      },
+      async (module) => {
+        // The patch may address the source by another spelling than the stored one.
+        const pure = await module.applyPatchToFiles(
+          patch("*** Update File: README.md\n*** Move to: Readme.md"),
+          cwd,
+        );
+        assert.match(
+          pure.details.error ?? "",
+          /kept the name .*readme\.md; it cannot change only the spelling of a name\. No changes were written\./,
+        );
+        assert.deepEqual(pure.details.modifiedFiles, []);
+        assert.doesNotMatch(pure.summary, /Uncertain paths: (?!none)/);
+
+        const edited = await module.applyPatchToFiles(
+          patch("*** Update File: readme.md\n*** Move to: README.md\n@@\n-# hi\n+# hello"),
+          cwd,
+        );
+        assert.match(
+          edited.details.error ?? "",
+          /The content change was published under the original name\./,
+        );
+        assert.deepEqual(edited.details.modifiedFiles, [join(cwd, "readme.md")]);
+        assert.doesNotMatch(edited.summary, /Uncertain paths: (?!none)/);
+      },
+    );
+    assert.deepEqual(await readdir(cwd), ["readme.md"]);
+    assert.equal(await readFile(join(cwd, "readme.md"), "utf8"), "# hello\n");
+  },
+);
 
 nodeTest("patch BOM rejection leaves update and move sources untouched", async (t) => {
   const cwd = await fixture(t);

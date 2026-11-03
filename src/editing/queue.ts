@@ -124,7 +124,8 @@ export function assertDistinctTargets(
   const seen = new Map<string, number>();
   for (const target of targets) {
     const prior = seen.get(target.targetKey);
-    if (prior !== undefined) {
+    // A move whose destination folds to its own source is planned as a respelling or rejected.
+    if (prior !== undefined && prior !== target.index) {
       throw new Error(
         `files[${target.index}] refers to the same file as files[${prior}] (${target.inputPath}). ${hint}`,
       );
