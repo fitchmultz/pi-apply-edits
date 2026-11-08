@@ -82,12 +82,15 @@ export interface PreparedNestedFiles<
   quarantine: string;
   warnings: string[];
   hooks?: Hooks | undefined;
+  /** Publication disables automatic discard; explicit identity-checked cleanup remains separate. */
   published: boolean;
+  /** Also true for retained or failed cleanup. A repeated discard is not proof of removal. */
   discardAttempted: boolean;
   containerStats?: BigIntStats | undefined;
   stagingStats?: BigIntStats | undefined;
   quarantineStats?: BigIntStats | undefined;
   cleanupBlocked?: string | undefined;
+  /** Initial private identities, updated with the recorded linked state during publication. */
   stagedIdentities?: Map<string, BigIntStats> | undefined;
 }
 

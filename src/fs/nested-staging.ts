@@ -24,6 +24,16 @@ import { assertMoveSnapshot, prepareMoveReplacement } from "./preparation.ts";
 import { assertEntryCurrent } from "./snapshot.ts";
 import { inspectPreparedTree } from "./staged-tree.ts";
 
+type DiscardState =
+  | { readonly kind: "unattempted" }
+  | { readonly kind: "discarding" }
+  | { readonly kind: "discarded" }
+  | { readonly kind: "retained"; readonly reason: unknown };
+
+type TreeInspection =
+  | { readonly kind: "initial" }
+  | { readonly kind: "revalidate"; readonly identities: ReadonlyMap<string, BigIntStats> };
+
 export function preparedOwner(prepared: ReadonlyPreparedNestedFiles): NestedStaging {
   if (!(prepared instanceof NestedStaging)) {
     throw new Error("Nested create publication requires its original prepared staging owner");
@@ -58,7 +68,7 @@ abstract class NestedStaging {
   readonly quarantine: string;
   readonly warnings: string[] = [];
   published = false;
-  discardAttempted = false;
+  #discardState: DiscardState = { kind: "unattempted" };
   containerStats: BigIntStats | undefined;
   stagingStats: BigIntStats | undefined;
   quarantineStats: BigIntStats | undefined;
@@ -67,6 +77,28 @@ abstract class NestedStaging {
   stagedIdentities: Map<string, BigIntStats> | undefined;
   readonly #stagedDirectories = new Set<string>();
   #handle: Awaited<ReturnType<typeof open>> | undefined;
+
+  get discardState(): DiscardState {
+    return this.#discardState;
+  }
+
+  /** The writable compatibility flag disables automatic discard; it does not prove removal. */
+  get discardAttempted(): boolean {
+    return this.#discardState.kind !== "unattempted";
+  }
+
+  set discardAttempted(attempted: boolean) {
+    if (!attempted) {
+      this.#discardState = { kind: "unattempted" };
+    } else if (this.#discardState.kind === "unattempted") {
+      this.retain("Automatic discard was disabled by the staging owner");
+    }
+  }
+
+  /** Retain staging without granting later automatic discard another destructive attempt. */
+  retain(reason: unknown): void {
+    this.#discardState = { kind: "retained", reason };
+  }
 
   constructor(entries: readonly ReadonlyPlannedNewFile[]) {
     const first = entries.at(0)?.plan;
@@ -107,7 +139,7 @@ abstract class NestedStaging {
           this.warnings.push(warning);
         }
       }
-      this.stagedIdentities = await inspectPreparedTree(this);
+      this.stagedIdentities = await this.inspectTree({ kind: "initial" });
       return this;
     } catch (error) {
       await this.#handle?.close().catch(() => {
@@ -215,7 +247,17 @@ abstract class NestedStaging {
     if (this.published || this.discardAttempted) {
       return;
     }
-    this.discardAttempted = true;
+    this.#discardState = { kind: "discarding" };
+    try {
+      await this.discardResources();
+      this.#discardState = { kind: "discarded" };
+    } catch (error) {
+      this.retain(error);
+      throw error;
+    }
+  }
+
+  private async discardResources(): Promise<void> {
     if (this.cleanupBlocked !== undefined) {
       throw new Error(
         `Staging cleanup was skipped because ${this.cleanupBlocked} ${this.#cleanupBlockedReason}; the staging container was left untouched at ${this.container}`,
@@ -254,18 +296,35 @@ abstract class NestedStaging {
     if (!this.stagingStats) {
       return;
     }
-    await inspectPreparedTree(this, expected);
+    await this.inspectTree({ kind: "revalidate", identities: expected });
     const quarantined = await this.quarantineStaging();
     if (!quarantined) {
       return;
     }
     const identities = new Map(expected);
     identities.set("", quarantined.stats);
-    await inspectPreparedTree({ entries: this.entries, staging: quarantined.path }, identities);
+    await this.inspectTree({ kind: "revalidate", identities }, quarantined.path);
     await rm(quarantined.path, { recursive: true });
     this.stagingStats = undefined;
     this.quarantineStats = undefined;
     this.stagedIdentities = undefined;
+  }
+
+  async inspectTree(
+    inspection: TreeInspection,
+    staging = this.staging,
+  ): Promise<Map<string, BigIntStats>> {
+    const tree = { entries: this.entries, staging };
+    switch (inspection.kind) {
+      case "initial":
+        return inspectPreparedTree(tree);
+      case "revalidate":
+        return inspectPreparedTree(tree, inspection.identities);
+      default: {
+        const exhaustive: never = inspection;
+        return exhaustive;
+      }
+    }
   }
 
   private async quarantineStaging(): Promise<
