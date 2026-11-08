@@ -40,7 +40,6 @@ import type {
 import { createEditingTools } from "../src/tools.ts";
 
 import {
-  assertSnapshotCurrent,
   captureSnapshot,
   discardPreparedNestedFiles,
   planNewFile,
@@ -3073,10 +3072,35 @@ nodeTest("snapshot validation detects stale no-change plans", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
     await writeFile(path, "same\n");
-    const snapshot = await captureSnapshot(path);
-    assert.ok(snapshot);
-    await writeFile(path, "changed\n");
-    await assert.rejects(assertSnapshotCurrent(snapshot), /changed before commit/);
+    const result = await writeFiles(
+      {
+        files: [
+          { path: "file.txt", content: "same\n", mode: "replace" },
+          { path: "last.txt", content: "new\n", mode: "create" },
+        ],
+      },
+      directory,
+      undefined,
+      (progress) => {
+        if (progress.startsWith("Publishing file.txt")) {
+          nodeFs.writeFileSync(path, "changed\n");
+        }
+      },
+    );
+    assert.match(result.details.error ?? "", /changed before commit/);
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.deepEqual(
+      result.details.files.map((file) => [file.status, file.editsApplied]),
+      [
+        ["failed", 0],
+        ["unattempted", 0],
+      ],
+    );
+    assert.match(result.summary, /Completed: none\n/);
+    assert.match(result.summary, /Failed or uncertain: file\.txt\n/);
+    assert.match(result.summary, /Unattempted: last\.txt\n/);
+    assert.equal(await readFile(path, "utf8"), "changed\n");
+    await assert.rejects(lstat(join(directory, "last.txt")), /ENOENT/);
   });
 });
 
