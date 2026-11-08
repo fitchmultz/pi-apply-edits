@@ -12,7 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test as nodeTest } from "node:test";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { applyPatchToFiles, writeFiles } from "../src/apply-edits.ts";
@@ -128,6 +128,52 @@ nodeTest(
         // Each variant must settle before another attempt reuses the earlier planned file.
         await verifyMissingEntry(preview, entry);
       }
+    }
+  },
+);
+
+nodeTest(
+  "an unverified deletion reports source uncertainty and keeps the retained entry",
+  async (t) => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-unverified-delete-")));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    const source = join(cwd, "source");
+    await writeFile(source, "retained\n");
+    let retained = "";
+    const originalLstat = nodeFs.promises.lstat;
+    const mock = t.mock.method(
+      nodeFs.promises,
+      "lstat",
+      async (...args: Readonly<Parameters<typeof originalLstat>>) => {
+        const stats = await originalLstat(...args);
+        if (
+          typeof args[0] === "string" &&
+          basename(args[0]) === "entry" &&
+          dirname(dirname(args[0])) === cwd
+        ) {
+          retained = args[0];
+          throw new Error("Fixture retained-entry verification unavailable");
+        }
+        return stats;
+      },
+    );
+    syncBuiltinESMExports();
+    try {
+      const result = await applyPatchToFiles(
+        "*** Begin Patch\n*** Delete File: source\n*** End Patch",
+        cwd,
+      );
+      assert.match(result.details.error ?? "", /Fixture retained-entry verification unavailable/);
+      assert.deepEqual(result.details.modifiedFiles, []);
+      assert.equal(result.details.files[0]?.status, "uncertain");
+      assert(result.summary.includes(`Uncertain paths: ${source}\n`));
+      await assert.rejects(lstat(source), { code: "ENOENT" });
+      assert(retained.length > 0);
+      assert.equal(await readFile(retained, "utf8"), "retained\n");
+      assert(result.summary.includes(`The removed entry may remain at ${retained}.`));
+    } finally {
+      mock.mock.restore();
+      syncBuiltinESMExports();
     }
   },
 );

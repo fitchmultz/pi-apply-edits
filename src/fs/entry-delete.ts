@@ -21,6 +21,11 @@ export async function publishEntryDelete(
   return new EntryDeletion(entry, signal, hooks).run();
 }
 
+type DeletionStage =
+  | { readonly kind: "not-started" }
+  | { readonly kind: "retained-unverified" }
+  | { readonly kind: "deletion-verified" };
+
 /** Owns the retained entry until its deletion is verified and identity-checked cleanup finishes. */
 class EntryDeletion {
   private readonly entry: ReadonlyEntrySnapshot;
@@ -29,8 +34,7 @@ class EntryDeletion {
   private readonly directory: string;
   private readonly retained: string;
   private directoryStats: BigIntStats | undefined;
-  private started = false;
-  private verified = false;
+  private stage: DeletionStage = { kind: "not-started" };
   private readonly warnings: string[] = [];
 
   constructor(
@@ -52,9 +56,9 @@ class EntryDeletion {
       await this.commit();
     } catch (error) {
       failure = new PublicationError(
-        `${errorMessage(error)}${this.started ? ` The removed entry may remain at ${this.retained}.` : ""}`,
-        this.verified ? [this.entry.actualPath] : [],
-        this.started && !this.verified ? [this.entry.actualPath] : [],
+        `${errorMessage(error)}${this.stage.kind !== "not-started" ? ` The removed entry may remain at ${this.retained}.` : ""}`,
+        this.stage.kind === "deletion-verified" ? [this.entry.actualPath] : [],
+        this.stage.kind === "retained-unverified" ? [this.entry.actualPath] : [],
         error,
       );
     }
@@ -76,7 +80,7 @@ class EntryDeletion {
     await assertEntryCurrent(this.entry);
     throwIfAborted(this.signal);
     await rename(this.entry.actualPath, this.retained);
-    this.started = true;
+    this.stage = { kind: "retained-unverified" };
     const moved = await lstat(this.retained, { bigint: true });
     await assertEntryParentCurrent(this.entry);
     if (
@@ -87,7 +91,7 @@ class EntryDeletion {
         `Deletion could not be verified; inspect ${this.entry.actualPath} and retained entry ${this.retained}.`,
       );
     }
-    this.verified = true;
+    this.stage = { kind: "deletion-verified" };
     await this.hooks?.afterCommit?.();
     if (!(await unlinkOwnedPath(this.retained, moved, "Deleted entry"))) {
       throw new Error(
