@@ -78,10 +78,6 @@ abstract class NestedStaging {
   readonly #stagedDirectories = new Set<string>();
   #handle: Awaited<ReturnType<typeof open>> | undefined;
 
-  get discardState(): DiscardState {
-    return this.#discardState;
-  }
-
   /** The writable compatibility flag disables automatic discard; it does not prove removal. */
   get discardAttempted(): boolean {
     return this.#discardState.kind !== "unattempted";
