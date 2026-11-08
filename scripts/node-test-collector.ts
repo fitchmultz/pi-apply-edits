@@ -1,7 +1,12 @@
 import type { Rule, Scope } from "eslint";
 import { dirname } from "node:path";
 import { hasConditionalDirective } from "./lint-directives.ts";
-import { canonicalPath, normalizedFlow, ownedFunctions } from "./node-test-ownership.ts";
+import {
+  assertionSites,
+  canonicalPath,
+  normalizedFlow,
+  ownedFunctions,
+} from "./node-test-ownership.ts";
 import { calleeBinding, callbackTargets } from "./node-test-bindings.ts";
 import {
   callChain,
@@ -29,8 +34,10 @@ import {
   ownsAssertions,
   testCall,
   subtestCall,
-  type CallEvent,
-  type FunctionFlow,
+  type RawCallEvent,
+  type RawFunctionFlow,
+  type ResolvedCallEvent,
+  type ResolvedFunctionFlow,
   type FlowSummary,
   type FlowRegion,
   type ReturnSite,
@@ -42,7 +49,7 @@ import {
 interface SegmentState {
   readonly id: string;
   readonly previous: readonly string[];
-  readonly events: CallEvent[];
+  readonly events: RawCallEvent[];
 }
 interface FrameState {
   readonly id: string;
@@ -253,19 +260,22 @@ export class NodeTestCollector {
       ),
     );
     const local = ancestors.slice(boundary + 1);
-    const event: CallEvent = {
+    const event: RawCallEvent = {
       offset: node.range[0],
       end: node.range[1],
       line: node.loc?.start.line ?? 1,
       binding,
       suffix: resolved.suffix,
       callbacks,
-      promiseCallbacks: promiseCallbacks(scope, node),
-      promiseSources: promiseSources(scope, node),
-      deferred: savedPromise(scope, node, local),
-      promise: promiseExpression(scope, node),
-      settles: settlingConsumer(scope, local, this.context),
+      collection: {
+        kind: "call",
+        promiseCallbacks: promiseCallbacks(scope, node),
+        promiseSources: promiseSources(scope, node),
+        deferred: savedPromise(scope, node, local),
+        promise: promiseExpression(scope, node),
+      },
       ...controlFacts(local, this.context.sourceCode.text, node.range),
+      settles: settlingConsumer(scope, local, this.context),
       handlers: rejectionHandlers(scope, local),
       parallel: parallelTarget(scope, node, resolved, local),
       arguments: node.arguments.map((argument) => this.context.sourceCode.getText(argument)),
@@ -342,7 +352,7 @@ export class NodeTestCollector {
     );
     const local = ancestors.slice(boundary + 1);
     const chain = callChain(scope, argument);
-    const event: CallEvent = {
+    const event: RawCallEvent = {
       offset: range[0],
       end: range[1],
       line: this.context.sourceCode.getLocFromIndex(range[0]).line,
@@ -354,15 +364,18 @@ export class NodeTestCollector {
         ...rejectionHandlers(scope, local),
         ...chain.flatMap((call) => rejectionHandlers(call.scope, [call.node])),
       ],
-      arguments: [],
-      stableArguments: false,
       settles:
         arrayLength(scope, argument) !== undefined ||
         settlingConsumer(scope, local, this.context) ||
         chain.some((call) => settlingConsumer(call.scope, [call.node], this.context)),
-      producers: chain.flatMap((call) =>
-        call.node.range === undefined ? [] : [call.node.range[0]],
-      ),
+      collection: {
+        kind: "consumer",
+        producers: chain.flatMap((call) =>
+          call.node.range === undefined ? [] : [call.node.range[0]],
+        ),
+      },
+      arguments: [],
+      stableArguments: false,
     };
     for (const id of frame.active) {
       frame.segments.get(id)?.events.push(event);
@@ -370,7 +383,7 @@ export class NodeTestCollector {
   }
 
   private readonly report: NonNullable<Rule.RuleListener["Program:exit"]> = () => {
-    const raw: FunctionFlow[] = this.frames
+    const raw: RawFunctionFlow[] = this.frames
       .filter((frame) => frame.function)
       .map((frame) => ({
         start: frame.start,
@@ -397,7 +410,7 @@ export class NodeTestCollector {
     this.checkConditionalAssertions(flows, summaries, contexts);
   };
 
-  private registerSubtests(flows: readonly FunctionFlow[]): void {
+  private registerSubtests(flows: readonly ResolvedFunctionFlow[]): void {
     const contexts = new Set(
       this.registrations.flatMap((entry) => (entry.target === undefined ? [] : [entry.target])),
     );
@@ -420,7 +433,7 @@ export class NodeTestCollector {
     }
   }
 
-  private registerChild(event: CallEvent): readonly number[] {
+  private registerChild(event: ResolvedCallEvent): readonly number[] {
     const target = [...event.callbacks.values()].at(-1);
     this.registrations.push({ offset: event.offset, line: event.line, target });
     return target === undefined ? [] : [target];
@@ -445,7 +458,7 @@ export class NodeTestCollector {
   }
 
   private checkConditionalAssertions(
-    flows: readonly FunctionFlow[],
+    flows: readonly ResolvedFunctionFlow[],
     summaries: ReadonlyMap<number, FlowSummary>,
     contexts: ReadonlySet<number>,
   ): void {
@@ -460,28 +473,16 @@ export class NodeTestCollector {
       wrappers: this.wrappers,
       helpers: this.helpers,
     });
-    for (const flow of flows) {
-      if (!owned.has(flow.start)) {
-        continue;
-      }
-      const sites = flow.segments.flatMap((segment) => segment.events);
-      const consumed = new Set(
-        sites.flatMap((event) => (event.producer === undefined ? [] : [event.producer])),
-      );
-      const events = new Map(
-        sites
-          .filter((event) => event.deferred !== true || !consumed.has(event.offset))
-          .map((event) => [`${event.offset}:${event.producer ?? event.offset}`, event]),
-      );
-      for (const event of events.values()) {
+    for (const flow of flows.filter((candidate) => owned.has(candidate.start))) {
+      for (const event of assertionSites(flow)) {
         this.checkSite(event, flow, summaries, contexts);
       }
     }
   }
 
   private checkSite(
-    event: CallEvent,
-    flow: FunctionFlow,
+    event: ResolvedCallEvent,
+    flow: ResolvedFunctionFlow,
     summaries: ReadonlyMap<number, FlowSummary>,
     contexts: ReadonlySet<number>,
   ): void {

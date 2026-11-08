@@ -3,13 +3,16 @@ import { resolve } from "node:path";
 import {
   assertionCall,
   type AssertionContext,
-  type CallEvent,
+  type CallEvidence,
+  type RawCallEvent,
+  type RawFunctionFlow,
+  type ResolvedCallEvent,
+  type ResolvedFunctionFlow,
   type FlowSummary,
-  type FunctionFlow,
 } from "./test-flow.ts";
 
 export function ownedFunctions(
-  flows: readonly FunctionFlow[],
+  flows: readonly ResolvedFunctionFlow[],
   contexts: ReadonlySet<number>,
   summaries: ReadonlyMap<number, FlowSummary>,
   context: AssertionContext,
@@ -29,7 +32,7 @@ export function ownedFunctions(
 }
 
 function ownedTargets(
-  event: CallEvent,
+  event: ResolvedCallEvent,
   summaries: ReadonlyMap<number, FlowSummary>,
   context: AssertionContext,
 ): readonly number[] {
@@ -55,7 +58,25 @@ function ownedTargets(
   ];
 }
 
-export function normalizedFlow(flow: FunctionFlow, flows: readonly FunctionFlow[]): FunctionFlow {
+export function assertionSites(flow: ResolvedFunctionFlow): Iterable<ResolvedCallEvent> {
+  const sites = flow.segments.flatMap((segment) => segment.events);
+  const consumed = new Set(
+    sites.flatMap((event) => (event.evidence.kind === "consumed" ? [event.evidence.producer] : [])),
+  );
+  return new Map(
+    sites
+      .filter((event) => event.evidence.kind !== "deferred" || !consumed.has(event.offset))
+      .map((event) => [
+        `${event.offset}:${event.evidence.kind === "consumed" ? event.evidence.producer : event.offset}`,
+        event,
+      ]),
+  ).values();
+}
+
+export function normalizedFlow(
+  flow: RawFunctionFlow,
+  flows: readonly RawFunctionFlow[],
+): ResolvedFunctionFlow {
   // Saved asynchronous work receives assertion credit only at a failure-visible consumer.
   const producers = new Map(
     flow.segments
@@ -65,60 +86,53 @@ export function normalizedFlow(flow: FunctionFlow, flows: readonly FunctionFlow[
   );
   const segments = flow.segments.map((segment) => {
     const events = segment.events.flatMap((event) => [
-      normalizeCatches(
-        {
-          ...event,
-          deferred: deferredCall(event, flows),
-          promiseCallbacks: (event.promiseSources ?? []).some((target) =>
-            returnsPromise(target, flows),
-          )
-            ? [...event.callbacks.values()]
-            : event.promiseCallbacks,
-        },
-        flow,
-        flows,
-      ),
-      ...(event.producers ?? []).flatMap((offset) => {
-        const producer = producers.get(offset);
-        return producer === undefined
-          ? []
-          : [
-              normalizeCatches(
-                {
-                  ...producer,
-                  producer: producer.offset,
-                  offset: event.offset,
-                  end: event.end,
-                  line: event.line,
-                  deferred: false,
-                  settles: producer.settles === true || event.settles === true,
-                  conditional: producer.conditional || event.conditional,
-                  controls: [...producer.controls, ...event.controls],
-                  handlers: [...producer.handlers, ...event.handlers],
-                  catches: [...producer.catches, ...event.catches],
-                  finalizers: [...producer.finalizers, ...event.finalizers],
-                },
-                flow,
-                flows,
-              ),
-            ];
+      normalizeCatches(event, flow, flows, {
+        kind: deferredCall(event, flows) ? "deferred" : "immediate",
       }),
+      ...(event.collection.kind === "consumer" ? event.collection.producers : []).flatMap(
+        (offset) => {
+          const producer = producers.get(offset);
+          return producer === undefined
+            ? []
+            : [
+                normalizeCatches(
+                  {
+                    ...producer,
+                    offset: event.offset,
+                    end: event.end,
+                    line: event.line,
+                    conditional: producer.conditional || event.conditional,
+                    controls: [...producer.controls, ...event.controls],
+                    settles: producer.settles || event.settles,
+                    handlers: [...producer.handlers, ...event.handlers],
+                    catches: [...producer.catches, ...event.catches],
+                    finalizers: [...producer.finalizers, ...event.finalizers],
+                  },
+                  flow,
+                  flows,
+                  { kind: "consumed", producer: producer.offset },
+                ),
+              ];
+        },
+      ),
     ]);
     return { id: segment.id, previous: segment.previous, events };
   });
-  return { ...flow, promise: returnsPromise(flow.start, flows), segments };
+  const { promiseReturns: _returns, promiseParameters: _parameters, ...facts } = flow;
+  return { ...facts, promise: returnsPromise(flow.start, flows), segments };
 }
 
-function deferredCall(event: CallEvent, flows: readonly FunctionFlow[]): boolean {
+function deferredCall(event: RawCallEvent, flows: readonly RawFunctionFlow[]): boolean {
   return (
-    event.deferred === true &&
+    event.collection.kind === "call" &&
+    event.collection.deferred &&
     (event.binding.kind === "parameter" || asynchronousCall(event, flows))
   );
 }
 
-function asynchronousCall(event: CallEvent, flows: readonly FunctionFlow[]): boolean {
+function asynchronousCall(event: RawCallEvent, flows: readonly RawFunctionFlow[]): boolean {
   return (
-    event.promise === true ||
+    (event.collection.kind === "call" && event.collection.promise) ||
     (event.binding.target !== undefined &&
       returnsPromise(event.binding.target, flows, event.callbacks))
   );
@@ -126,7 +140,7 @@ function asynchronousCall(event: CallEvent, flows: readonly FunctionFlow[]): boo
 
 function returnsPromise(
   target: number,
-  flows: readonly FunctionFlow[],
+  flows: readonly RawFunctionFlow[],
   callbacks: ReadonlyMap<number, number> = new Map(),
   seen: ReadonlySet<number> = new Set(),
 ): boolean {
@@ -149,26 +163,43 @@ function returnsPromise(
   );
 }
 
-function returningCalls(flow: FunctionFlow | undefined): readonly CallEvent[] {
+function returningCalls(flow: RawFunctionFlow | undefined): readonly RawCallEvent[] {
   return (
     flow?.segments
       .flatMap((segment) => segment.events)
-      .filter((event) => flow.promiseReturns?.includes(event.offset) === true) ?? []
+      .filter((event) => flow.promiseReturns.includes(event.offset)) ?? []
   );
 }
 
+function resolvedCallbacks(
+  event: RawCallEvent,
+  flows: readonly RawFunctionFlow[],
+  evidence: CallEvidence,
+): readonly number[] | undefined {
+  const { collection } = event;
+  if (collection.kind === "consumer") {
+    return undefined;
+  }
+  return evidence.kind !== "consumed" &&
+    collection.promiseSources.some((target) => returnsPromise(target, flows))
+    ? [...event.callbacks.values()]
+    : collection.promiseCallbacks;
+}
+
 function normalizeCatches(
-  event: CallEvent,
-  flow: FunctionFlow,
-  flows: readonly FunctionFlow[],
-): CallEvent {
+  event: RawCallEvent,
+  flow: RawFunctionFlow,
+  flows: readonly RawFunctionFlow[],
+  evidence: CallEvidence,
+): ResolvedCallEvent {
+  const { collection: _collection, settles, handlers, catches, finalizers, ...call } = event;
   const caught =
-    (event.settles === true && (event.producer !== undefined || asynchronousCall(event, flows))) ||
-    event.handlers.some((target) => {
+    (settles && (evidence.kind === "consumed" || asynchronousCall(event, flows))) ||
+    handlers.some((target) => {
       const handler = flows.find((candidate) => candidate.start === target);
       return handler === undefined || handler.returns.length > 0 || handler.throws.length === 0;
     }) ||
-    event.catches.some((start) => {
+    catches.some((start) => {
       const region = flow.regions.find((candidate) => candidate.start === start);
       return (
         region === undefined ||
@@ -176,14 +207,20 @@ function normalizeCatches(
         flow.returnSites.some((site) => site.offset >= region.start && site.offset <= region.end)
       );
     }) ||
-    event.finalizers.some((start) => {
+    finalizers.some((start) => {
       const region = flow.regions.find((candidate) => candidate.start === start);
       return (
         region === undefined ||
         flow.returnSites.some((site) => site.offset >= region.start && site.offset <= region.end)
       );
     });
-  return { ...event, caught, conditional: event.conditional || caught };
+  return {
+    ...call,
+    evidence,
+    caught,
+    conditional: event.conditional || caught,
+    promiseCallbacks: resolvedCallbacks(event, flows, evidence),
+  };
 }
 
 export function canonicalPath(base: string, path: string): string {

@@ -13,7 +13,7 @@ export interface ConditionalControl {
   readonly guard?: number | undefined;
   readonly compared?: readonly [string, string] | undefined;
 }
-export interface CallEvent {
+interface CallSite {
   readonly offset: number;
   readonly end: number;
   readonly line: number;
@@ -21,26 +21,46 @@ export interface CallEvent {
   readonly suffix: string;
   readonly callbacks: ReadonlyMap<number, number>;
   readonly conditional: boolean;
-  readonly caught: boolean;
-  readonly handlers: readonly number[];
-  readonly catches: readonly number[];
-  readonly finalizers: readonly number[];
   readonly parallel?: number | undefined;
   readonly arguments: readonly string[];
   readonly stableArguments: boolean;
   readonly controls: readonly ConditionalControl[];
-  readonly deferred?: boolean;
-  readonly producers?: readonly number[];
-  readonly producer?: number;
-  readonly promiseCallbacks?: readonly number[] | undefined;
-  readonly promiseSources?: readonly number[];
-  readonly promise?: boolean;
-  readonly settles?: boolean;
 }
-export interface FlowSegment {
+interface CollectionContext {
+  readonly handlers: readonly number[];
+  readonly catches: readonly number[];
+  readonly finalizers: readonly number[];
+  readonly settles: boolean;
+}
+export interface RawCallEvent extends CallSite, CollectionContext {
+  readonly collection:
+    | {
+        readonly kind: "call";
+        readonly deferred: boolean;
+        readonly promise: boolean;
+        readonly promiseCallbacks: readonly number[] | undefined;
+        readonly promiseSources: readonly number[];
+      }
+    | { readonly kind: "consumer"; readonly producers: readonly number[] };
+}
+export type CallEvidence =
+  | { readonly kind: "immediate" }
+  | { readonly kind: "deferred" }
+  | { readonly kind: "consumed"; readonly producer: number };
+export interface ResolvedCallEvent extends CallSite {
+  readonly evidence: CallEvidence;
+  readonly caught: boolean;
+  readonly promiseCallbacks: readonly number[] | undefined;
+}
+interface SegmentLinks {
   readonly id: string;
   readonly previous: readonly string[];
-  readonly events: readonly CallEvent[];
+}
+interface RawFlowSegment extends SegmentLinks {
+  readonly events: readonly RawCallEvent[];
+}
+interface ResolvedFlowSegment extends SegmentLinks {
+  readonly events: readonly ResolvedCallEvent[];
 }
 export interface FlowRegion {
   readonly start: number;
@@ -52,19 +72,24 @@ export interface ReturnSite {
   readonly offset: number;
   readonly segments: readonly string[];
 }
-export interface FunctionFlow {
+interface FunctionFacts {
   readonly start: number;
   /** May return a Promise; this is not proof of assertions or callback execution. */
-  readonly promise?: boolean;
-  readonly promiseReturns?: readonly number[];
-  readonly promiseParameters?: readonly number[];
-  readonly segments: readonly FlowSegment[];
+  readonly promise: boolean;
   readonly returns: readonly string[];
   readonly parameterCount: number;
   readonly regions: readonly FlowRegion[];
   readonly returnSites: readonly ReturnSite[];
   readonly throws: readonly string[];
   readonly iterations: readonly FlowRegion[];
+}
+export interface RawFunctionFlow extends FunctionFacts {
+  readonly promiseReturns: readonly number[];
+  readonly promiseParameters: readonly number[];
+  readonly segments: readonly RawFlowSegment[];
+}
+export interface ResolvedFunctionFlow extends FunctionFacts {
+  readonly segments: readonly ResolvedFlowSegment[];
 }
 export interface Registration {
   readonly offset: number;
@@ -111,7 +136,7 @@ const methods = new Set([
   "doesNotMatch",
 ]);
 
-export function assertionCall(event: CallEvent, helpers: readonly AssertionHelper[]): boolean {
+export function assertionCall(event: CallSite, helpers: readonly AssertionHelper[]): boolean {
   if (event.binding.kind !== "import") {
     return false;
   }
@@ -144,7 +169,7 @@ export function testCall(binding: CallBinding, suffix: string): boolean {
   );
 }
 
-export function subtestCall(event: CallEvent, contexts: ReadonlySet<number>): boolean {
+export function subtestCall(event: CallSite, contexts: ReadonlySet<number>): boolean {
   return (
     event.binding.kind === "parameter" &&
     event.binding.parameter === 0 &&
@@ -155,7 +180,7 @@ export function subtestCall(event: CallEvent, contexts: ReadonlySet<number>): bo
 }
 
 export function flowSummaries(
-  flows: readonly FunctionFlow[],
+  flows: readonly ResolvedFunctionFlow[],
   registrations: readonly Registration[],
   helpers: readonly AssertionHelper[],
   wrappers: readonly TestWrapper[],
@@ -178,7 +203,9 @@ export function flowSummaries(
           proves(
             flow,
             (event) =>
-              parameterCall(event, flow.start, index) && event.deferred !== true && !event.caught,
+              parameterCall(event, flow.start, index) &&
+              event.evidence.kind !== "deferred" &&
+              !event.caught,
           ),
         ),
       );
@@ -200,14 +227,14 @@ export function flowSummaries(
         asynchronousCallbacks,
         synchronousCallbacks,
         calledCallbacks,
-        promise: flow.promise === true,
+        promise: flow.promise,
       });
     }
   }
   return summaries;
 }
 
-function parameterCall(event: CallEvent, owner: number, index: number): boolean {
+function parameterCall(event: ResolvedCallEvent, owner: number, index: number): boolean {
   return (
     event.binding.kind === "parameter" &&
     event.binding.owner === owner &&
@@ -216,7 +243,10 @@ function parameterCall(event: CallEvent, owner: number, index: number): boolean 
   );
 }
 
-export function proves(flow: FunctionFlow, satisfies: (event: CallEvent) => boolean): boolean {
+export function proves(
+  flow: ResolvedFunctionFlow,
+  satisfies: (event: ResolvedCallEvent) => boolean,
+): boolean {
   if (flow.returns.length === 0) {
     return false;
   }
@@ -247,7 +277,7 @@ export function proves(flow: FunctionFlow, satisfies: (event: CallEvent) => bool
   return flow.returns.every((id) => guaranteed.get(id) === true);
 }
 
-function skipsOwnedTest(event: CallEvent, contexts: ReadonlySet<number>): boolean {
+function skipsOwnedTest(event: ResolvedCallEvent, contexts: ReadonlySet<number>): boolean {
   return (
     event.binding.kind === "parameter" &&
     event.binding.parameter === 0 &&
@@ -258,7 +288,7 @@ function skipsOwnedTest(event: CallEvent, contexts: ReadonlySet<number>): boolea
 }
 
 function callbackAsserts(
-  event: CallEvent,
+  event: ResolvedCallEvent,
   index: number,
   summaries: ReadonlyMap<number, FlowSummary>,
 ): boolean {
@@ -273,11 +303,11 @@ export interface AssertionContext {
 }
 
 export function ownsAssertions(
-  event: CallEvent,
+  event: ResolvedCallEvent,
   summaries: ReadonlyMap<number, FlowSummary>,
   context: AssertionContext,
 ): boolean {
-  if (event.deferred === true) {
+  if (event.evidence.kind === "deferred") {
     return false;
   }
   if (directAssertions(event, context)) {
@@ -292,14 +322,14 @@ export function ownsAssertions(
   return delegatedAssertions(event, summaries, context.wrappers);
 }
 
-function directAssertions(event: CallEvent, context: AssertionContext): boolean {
+function directAssertions(event: ResolvedCallEvent, context: AssertionContext): boolean {
   return (
     (assertionCall(event, context.helpers) && !event.caught) || skipsOwnedTest(event, context.tests)
   );
 }
 
 function delegatedAssertions(
-  event: CallEvent,
+  event: ResolvedCallEvent,
   summaries: ReadonlyMap<number, FlowSummary>,
   wrappers: readonly TestWrapper[],
 ): boolean {
