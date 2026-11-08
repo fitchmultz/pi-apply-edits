@@ -24,15 +24,15 @@ Restart Pi after you change dependencies.
 
 ## Use the tools
 
-| Task                                                    | Tool            |
-| ------------------------------------------------------- | --------------- |
-| Patch, create, delete, or move files                    | `apply_patch`   |
-| Replace text, replace an anchored range, or insert text | `replace_text`  |
-| Create a file or replace its complete contents          | `write_files`   |
-| Preview a patch without a write                         | `preview_patch` |
+| Task                                                    | Tool           |
+| ------------------------------------------------------- | -------------- |
+| Patch, create, delete, or move files                    | `apply_patch`  |
+| Replace text, replace an anchored range, or insert text | `replace_text` |
+| Create a file or replace its complete contents          | `write_files`  |
 
 Pi selects a tool from your request. Previews are optional.
-Add `"preview": true` to a `replace_text` or `write_files` call to preview its changes.
+Add `"preview": true` to a call to preview its changes. Models that send patches through
+native grammar sampling pass only the patch text, so their `apply_patch` calls always apply.
 
 `create` refuses an existing path. `replace` requires an existing file.
 Creates and moves do not overwrite existing destinations.

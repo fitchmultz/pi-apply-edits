@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="620" viewBox="0 0 1600 620" role="img" aria-labelledby="title desc">
   <title id="title">How pi-apply-edits handles a change</title>
-  <desc id="desc">Pi chooses apply_patch, replace_text, write_files, or preview_patch. Every file is planned first. A writing call publishes and verifies files, while a preview writes nothing. Both return per-file receipts. Writing can leave a partial batch.</desc>
+  <desc id="desc">Pi chooses apply_patch, replace_text, or write_files. Every file is planned first. A writing call publishes and verifies files, while a call with preview: true writes nothing. Both return per-file receipts. Writing can leave a partial batch.</desc>
   <defs>
     <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
       <stop stop-color="#060A12"/>
@@ -76,7 +76,7 @@
     <text x="30" y="151" class="code">apply_patch</text>
     <text x="30" y="200" class="code">replace_text</text>
     <text x="30" y="249" class="code">write_files</text>
-    <text x="30" y="298" class="code">preview_patch</text>
+    <text x="30" y="298" class="copy">or add preview: true</text>
     <rect x="30" y="336" width="206" height="40" rx="20" fill="#172554" stroke="#3B82F6" stroke-opacity="0.50"/>
     <text x="133" y="363" text-anchor="middle" class="chip" fill="#93C5FD">YOUR REQUEST</text>
   </g>

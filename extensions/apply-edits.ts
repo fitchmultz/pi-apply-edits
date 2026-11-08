@@ -24,11 +24,10 @@ export default function editingExtension(pi: ExtensionAPI): void {
     }
     return resolveExecutionCwd(pi, nativeContext);
   });
-  const [apply, replace, write, preview] = tools;
+  const [apply, replace, write] = tools;
   pi.registerTool(apply);
   pi.registerTool(replace);
   pi.registerTool(write);
-  pi.registerTool(preview);
   const ownsTool = (name: string) =>
     tools.some(
       (tool) =>
@@ -101,7 +100,7 @@ function builtinWriterReplacement(
   return async () => {
     stopWatching ??= onUnsupportedFilesystem(restore);
     const active = pi.getActiveTools();
-    if (!active.some((name) => name !== "preview_patch" && ownsTool(name)) || keepBuiltins(pi)) {
+    if (!active.some((name) => ownsTool(name)) || keepBuiltins(pi)) {
       return;
     }
     if (!(await supportsExistingFileReplacement())) {

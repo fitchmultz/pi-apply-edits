@@ -464,10 +464,7 @@ nodeTest(
                 { input: patch("same.txt", "before", "nested"), preview: true },
               ]) {
                 // Each nested call's identifier and policy result depends on prior registration order.
-                const result = await ctx.executeTool(
-                  input.preview === true ? "preview_patch" : "apply_patch",
-                  { input: input.input },
-                );
+                const result = await ctx.executeTool("apply_patch", input);
                 nestedResults.push(result);
               }
               nestedResults.push(
@@ -543,7 +540,13 @@ nodeTest(
     const createBody = "\uFEFFcreated\r\nmixed\n";
     scriptCalls(session, [
       [call("compose", {}, "compose")],
-      [call("preview-patch", { input: patch("same.txt", "before", "preview") }, "preview_patch")],
+      [
+        call(
+          "preview-patch",
+          { input: patch("same.txt", "before", "preview"), preview: true },
+          "apply_patch",
+        ),
+      ],
       [call("bad-anchor", { input: patch("same.txt", "missing", "bad") }, "apply_patch")],
       [call("denied", { files: [{ path: "denied", content: "bad", mode: "create" }] })],
       [call("apply-patch", { input: patch("same.txt", "before", "changed") }, "apply_patch")],
@@ -610,6 +613,13 @@ nodeTest(
           preview: "true",
         }),
       ],
+      [
+        call(
+          "invalid-patch-preview",
+          { input: patch("same.txt", "done", "bad"), preview: "false" },
+          "apply_patch",
+        ),
+      ],
     ]);
     await session.prompt("Run the local scripted tool flow.");
     await session.waitForIdle();
@@ -625,6 +635,7 @@ nodeTest(
       "invalid-alias",
       "unknown-field",
       "invalid-preview",
+      "invalid-patch-preview",
     ]) {
       assert.equal(results.get(id)?.isError, true, id);
     }
@@ -678,7 +689,12 @@ nodeTest(
     assert.partialDeepStrictEqual(seen.get("create"), {
       files: [{ path: join(other, "created"), content: createBody }],
     });
-    for (const id of ["invalid-alias", "unknown-field", "invalid-preview"]) {
+    for (const id of [
+      "invalid-alias",
+      "unknown-field",
+      "invalid-preview",
+      "invalid-patch-preview",
+    ]) {
       assert.equal(seen.has(id), false, id);
     }
     assert.equal(await readFile(join(cwd, "same.txt"), "utf8"), "done\n");
