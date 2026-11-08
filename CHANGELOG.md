@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Restore only the writer registrations hidden by this extension after a filesystem refusal. An unrelated custom writer registered under the same name keeps its existing selection.
 - Honour cancellation before case-only and Unicode respelling renames. Recheck replacement identity and content after hooks and after rename, retaining already published content in failure receipts.
 - Remove `preview_patch`. Add top-level `preview: true` to an `apply_patch` call instead; models that send patches through native grammar sampling pass only the patch text, so their patches always apply.
 - Report a replacement conflict truthfully: when the earlier content changes during commit, the error now says the edit was published to the target, instead of saying the target was left untouched.
