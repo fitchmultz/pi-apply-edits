@@ -85,8 +85,7 @@ for (const writer of [
   const owner = writer === "owner-first" || writer === "owner-last";
   const custom = writer === "custom" || writer === "shared-schema";
   const editor = fileURLToPath(new URL("../extensions/apply-edits.ts", import.meta.url));
-  const companion =
-    "git:github.com/fitchmultz/pi-change-working-dir@c55109c12f23e240389719ae22c9240c846692fc";
+  const companion = fileURLToPath(import.meta.resolve("pi-change-working-dir/index.ts"));
   const extensionPaths = owner ? [companion, editor] : [];
   if (writer === "owner-last") {
     extensionPaths.reverse();
@@ -96,6 +95,7 @@ for (const writer of [
     { skip },
     async (t) => {
       const cwd = await fixture(t);
+
       const settings = SettingsManager.inMemory({});
       const runtime = await ModelRuntime.create({
         credentials: new InMemoryCredentialStore(),
@@ -125,6 +125,13 @@ for (const writer of [
       });
       await loader.reload({ resolveProjectTrust: async () => false });
       assert.deepEqual(loader.getExtensions().errors, []);
+      assert.deepEqual(
+        loader
+          .getExtensions()
+          .extensions.filter((extension) => !extension.path.startsWith("<"))
+          .map((extension) => extension.resolvedPath),
+        extensionPaths,
+      );
       const { session } = await createAgentSession({
         cwd,
         agentDir: join(cwd, "agent"),

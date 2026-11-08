@@ -18,6 +18,19 @@ npm ci --ignore-scripts
 npm run check:compat
 ```
 
+`npm ci` installs the real `pi-change-working-dir` 0.6.0 source pinned to a Git
+commit for companion integration tests. The project `.npmrc` uses npm 12.2.0's
+[`allow-git=root`](https://docs.npmjs.com/cli/v12/using-npm/config#allow-git) to
+allow directly declared Git dependencies. Transitive Git dependencies remain
+blocked, and lifecycle-script permissions are unchanged.
+
+The tests load the installed companion package without fetching resources. After
+installation, run the complete checks with Pi's automatic network activity disabled:
+
+```sh
+PI_OFFLINE=1 npm run check:compat
+```
+
 Use `npm run lint:agent` for diagnostics, `npm run lint:fix` for ordinary fixes,
 and `npm run format` for formatting. Inspect fixes before committing.
 
