@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { ExtensionAPI, ExtensionContext, SourceInfo } from "@earendil-works/pi-coding-agent";
 import {
   onUnsupportedFilesystem,
@@ -83,11 +84,26 @@ function builtinWriterReplacement(
   pi: ExtensionAPI,
   ownsTool: (name: string) => boolean,
 ): () => Promise<void> {
-  const replaced = new Set<string>();
+  const replaced = new Map<string, ReturnType<ExtensionAPI["getAllTools"]>[number]>();
   let stopWatching: (() => void) | undefined;
   const restore = () => {
+    if (replaced.size === 0) {
+      return;
+    }
     const active = pi.getActiveTools();
-    const restored = [...replaced].filter((name) => !active.includes(name));
+    const registered = pi.getAllTools();
+    const restored = [...replaced]
+      .filter(
+        ([name, hidden]) =>
+          !active.includes(name) &&
+          registered.some(
+            (tool) =>
+              tool.name === name &&
+              tool.parameters === hidden.parameters &&
+              isDeepStrictEqual(tool.sourceInfo, hidden.sourceInfo),
+          ),
+      )
+      .map(([name]) => name);
     replaced.clear();
     if (restored.length > 0) {
       pi.setActiveTools([...active, ...restored]);
@@ -96,6 +112,7 @@ function builtinWriterReplacement(
   pi.on("session_shutdown", () => {
     stopWatching?.();
     stopWatching = undefined;
+    replaced.clear();
   });
   return async () => {
     stopWatching ??= onUnsupportedFilesystem(restore);
@@ -106,7 +123,7 @@ function builtinWriterReplacement(
     if (!(await supportsExistingFileReplacement())) {
       return;
     }
-    const replaceable = new Set(
+    const replaceable = new Map(
       pi
         .getAllTools()
         .filter(
@@ -114,10 +131,13 @@ function builtinWriterReplacement(
             (item.name === "edit" || item.name === "write") &&
             (item.sourceInfo.source === "builtin" || isDirectoryOwner(item.sourceInfo)),
         )
-        .map((item) => item.name),
+        .map((item) => [item.name, item]),
     );
-    for (const name of active.filter((item) => replaceable.has(item))) {
-      replaced.add(name);
+    for (const name of active) {
+      const registration = replaceable.get(name);
+      if (registration !== undefined) {
+        replaced.set(name, registration);
+      }
     }
     pi.setActiveTools(active.filter((name) => !replaceable.has(name)));
   };
