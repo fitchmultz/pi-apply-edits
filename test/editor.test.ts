@@ -323,6 +323,18 @@ nodeTest(
     assert.equal(await readlink(join(cwd, "moved")), "target");
     assert.equal(await readFile(join(cwd, "target"), "utf8"), "untouched\n");
     assert.deepEqual(
+      result.details.files.map((file) => [
+        file.bytesBefore,
+        file.bytesAfter,
+        file.addedLines,
+        file.deletedLines,
+      ]),
+      [
+        [6, 6, undefined, undefined],
+        [6, 0, undefined, undefined],
+      ],
+    );
+    assert.deepEqual(
       new Set(result.details.modifiedFiles),
       new Set(["link", "moved", "dangling"].map((path) => join(cwd, path))),
     );

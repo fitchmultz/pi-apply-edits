@@ -23,6 +23,41 @@ export class BatchPublicationError extends Error {
     this.details = details;
   }
 }
+type ReceiptEvidence = Omit<FileReceipt, "status" | "editsApplied">;
+type FileProgress = { readonly evidence: ReceiptEvidence } & (
+  | { readonly stage: "unreached" | "planned" }
+  | {
+      readonly stage: "completed";
+      readonly outcome: "applied" | "unchanged";
+      /** Completion order preserves warning order when groups finish later input indices first. */
+      readonly completionOrder: number;
+    }
+  | { readonly stage: "failed"; readonly outcome: "failed" | "uncertain" }
+);
+function serializeReceipt(file: FileProgress): FileReceipt {
+  let status: FileStatus;
+  switch (file.stage) {
+    case "unreached":
+      status = "unattempted";
+      break;
+    case "planned":
+      status = file.evidence.operation === "no_change" ? "unchanged" : "unattempted";
+      break;
+    case "completed":
+    case "failed":
+      status = file.outcome;
+      break;
+    default: {
+      const exhaustive: never = file;
+      return exhaustive;
+    }
+  }
+  return {
+    ...file.evidence,
+    status,
+    editsApplied: status === "applied" ? file.evidence.editsRequested : 0,
+  };
+}
 /** Pi's read tool expands `~` and `~/`, so a literal cwd-relative `~` must not read as home. */
 function literalTilde(display: string): string {
   return display === "~" || display.startsWith("~/") ? `./${display}` : display;
@@ -96,7 +131,7 @@ function receiptContent(
     ...counts,
   };
 }
-function receiptForPlan(plan: PlannedMutation, preview: boolean): FileReceipt {
+function receiptForPlan(plan: PlannedMutation, preview: boolean): ReceiptEvidence {
   const patch = boundedPatch(plan.displayPath, plan.originalText, plan.nextText);
   const counts =
     patch === undefined
@@ -106,13 +141,11 @@ function receiptForPlan(plan: PlannedMutation, preview: boolean): FileReceipt {
     path: plan.inputPath,
     operation: plan.operation,
     editsRequested: plan.editsRequested,
-    editsApplied: 0,
     matches: plan.matches,
     ...receiptContent(plan, counts),
     diff: patch ?? "[Diff omitted: input size or diff work exceeded the bounded budget.]",
     diffTruncated: patch === undefined,
     warnings: [],
-    status: plan.operation === "no_change" ? "unchanged" : "unattempted",
     ...(preview ? { preview: true } : {}),
     ...(plan.operation === "move" ? { moveTo: plan.movePlan.destination.inputPath } : {}),
   };
@@ -129,12 +162,11 @@ function inputOperation(input: MutationInput): ApplyEditsDetails["operation"] {
   }
   return input.requireMissing === true ? "create" : "rewrite";
 }
-function emptyReceipt(input: MutationInput, cwd: string): FileReceipt {
+function emptyReceipt(input: MutationInput, cwd: string): ReceiptEvidence {
   return {
     path: resolveInputPath(input.path, cwd),
     operation: inputOperation(input),
     editsRequested: 0,
-    editsApplied: 0,
     matches: [],
     bytesBefore: 0,
     bytesAfter: 0,
@@ -143,7 +175,6 @@ function emptyReceipt(input: MutationInput, cwd: string): FileReceipt {
     diff: "",
     diffTruncated: false,
     warnings: [],
-    status: "unattempted",
     ...(input.patch?.moveTo === undefined
       ? {}
       : { moveTo: resolveInputPath(input.patch.moveTo, cwd) }),
@@ -181,7 +212,11 @@ export function failedExecution(
       : {
           files:
             isArrayInput(files) && cwd !== undefined
-              ? files.filter(hasStringPath).map((file) => emptyReceipt(file, cwd))
+              ? files
+                  .filter(hasStringPath)
+                  .map((file) =>
+                    serializeReceipt({ stage: "unreached", evidence: emptyReceipt(file, cwd) }),
+                  )
               : [],
           modifiedFiles: [],
           ...(preview ? { preview: true } : {}),
@@ -292,17 +327,19 @@ export function describeBatch(details: ApplyEditsBatchDetails, cwd: string): Edi
 
 /** Owns mutable progress; published receipts are replaced, never mutated through input aliases. */
 export class BatchReceipts {
-  private readonly files: FileReceipt[];
+  private readonly files: FileProgress[];
   private readonly modifiedFiles: string[] = [];
-  private readonly completed = new Set<number>();
   private readonly preview: boolean;
   constructor(inputs: readonly MutationInput[], cwd: string, preview: boolean) {
-    this.files = inputs.map((input) => emptyReceipt(input, cwd));
+    this.files = inputs.map((input) => ({
+      stage: "unreached",
+      evidence: emptyReceipt(input, cwd),
+    }));
     this.preview = preview;
   }
   snapshot(): ApplyEditsBatchDetails {
     return {
-      files: [...this.files],
+      files: this.files.map(serializeReceipt),
       modifiedFiles: [...new Set(this.modifiedFiles)],
       ...(this.preview ? { preview: true } : {}),
     };
@@ -312,35 +349,50 @@ export class BatchReceipts {
   }
   fail(indices: readonly number[]): void {
     for (const index of indices) {
-      this.setStatus(index, "failed");
+      this.files[index] = {
+        stage: "failed",
+        outcome: "failed",
+        evidence: required(this.files[index]).evidence,
+      };
     }
   }
   plan(index: number, plan: PlannedMutation): void {
-    this.files[index] = receiptForPlan(plan, this.preview);
+    this.files[index] = { stage: "planned", evidence: receiptForPlan(plan, this.preview) };
   }
   hasCompleted(index: number): boolean {
-    return this.completed.has(index);
+    return this.files[index]?.stage === "completed";
   }
   completedCount(): number {
-    return this.completed.size;
+    return this.files.filter((file) => file.stage === "completed").length;
+  }
+  private completedIndices(): number[] {
+    return this.files
+      .flatMap((file, index) =>
+        file.stage === "completed" ? [{ index, order: file.completionOrder }] : [],
+      )
+      .sort((a, b) => a.order - b.order)
+      .map((file) => file.index);
   }
   warnings(index: number, warnings: readonly string[]): void {
     const file = required(this.files[index]);
-    this.files[index] = { ...file, warnings: [...file.warnings, ...warnings] };
+    this.files[index] = {
+      ...file,
+      evidence: { ...file.evidence, warnings: [...file.evidence.warnings, ...warnings] },
+    };
   }
   complete(index: number, plan: PlannedMutation): void {
-    this.completed.add(index);
-    this.setStatus(index, plan.operation === "no_change" ? "unchanged" : "applied");
+    this.recordCompleted(index, plan.operation === "no_change" ? "unchanged" : "applied");
     if (plan.operation !== "no_change") {
       this.modifiedFiles.push(...committedPaths(plan));
     }
   }
-  private setStatus(index: number, status: FileStatus): void {
+  private recordCompleted(index: number, outcome: "applied" | "unchanged"): void {
     const file = required(this.files[index]);
     this.files[index] = {
-      ...file,
-      status,
-      editsApplied: status === "applied" ? file.editsRequested : 0,
+      stage: "completed",
+      outcome,
+      evidence: file.evidence,
+      completionOrder: file.stage === "completed" ? file.completionOrder : this.completedCount(),
     };
   }
   private recordPublicationFailure(
@@ -354,18 +406,21 @@ export class BatchReceipts {
     }
     const verified = new Set(this.modifiedFiles);
     for (const index of group) {
-      if (this.completed.has(index)) {
+      if (this.hasCompleted(index)) {
         continue;
       }
       const paths = committedPaths(required(plans[index]));
-      let status: FileStatus = "failed";
       if (paths.some((path) => uncertain.includes(path))) {
-        status = "uncertain";
+        this.files[index] = {
+          stage: "failed",
+          outcome: "uncertain",
+          evidence: required(this.files[index]).evidence,
+        };
       } else if (paths.every((path) => verified.has(path))) {
-        status = "applied";
-        this.completed.add(index);
+        this.recordCompleted(index, "applied");
+      } else {
+        this.fail([index]);
       }
-      this.setStatus(index, status);
     }
     return uncertain;
   }
@@ -376,22 +431,23 @@ export class BatchReceipts {
     plans: readonly PlannedMutation[],
   ): BatchPublicationError {
     const uncertain = this.recordPublicationFailure(error, group, plans);
-    const failed = group.filter((item) => !this.completed.has(item));
+    const completed = this.completedIndices();
+    const failed = group.filter((item) => !this.hasCompleted(item));
     const names = (indices: readonly number[]): string =>
       indices.length > 0
         ? indices.map((item) => required(plans[item]).displayPath).join(", ")
         : "none";
     const verified = [...new Set(this.modifiedFiles)];
     const earlierWarnings = [
-      ...new Set([...this.completed].flatMap((item) => required(this.files[item]).warnings)),
+      ...new Set(completed.flatMap((item) => required(this.files[item]).evidence.warnings)),
     ];
     const unattempted = plans.flatMap((_, item) =>
-      this.completed.has(item) || failed.includes(item) ? [] : [item],
+      this.hasCompleted(item) || failed.includes(item) ? [] : [item],
     );
     return this.failure(
       `Multi-file batch failed while publishing files[${index}] (${required(plans[index]).displayPath}) after ${verified.length} verified path change${verified.length === 1 ? "" : "s"}. ${errorMessage(error)}\n` +
         `Verified committed paths: ${verified.length > 0 ? verified.join(", ") : "none"}\nUncertain paths: ${uncertain.length > 0 ? uncertain.join(", ") : "none"}\n` +
-        `Completed: ${names([...this.completed].sort((a, b) => a - b))}\nFailed or uncertain: ${names(failed)}\nUnattempted: ${names(unattempted)}\n` +
+        `Completed: ${names(completed.sort((a, b) => a - b))}\nFailed or uncertain: ${names(failed)}\nUnattempted: ${names(unattempted)}\n` +
         "Inspect failed/uncertain paths and any retained recovery files before retrying; do not replay the whole batch." +
         (earlierWarnings.length > 0
           ? ` Earlier warnings from completed files: ${earlierWarnings.join(" ")}`
