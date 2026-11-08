@@ -6,12 +6,21 @@ import { errorMessage, isCode, throwIfAborted } from "./errors.ts";
 import { readStableRegularEntry, sameIdentity, samePublishedState } from "./observation.ts";
 import { assertNewFilePlanCurrent } from "./planning.ts";
 
-export interface ExclusiveCreateOutcome {
-  readonly completed: boolean;
-  readonly publicationStarted: boolean;
-  readonly retainTemporary: boolean;
-  readonly error?: unknown;
-}
+export type ExclusiveCreateOutcome =
+  | { readonly kind: "verified" }
+  | { readonly kind: "before-visible-failure"; readonly error: unknown }
+  | {
+      readonly kind: "visible-unverified-failure";
+      readonly sourceCleanup: "eligible" | "retain";
+      readonly error: unknown;
+    };
+
+type ExclusiveTarget =
+  | { readonly kind: "not-visible" }
+  | { readonly kind: "visible-unidentified" }
+  | { readonly kind: "incomplete"; readonly stats: BigIntStats; readonly path: string }
+  | { readonly kind: "content-verified"; readonly path: string }
+  | { readonly kind: "location-unknown" };
 
 /** Owns the exclusive-create descriptor and incomplete-file recovery when hard linking is unavailable. */
 export async function publishExclusiveCreate(
@@ -29,11 +38,7 @@ class ExclusiveCreation {
   private readonly temporary: string;
   private readonly signal: AbortSignal | undefined;
   private handle: Awaited<ReturnType<typeof open>> | undefined;
-  private targetStats: BigIntStats | undefined;
-  private targetActualPath: string | undefined;
-  private writeCompleted = false;
-  private publicationStarted = false;
-  private retainTemporary = false;
+  private target: ExclusiveTarget = { kind: "not-visible" };
 
   constructor(plan: ReadonlyNewFilePlan, bytes: Buffer, temporary: string, signal?: AbortSignal) {
     this.plan = plan;
@@ -45,7 +50,7 @@ class ExclusiveCreation {
   async run(): Promise<ExclusiveCreateOutcome> {
     try {
       await this.create();
-      return { completed: true, publicationStarted: true, retainTemporary: true };
+      return { kind: "verified" };
     } catch (error) {
       await this.handle?.close().catch(() => {
         // Preserve the original write failure while identity-checked target recovery runs.
@@ -57,12 +62,20 @@ class ExclusiveCreation {
       } catch (recoveryError) {
         failure = recoveryError;
       }
-      return {
-        completed: false,
-        publicationStarted: this.publicationStarted,
-        retainTemporary: this.retainTemporary,
-        error: failure,
-      };
+      return this.failureOutcome(failure);
+    }
+  }
+
+  private failureOutcome(error: unknown): ExclusiveCreateOutcome {
+    switch (this.target.kind) {
+      case "not-visible":
+        return { kind: "before-visible-failure", error };
+      case "visible-unidentified":
+      case "incomplete":
+        return { kind: "visible-unverified-failure", sourceCleanup: "eligible", error };
+      case "content-verified":
+      case "location-unknown":
+        return { kind: "visible-unverified-failure", sourceCleanup: "retain", error };
     }
   }
 
@@ -71,14 +84,14 @@ class ExclusiveCreation {
     await assertNewFilePlanCurrent(this.plan);
     throwIfAborted(this.signal);
     this.handle = await open(target, "wx", 0o666);
-    this.publicationStarted = true;
-    this.targetStats = await this.handle.stat({ bigint: true });
-    this.targetActualPath = target;
+    this.target = { kind: "visible-unidentified" };
+    const targetStats = await this.handle.stat({ bigint: true });
+    this.target = { kind: "incomplete", stats: targetStats, path: target };
     const pathStats = await lstat(target, { bigint: true });
     if (
       !pathStats.isFile() ||
       pathStats.isSymbolicLink() ||
-      !sameIdentity(this.targetStats, pathStats)
+      !sameIdentity(targetStats, pathStats)
     ) {
       throw new Error(`Created file path changed during publication: ${target}.`);
     }
@@ -93,8 +106,7 @@ class ExclusiveCreation {
     if (!samePublishedState(copied, state.stats) || !state.bytes.equals(this.bytes)) {
       throw new Error(`Created file changed during publication: ${target}.`);
     }
-    this.writeCompleted = true;
-    this.retainTemporary = true;
+    this.target = { kind: "content-verified", path: target };
     try {
       await assertNewFilePlanCurrent(this.plan);
     } catch (parentError) {
@@ -106,12 +118,12 @@ class ExclusiveCreation {
   }
 
   private async recoverFailure(error: unknown): Promise<void> {
-    if (this.targetStats && !this.writeCompleted && this.targetActualPath !== undefined) {
-      await this.removeIncompleteTarget(error);
+    if (this.target.kind === "incomplete") {
+      await this.removeIncompleteTarget(this.target, error);
     }
-    if (this.targetStats) {
+    if (this.target.kind === "content-verified") {
       throw new Error(
-        `Create failed after ${this.targetActualPath ?? this.plan.targetPath} became visible. It may be partial and was left untouched: ${errorMessage(error)}`,
+        `Create failed after ${this.target.path} became visible. It may be partial and was left untouched: ${errorMessage(error)}`,
         { cause: error },
       );
     }
@@ -123,12 +135,11 @@ class ExclusiveCreation {
     }
   }
 
-  private async removeIncompleteTarget(error: unknown): Promise<void> {
-    const stats = this.targetStats;
-    const path = this.targetActualPath;
-    if (!stats || path === undefined) {
-      return;
-    }
+  private async removeIncompleteTarget(
+    target: Extract<ExclusiveTarget, { kind: "incomplete" }>,
+    error: unknown,
+  ): Promise<void> {
+    const { stats, path } = target;
     let removed: boolean;
     try {
       removed = await unlinkOwnedPath(path, stats, "Incomplete fallback create file");
@@ -139,12 +150,11 @@ class ExclusiveCreation {
       );
     }
     if (!removed) {
-      this.retainTemporary = true;
+      this.target = { kind: "location-unknown" };
       throw new Error(
         "Create publication location changed after exclusive open. Commit status is uncertain; inspect the moved parent.",
       );
     }
-    this.targetStats = undefined;
-    this.publicationStarted = false;
+    this.target = { kind: "not-visible" };
   }
 }
