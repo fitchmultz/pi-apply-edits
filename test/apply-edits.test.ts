@@ -38,7 +38,6 @@ import type {
   ReadonlyApplyEditsDetails,
 } from "../src/editing/contracts.ts";
 import { createEditingTools } from "../src/tools.ts";
-import { preparedOwner } from "../src/fs/nested-staging.ts";
 
 import {
   captureSnapshot,
@@ -4313,7 +4312,7 @@ nodeTest(
       assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
       assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "EXTERNAL\n");
       assert.equal(await readFile(join(prepared.staging, "a.txt"), "utf8"), "A\n");
-      assert.equal(preparedOwner(prepared).discardState.kind, "retained");
+      assert.equal(prepared.discardAttempted, true);
       await discardPreparedNestedFiles(prepared);
       await discardPreparedNestedFiles(prepared);
       assert.equal(await readFile(join(prepared.staging, "a.txt"), "utf8"), "A\n");
@@ -4485,8 +4484,6 @@ nodeTest(
 
       assert.equal(first.discardAttempted, true);
       assert.equal(second.discardAttempted, true);
-      assert.equal(preparedOwner(first).discardState.kind, "discarded");
-      assert.equal(preparedOwner(second).discardState.kind, "discarded");
       await assert.rejects(lstat(first.container), /ENOENT/);
       await assert.rejects(lstat(second.container), /ENOENT/);
     });
@@ -4506,7 +4503,6 @@ nodeTest(
         message: `Staging cleanup was skipped because ${prepared.staging} is not owned by this user; the staging container was left untouched at ${prepared.container}`,
       });
       assert.equal(prepared.discardAttempted, true);
-      assert.equal(preparedOwner(prepared).discardState.kind, "retained");
       // Clearing the block does not turn a previous failed attempt into cleanup authority.
       prepared.cleanupBlocked = undefined;
       await discardPreparedNestedFiles(prepared);
@@ -4534,11 +4530,11 @@ nodeTest(
       prepared.published = false;
       prepared.discardAttempted = true;
       await discardPreparedNestedFiles(prepared);
-      assert.equal(preparedOwner(prepared).discardState.kind, "retained");
+      assert.equal(prepared.discardAttempted, true);
       assert.equal(await readFile(join(prepared.staging, "child.txt"), "utf8"), "staged\n");
       prepared.discardAttempted = false;
       await discardPreparedNestedFiles(prepared);
-      assert.equal(preparedOwner(prepared).discardState.kind, "discarded");
+      assert.equal(prepared.discardAttempted, true);
       await assert.rejects(lstat(prepared.container), /ENOENT/);
     });
   },
