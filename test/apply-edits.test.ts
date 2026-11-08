@@ -3477,6 +3477,91 @@ nodeTest(
   },
 );
 
+for (const boundary of [
+  { method: "stat", closes: 1, bytes: "" },
+  { method: "close", closes: 2, bytes: "created\n" },
+] as const) {
+  nodeTest(
+    `nested fallback closes its descriptor and retains uncertainty after first ${boundary.method} failure`,
+    { skip: process.platform === "win32" || process.platform === "android" },
+    async () => {
+      await inTemporaryDirectory(async (directory) => {
+        const target = join(await realpath(directory), "missing", "file");
+        const originalLink = nodeFs.promises.link;
+        const originalOpen = nodeFs.promises.open;
+        let closes = 0;
+        let closed = false;
+        await withRacingEditing(
+          (mock) => {
+            mock.method(
+              nodeFs.promises,
+              "link",
+              async (...args: Readonly<Parameters<typeof originalLink>>) => {
+                if (filePath(args[1]) === target) {
+                  throw Object.assign(new Error("forced link failure"), { code: "EPERM" });
+                }
+                return originalLink(...args);
+              },
+            );
+            mock.method(
+              nodeFs.promises,
+              "open",
+              async (...args: Readonly<Parameters<typeof originalOpen>>) => {
+                const handle = await originalOpen(...args);
+                if (filePath(args[0]) !== target || args[1] !== "wx") {
+                  return handle;
+                }
+                if (boundary.method === "stat") {
+                  mock.method(
+                    handle,
+                    "stat",
+                    async () => {
+                      throw new Error("forced first stat failure");
+                    },
+                    { times: 1 },
+                  );
+                }
+                const close = handle.close.bind(handle);
+                mock.method(handle, "close", async () => {
+                  closes += 1;
+                  if (boundary.method === "close" && closes === 1) {
+                    throw new Error("forced first close failure");
+                  }
+                  await close();
+                  closed = true;
+                });
+                return handle;
+              },
+            );
+          },
+          async (module) => {
+            const result = await module.writeFiles(
+              { files: [{ path: "missing/file", content: "created\n", mode: "create" }] },
+              directory,
+            );
+            assert.match(
+              result.details.error ?? "",
+              new RegExp(`forced first ${boundary.method} failure`),
+            );
+            assert.deepEqual(result.details.modifiedFiles, []);
+            assert.equal(
+              result.details.error?.split("\n").find((line) => line.startsWith("Uncertain paths:")),
+              `Uncertain paths: ${target}`,
+            );
+            assert.deepEqual(
+              result.details.files.map(({ path, status }) => ({ path, status })),
+              [{ path: join(directory, "missing", "file"), status: "uncertain" }],
+            );
+          },
+        );
+        assert.equal(closes, boundary.closes);
+        assert.equal(closed, true);
+        assert.equal(await readFile(target, "utf8"), boundary.bytes);
+      });
+    },
+  );
+}
+
 nodeTest("nested create staging failures are detected before earlier batch writes", async () => {
   await inTemporaryDirectory(async (directory) => {
     const sentinel = join(directory, "sentinel.txt");
