@@ -34,7 +34,6 @@ import {
 } from "./observation.ts";
 import { assertNewFilePlanCurrent, TraversalDirectories } from "./planning.ts";
 import { clonePrivateFile, replacementSupportInfo } from "./platform.ts";
-import { inspectPreparedTree } from "./staged-tree.ts";
 
 async function discardOwnedCandidate(
   path: string,
@@ -61,6 +60,45 @@ export async function publishPreparedNestedFiles(
   return new NestedPublication(prepared, signal).run();
 }
 
+/** Counts published targets separately from ordered evidence, which can also include move sources. */
+class NestedPublicationEvidence {
+  private readonly targets: string[] = [];
+  private readonly verified = new Set<string>();
+  private readonly uncertain = new Set<string>();
+
+  get targetCount(): number {
+    return this.targets.length;
+  }
+
+  recordPublished(target: string, modifiedFiles: readonly string[] = [target]): void {
+    this.targets.push(target);
+    for (const path of modifiedFiles) {
+      this.verified.add(path);
+    }
+  }
+
+  recordFailure(target: string, error: PublicationError): void {
+    for (const path of error.modifiedFiles) {
+      this.verified.add(path);
+    }
+    for (const path of error.uncertainFiles) {
+      this.uncertain.add(path);
+    }
+    if (error.modifiedFiles.includes(target) || error.uncertainFiles.includes(target)) {
+      this.targets.push(target);
+    }
+  }
+
+  partialFailure(error: unknown, location: string): PartialCreatePublishError {
+    return new PartialCreatePublishError(
+      `${errorMessage(error)} Partial create publication retained ${this.targetCount} file${this.targetCount === 1 ? "" : "s"} at ${this.targets.join(", ")}; ${location}`,
+      this.targetCount,
+      [...this.verified],
+      [...new Set([...this.uncertain, ...this.targets.filter((path) => !this.verified.has(path))])],
+    );
+  }
+}
+
 /** Owns root reservation and ordered publication, while private staging retains its cleanup owner. */
 class NestedPublication {
   private readonly prepared: ReadonlyPreparedNestedFiles;
@@ -69,9 +107,7 @@ class NestedPublication {
   private readonly directories = new Map<string, BigIntStats>();
   private readonly traversal = new TraversalDirectories();
   private readonly stagedAfterPublish: Map<string, BigIntStats>;
-  private readonly publishedFiles: string[] = [];
-  private readonly verifiedFiles: string[] = [];
-  private readonly uncertainFiles: string[] = [];
+  private readonly evidence = new NestedPublicationEvidence();
 
   constructor(prepared: ReadonlyPreparedNestedFiles, signal?: AbortSignal) {
     this.prepared = prepared;
@@ -93,7 +129,7 @@ class NestedPublication {
       await this.cleanupCommittedStaging();
       return this.stagingOwner.warnings;
     } catch (error) {
-      if (this.publishedFiles.length > 0) {
+      if (this.evidence.targetCount > 0) {
         throw await this.partialFailure(error);
       }
       await this.cleanupUncommitted(error);
@@ -117,7 +153,10 @@ class NestedPublication {
     await this.prepared.hooks?.beforeDirectoryCommit?.({ staging, target: publishRoot });
     throwIfAborted(this.signal);
     await this.assertPlansCurrent();
-    await inspectPreparedTree(this.prepared, this.prepared.stagedIdentities);
+    const identities = this.prepared.stagedIdentities;
+    await this.stagingOwner.inspectTree(
+      identities ? { kind: "revalidate", identities } : { kind: "initial" },
+    );
     await assertNewFilePlanCurrent(firstPlan);
     await this.prepared.hooks?.beforeRootReserve?.({ staging, target: publishRoot });
     throwIfAborted(this.signal);
@@ -243,16 +282,11 @@ class NestedPublication {
           support,
           this.signal,
         );
-        this.publishedFiles.push(target);
-        this.verifiedFiles.push(target);
+        this.evidence.recordPublished(target);
       }
     } catch (error) {
       if (error instanceof PublicationError) {
-        this.verifiedFiles.push(...error.modifiedFiles);
-        this.uncertainFiles.push(...error.uncertainFiles);
-        if (error.modifiedFiles.includes(target) || error.uncertainFiles.includes(target)) {
-          this.publishedFiles.push(target);
-        }
+        this.evidence.recordFailure(target, error);
       }
       throw error;
     }
@@ -285,8 +319,8 @@ class NestedPublication {
         ? await this.publishPrivateCopy(plan, candidate)
         : await publishMoveDestination(plan, candidate, this.signal)),
     );
-    this.publishedFiles.push(join(this.prepared.publishRoot, relative));
-    this.verifiedFiles.push(join(this.prepared.publishRoot, relative), move.entry.actualPath);
+    const target = join(this.prepared.publishRoot, relative);
+    this.evidence.recordPublished(target, [target, move.entry.actualPath]);
     if (move.snapshot) {
       this.stagedAfterPublish.set(relative, (await readStableFile(source)).stats);
     }
@@ -327,7 +361,10 @@ class NestedPublication {
 
   private async finalizeDirectories(): Promise<void> {
     await assertPublishedDirectoriesCurrent(this.directories);
-    await inspectPreparedTree(this.prepared, this.stagedAfterPublish);
+    await this.stagingOwner.inspectTree({
+      kind: "revalidate",
+      identities: this.stagedAfterPublish,
+    });
     const ancestorMode = (await stat(this.prepared.firstPlan.ancestorPath, { bigint: true })).mode;
     const modes = new Map<string, bigint>();
     for (const [path, stats] of [...this.directories].sort(
@@ -381,7 +418,7 @@ class NestedPublication {
   }
 
   private async partialFailure(error: unknown): Promise<PartialCreatePublishError> {
-    this.stagingOwner.discardAttempted = true;
+    this.stagingOwner.retain(error);
     let location: string;
     try {
       location = (await currentOwnedPath(
@@ -394,17 +431,7 @@ class NestedPublication {
     } catch {
       location = `private staging could not be verified at ${this.prepared.staging}; the published files may remain linked to it.`;
     }
-    return new PartialCreatePublishError(
-      `${errorMessage(error)} Partial create publication retained ${this.publishedFiles.length} file${this.publishedFiles.length === 1 ? "" : "s"} at ${this.publishedFiles.join(", ")}; ${location}`,
-      this.publishedFiles.length,
-      [...new Set(this.verifiedFiles)],
-      [
-        ...new Set([
-          ...this.uncertainFiles,
-          ...this.publishedFiles.filter((path) => !this.verifiedFiles.includes(path)),
-        ]),
-      ],
-    );
+    return this.evidence.partialFailure(error, location);
   }
 
   private async cleanupUncommitted(error: unknown): Promise<void> {

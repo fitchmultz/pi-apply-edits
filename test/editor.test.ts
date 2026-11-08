@@ -85,6 +85,68 @@ nodeTest(
   },
 );
 
+nodeTest(
+  "nested directory finalization failure keeps verified moves and creates applied",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const cwd = await fixture(t);
+    const root = join(cwd, "nested");
+    await writeFile(join(cwd, "source"), "before\n");
+    const originalOpen = nodeFs.promises.open;
+    let finalizations = 0;
+    await withRacingEditing(
+      (mock) => {
+        mock.method(
+          nodeFs.promises,
+          "open",
+          async (...args: Readonly<Parameters<typeof originalOpen>>) => {
+            const handle = await originalOpen(...args);
+            if (args[0] === root) {
+              mock.method(handle, "chmod", async () => {
+                finalizations++;
+                throw Object.assign(new Error("directory finalization failed"), { code: "EIO" });
+              });
+            }
+            return handle;
+          },
+        );
+      },
+      async (module) => {
+        const result = await module.applyPatchToFiles(
+          patch(
+            "*** Update File: source\n*** Move to: nested/moved\n@@\n-before\n+after",
+            "*** Add File: nested/new\n+created",
+            "*** Add File: unreached\n+later",
+          ),
+          cwd,
+        );
+        assert.match(result.details.error ?? "", /directory finalization failed/);
+        assert.match(result.details.error ?? "", /Partial create publication retained 2 files/);
+        assert.match(result.details.error ?? "", /Uncertain paths: none\n/);
+        assert.deepEqual(
+          result.details.modifiedFiles,
+          ["nested/moved", "source", "nested/new"].map((path) => join(cwd, path)),
+        );
+        assert.deepEqual(
+          result.details.files.map((file) => file.status),
+          ["applied", "applied", "unattempted"],
+        );
+      },
+    );
+    assert.equal(finalizations, 1);
+    assert.equal(await readFile(join(root, "moved"), "utf8"), "after\n");
+    assert.equal(await readFile(join(root, "new"), "utf8"), "created\n");
+    await assert.rejects(lstat(join(cwd, "source")), { code: "ENOENT" });
+    await assert.rejects(lstat(join(cwd, "unreached")), { code: "ENOENT" });
+    const staging = (await readdir(cwd)).filter((path) => path.endsWith(".tmpdir"));
+    assert.equal(staging.length, 1, "batch discard must retain partial publication staging");
+    assert.equal(
+      await readFile(join(cwd, staging[0] ?? "", "publish", "new"), "utf8"),
+      "created\n",
+    );
+  },
+);
+
 nodeTest("a patch naming one file twice gets patch-specific recovery advice", async (t) => {
   const cwd = await fixture(t);
   await writeFile(join(cwd, "a.txt"), "old\n");
