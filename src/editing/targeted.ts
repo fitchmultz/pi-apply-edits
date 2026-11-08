@@ -8,6 +8,7 @@ import {
   type MatchResult,
   type Replacement,
   type MatchStrategy,
+  type InsertPosition,
 } from "./contracts.ts";
 import { findMatch, toReplacement, type MatchAttempt } from "./matching.ts";
 import { missingEditMessage } from "./diagnostics.ts";
@@ -64,6 +65,21 @@ function validateEditChange(edit: ReadonlyTargetedEdit, index: number): void {
       `edits[${index}] would make no change because oldText and newText are identical`,
     );
   }
+}
+type EditMode =
+  | { readonly kind: "replace"; readonly applyAll: boolean }
+  | { readonly kind: "range"; readonly endText: string; readonly applyAll: false }
+  | { readonly kind: "insert"; readonly direction: InsertPosition; readonly applyAll: boolean };
+
+function editMode(edit: ReadonlyTargetedEdit): EditMode {
+  if (edit.endText !== undefined) {
+    return { kind: "range", endText: edit.endText, applyAll: false };
+  }
+  const applyAll = edit.all === true;
+  if (edit.insert !== undefined) {
+    return { kind: "insert", direction: edit.insert, applyAll };
+  }
+  return { kind: "replace", applyAll };
 }
 function combinedStrategy(start: MatchStrategy, end: MatchStrategy): MatchStrategy {
   if (start === "indent-normalized" || end === "indent-normalized") {
@@ -140,6 +156,7 @@ function endMatchAfter(
 function rangeMatch(
   content: string,
   edit: ReadonlyTargetedEdit,
+  endText: string,
   location: EditLocation,
 ): MatchAttempt {
   const startMatch = findMatch(content, {
@@ -153,7 +170,7 @@ function rangeMatch(
   }
   assertUniqueRange(startMatch, location, "oldText");
   const start = required(startMatch.replacements[0]);
-  const endMatch = endMatchAfter(content, start, required(edit.endText), location);
+  const endMatch = endMatchAfter(content, start, endText, location);
   assertUniqueRange(endMatch, location, "endText");
   const end = required(endMatch.replacements[0]);
   return {
@@ -168,12 +185,8 @@ function rangeMatch(
     ],
   };
 }
-function assertUnique(
-  match: MatchResult,
-  edit: ReadonlyTargetedEdit,
-  location: EditLocation,
-): void {
-  if (edit.all === true || match.replacements.length <= 1) {
+function assertUnique(match: MatchResult, applyAll: boolean, location: EditLocation): void {
+  if (applyAll || match.replacements.length <= 1) {
     return;
   }
   const lines = match.replacements.slice(0, 8).map((item) => item.line);
@@ -182,37 +195,39 @@ function assertUnique(
     `edits[${location.index}].oldText matched ${match.replacements.length} locations in ${location.path} (lines ${lines.join(", ")}${suffix}). Add enough surrounding text to make it unique, or set all: true only when every match should change. No changes were written.`,
   );
 }
-function preserveCrLf(content: string, item: Replacement, edit: ReadonlyTargetedEdit): Replacement {
+function preserveCrLf(content: string, item: Replacement, mode: EditMode): Replacement {
+  const insert = mode.kind === "insert" ? mode.direction : undefined;
   // Consume an unmatched CRLF half only if replacement/insertion supplies a newline.
   const joinsStart = content[item.matchStart] === "\n" && content[item.matchStart - 1] === "\r";
   const joinsEnd = content[item.matchEnd - 1] === "\r" && content[item.matchEnd] === "\n";
   const start =
-    joinsStart && (edit.insert !== undefined || /^[\r\n]/.test(item.text))
+    joinsStart && (insert !== undefined || /^[\r\n]/.test(item.text))
       ? item.matchStart - 1
       : item.matchStart;
   const end =
-    joinsEnd && (edit.insert !== undefined || hasFinalLineEnding(item.text))
+    joinsEnd && (insert !== undefined || hasFinalLineEnding(item.text))
       ? item.matchEnd + 1
       : item.matchEnd;
-  return toReplacement({ start, end, text: item.text, line: item.line }, edit.insert);
+  return toReplacement({ start, end, text: item.text, line: item.line }, insert);
 }
 function effectiveReplacements(
   content: string,
   match: MatchResult,
-  edit: ReadonlyTargetedEdit,
+  mode: EditMode,
   location: EditLocation,
 ): readonly Replacement[] {
-  assertUnique(match, edit, location);
-  const candidates =
-    edit.all === true ? nonOverlapping(match.replacements) : match.replacements.slice(0, 1);
-  const selected = candidates.map((item) => preserveCrLf(content, item, edit));
+  assertUnique(match, mode.applyAll, location);
+  const candidates = mode.applyAll
+    ? nonOverlapping(match.replacements)
+    : match.replacements.slice(0, 1);
+  const selected = candidates.map((item) => preserveCrLf(content, item, mode));
   if (hasOverlaps(selected)) {
     throw new Error(
       `edits[${location.index}] has overlapping matches in ${location.path}. Add more surrounding text so matches do not overlap. No changes were written.`,
     );
   }
   const effective =
-    edit.insert !== undefined
+    mode.kind === "insert"
       ? selected
       : selected.filter((item) => content.slice(item.start, item.end) !== item.text);
   if (effective.length === 0) {
@@ -241,17 +256,18 @@ export function applyTargetedEdits(
   const matches: AppliedEditDetail[] = [];
   for (const [index, edit] of edits.entries()) {
     validateEdit(edit, index);
+    const mode = editMode(edit);
     const location = { path: displayPath, index };
     const match =
-      edit.endText === undefined
-        ? findMatch(current, {
+      mode.kind === "range"
+        ? rangeMatch(current, edit, mode.endText, location)
+        : findMatch(current, {
             oldText: edit.oldText,
             newText: edit.newText,
-            insert: edit.insert,
-            applyAll: edit.all === true,
+            insert: mode.kind === "insert" ? mode.direction : undefined,
+            applyAll: mode.applyAll,
             maxResultLength,
-          })
-        : rangeMatch(current, edit, location);
+          });
     if (match.strategy === "missing") {
       throw new Error(
         missingEditMessage(current, {
@@ -262,7 +278,7 @@ export function applyTargetedEdits(
         }),
       );
     }
-    const effective = effectiveReplacements(current, match, edit, location);
+    const effective = effectiveReplacements(current, match, mode, location);
     current = applyReplacements(current, effective, maxResultLength);
     matches.push({
       index,

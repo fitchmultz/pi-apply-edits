@@ -801,14 +801,15 @@ nodeTest("request size limits bound files and ordered edits", async () => {
   );
 });
 
-nodeTest("a failed ordered batch leaves the file byte-for-byte unchanged", async () => {
-  await inTemporaryDirectory(async (directory) => {
-    const path = join(directory, "file.txt");
-    const original = Buffer.from("one\ntwo\n");
-    await writeFile(path, original);
+nodeTest(
+  "a failed ordered batch validates only reached edits and leaves the file unchanged",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const path = join(directory, "file.txt");
+      const original = Buffer.from("one\ntwo\n");
+      await writeFile(path, original);
 
-    await assertFailure(
-      replaceTextInFiles(
+      const result = await replaceTextInFiles(
         {
           files: [
             {
@@ -816,19 +817,25 @@ nodeTest("a failed ordered batch leaves the file byte-for-byte unchanged", async
               edits: [
                 { oldText: "one", newText: "changed" },
                 { oldText: "missing", newText: "never" },
+                { oldText: "two", endText: "two", newText: "", all: true },
               ],
             },
           ],
         },
         directory,
-      ),
-      /No changes were written/,
-    );
-
-    assert.deepEqual(await readFile(path), original);
-    assert.deepEqual((await readdir(directory)).sort(), ["file.txt"]);
-  });
-});
+      );
+      assert.match(result.details.error ?? "", /Could not find edits\[1\]\.oldText/);
+      assert.match(result.details.error ?? "", /No changes were written/);
+      assert.deepEqual(result.details.modifiedFiles, []);
+      assert.deepEqual(
+        result.details.files.map((file) => [file.path, file.status]),
+        [[path, "failed"]],
+      );
+      assert.deepEqual(await readFile(path), original);
+      assert.deepEqual((await readdir(directory)).sort(), ["file.txt"]);
+    });
+  },
+);
 
 nodeTest("rewrite creation is explicit and creates parent directories", async () => {
   await inTemporaryDirectory(async (directory) => {
