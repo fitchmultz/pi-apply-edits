@@ -5,6 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test as nodeTest, type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -73,7 +74,23 @@ nodeTest(
   },
 );
 
-for (const writer of ["builtin", "custom", "shared-schema", "shutdown"] as const) {
+for (const writer of [
+  "builtin",
+  "custom",
+  "shared-schema",
+  "shutdown",
+  "owner-first",
+  "owner-last",
+] as const) {
+  const owner = writer === "owner-first" || writer === "owner-last";
+  const custom = writer === "custom" || writer === "shared-schema";
+  const editor = fileURLToPath(new URL("../extensions/apply-edits.ts", import.meta.url));
+  const companion =
+    "git:github.com/fitchmultz/pi-change-working-dir@c55109c12f23e240389719ae22c9240c846692fc";
+  const extensionPaths = owner ? [companion, editor] : [];
+  if (writer === "owner-last") {
+    extensionPaths.reverse();
+  }
   nodeTest(
     `refused publication restores only suppressed registrations: ${writer}`,
     { skip },
@@ -87,6 +104,7 @@ for (const writer of ["builtin", "custom", "shared-schema", "shutdown"] as const
         allowModelNetwork: false,
         refreshOnCreate: false,
       });
+
       let api: ExtensionAPI | undefined;
       const loader = new DefaultResourceLoader({
         cwd,
@@ -97,8 +115,9 @@ for (const writer of ["builtin", "custom", "shared-schema", "shutdown"] as const
         noPromptTemplates: true,
         noThemes: true,
         noContextFiles: true,
+        additionalExtensionPaths: extensionPaths,
         extensionFactories: [
-          editingExtension,
+          ...(owner ? [] : [editingExtension]),
           (pi) => {
             api = pi;
           },
@@ -131,7 +150,18 @@ for (const writer of ["builtin", "custom", "shared-schema", "shutdown"] as const
         api.getActiveTools(),
         initiallyActive.filter((name) => name !== "edit" && name !== "write"),
       );
-      if (writer === "custom" || writer === "shared-schema") {
+      assert.equal(
+        api.getAllTools().find((tool) => tool.name === "write")?.sourceInfo.source,
+        owner ? "cli" : "builtin",
+      );
+      assert.equal(
+        api
+          .getAllTools()
+          .find((tool) => tool.name === "write")
+          ?.sourceInfo.path.endsWith("/pi-change-working-dir/index.ts"),
+        owner,
+      );
+      if (custom) {
         api.registerTool({
           name: "write",
           label: "Unrelated writer",
@@ -154,7 +184,7 @@ for (const writer of ["builtin", "custom", "shared-schema", "shutdown"] as const
       // A manual selection is kept in place, not re-ordered by restoration.
       api.setActiveTools([
         ...api.getActiveTools().filter((name) => name !== "read"),
-        ...(writer === "custom" || writer === "shared-schema" ? ["edit"] : []),
+        ...(custom ? ["edit"] : []),
       ]);
       const beforeRefusal = api.getActiveTools();
       const runner = session.extensionRunner;
@@ -183,7 +213,7 @@ for (const writer of ["builtin", "custom", "shared-schema", "shutdown"] as const
       });
       assert.deepEqual(
         api.getActiveTools(),
-        writer === "builtin" ? [...beforeRefusal, "edit", "write"] : beforeRefusal,
+        writer === "builtin" || owner ? [...beforeRefusal, "edit", "write"] : beforeRefusal,
       );
       api.setActiveTools([...EDITING_TOOL_NAMES, "unrelated"]);
       const manuallySelected = api.getActiveTools();

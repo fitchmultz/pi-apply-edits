@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
-import type { ExtensionAPI, ExtensionContext, SourceInfo } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  SourceInfo,
+  ToolInfo,
+} from "@earendil-works/pi-coding-agent";
 import {
   onUnsupportedFilesystem,
   releaseMacosAclHelper,
@@ -84,26 +88,20 @@ function builtinWriterReplacement(
   pi: ExtensionAPI,
   ownsTool: (name: string) => boolean,
 ): () => Promise<void> {
-  const replaced = new Map<string, ReturnType<ExtensionAPI["getAllTools"]>[number]>();
+  const replaced = new Set<string>();
   let stopWatching: (() => void) | undefined;
   const restore = () => {
     if (replaced.size === 0) {
       return;
     }
     const active = pi.getActiveTools();
-    const registered = pi.getAllTools();
-    const restored = [...replaced]
-      .filter(
-        ([name, hidden]) =>
-          !active.includes(name) &&
-          registered.some(
-            (tool) =>
-              tool.name === name &&
-              tool.parameters === hidden.parameters &&
-              isDeepStrictEqual(tool.sourceInfo, hidden.sourceInfo),
-          ),
-      )
-      .map(([name]) => name);
+    const eligible = new Set(
+      pi
+        .getAllTools()
+        .filter(isReplaceableWriter)
+        .map((tool) => tool.name),
+    );
+    const restored = [...replaced].filter((name) => !active.includes(name) && eligible.has(name));
     replaced.clear();
     if (restored.length > 0) {
       pi.setActiveTools([...active, ...restored]);
@@ -123,24 +121,24 @@ function builtinWriterReplacement(
     if (!(await supportsExistingFileReplacement())) {
       return;
     }
-    const replaceable = new Map(
+    const replaceable = new Set(
       pi
         .getAllTools()
-        .filter(
-          (item) =>
-            (item.name === "edit" || item.name === "write") &&
-            (item.sourceInfo.source === "builtin" || isDirectoryOwner(item.sourceInfo)),
-        )
-        .map((item) => [item.name, item]),
+        .filter(isReplaceableWriter)
+        .map((tool) => tool.name),
     );
-    for (const name of active) {
-      const registration = replaceable.get(name);
-      if (registration !== undefined) {
-        replaced.set(name, registration);
-      }
+    for (const name of active.filter((item) => replaceable.has(item))) {
+      replaced.add(name);
     }
     pi.setActiveTools(active.filter((name) => !replaceable.has(name)));
   };
+}
+
+function isReplaceableWriter(tool: Readonly<ToolInfo>): boolean {
+  return (
+    (tool.name === "edit" || tool.name === "write") &&
+    (tool.sourceInfo.source === "builtin" || isDirectoryOwner(tool.sourceInfo))
+  );
 }
 
 /** Edit calls in one agent run reuse a macOS ACL helper, which exits once the run settles. */
