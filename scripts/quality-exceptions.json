@@ -192,7 +192,7 @@
     "path": "test/transport.test.ts",
     "rule": "node-test/no-conditional-assertions",
     "id": "QX-003",
-    "selector": "test `${api}: streamed edits and replay survive grammar → JSON → grammar model switches` > else native > assert.partialDeepStrictEqual(definition.parameters, { type: \"object\", required: [\"input\"], properties: { input: { type: \"string\" } }, })",
+    "selector": "test `${api}: streamed edits and replay survive grammar → JSON → grammar model switches` > else native > assert.partialDeepStrictEqual(definition.parameters, { type: \"object\", required: [\"input\"], properties: { input: { type: \"string\" }, preview: { type: \"boolean\" } }, })",
     "count": 1
   }
 ]

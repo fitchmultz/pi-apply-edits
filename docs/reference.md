@@ -17,11 +17,10 @@ independently of Node's installation and retains support for tools alongside Nod
 If `PREFIX` is unset, it also searches the inherited `PATH`; relative and empty
 entries resolve against the process working directory.
 
-All four tools are registered by default, subject to Pi's tool selections and
-exclusions. When an owned mutation tool is active and replacement is supported,
-Pi's default `edit` and `write` are hidden. Unrelated custom/remote writers remain
-active. Preview-only selections do not hide writers or run publication probes.
-To retain the default writers too, use `--apply-edits-with-builtins` or
+All three tools are registered by default, subject to Pi's tool selections and
+exclusions. When an owned tool is active and replacement is supported, Pi's
+default `edit` and `write` are hidden. Unrelated custom/remote writers remain
+active. To retain the default writers too, use `--apply-edits-with-builtins` or
 `PI_APPLY_EDITS_KEEP_BUILTINS=1`.
 
 On macOS and Linux, the first publication on each filesystem probes it with
@@ -42,12 +41,11 @@ guidance rather than silently using a different directory.
 
 ## Choose a tool
 
-| Task                                                  | Tool            |
-| ----------------------------------------------------- | --------------- |
-| Focused changes across one or more files              | `apply_patch`   |
-| Repeated replacements, large anchored ranges, inserts | `replace_text`  |
-| New files or complete replacements                    | `write_files`   |
-| Read-only patch inspection                            | `preview_patch` |
+| Task                                                  | Tool           |
+| ----------------------------------------------------- | -------------- |
+| Focused changes across one or more files              | `apply_patch`  |
+| Repeated replacements, large anchored ranges, inserts | `replace_text` |
+| New files or complete replacements                    | `write_files`  |
 
 Each call plans all its files before publication. A later publication failure can
 still leave a partial batch; inspect the receipt instead of replaying the entire call.
@@ -55,9 +53,9 @@ Previews are optional, never a required extra editing step.
 
 ### Patches
 
-`apply_patch` accepts one string, `input`. Models supporting native grammar tools
-send patch text directly; other models use the same string in a normal JSON call.
-`preview_patch` has the identical input format.
+`apply_patch` accepts one string, `input`, and an optional `preview` flag. Models
+supporting native grammar tools send patch text directly and cannot set `preview`;
+other models use the same string in a normal JSON call and can add `preview: true`.
 
 ```text
 *** Begin Patch
@@ -183,7 +181,7 @@ always use exact content. Invalid Unicode and NUL-containing text are rejected.
 
 ## Previews and receipts
 
-Use `preview_patch`, or top-level `preview: true` on `replace_text` and `write_files`.
+Add top-level `preview: true` to `apply_patch`, `replace_text`, or `write_files`.
 Previews read current files and produce planned diffs without writes, staging,
 permission-to-write requirements, or publication probes. They are not cached plans
 or a guarantee that publication will succeed; applying re-reads and validates again.
@@ -243,7 +241,7 @@ writes from a successful tool name, patch text, or intended file list.
 
 Version 1 removes the executable `apply_edits` tool, compact retry handles, argument
 aliases, and JSON-string repairs. Update explicit tool allowlists and consumer
-hooks to the four names above. Both structured tools use one `files` array, even
+hooks to the names above. Both structured tools use one `files` array, even
 for a single file. Use explicit `write_files` modes instead of `onMissing` and
 `requireMissing`; use `replace_text` for existing replacement/range/insert workloads.
 The package name, extension entry path, and keep-builtins switches are unchanged.

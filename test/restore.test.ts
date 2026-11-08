@@ -63,7 +63,7 @@ nodeTest(
         settingsManager: settings,
         resourceLoader: loader,
         sessionManager: manager,
-        tools: ["read", "preview_patch"],
+        tools: ["read", "apply_patch"],
       });
       await created.session.bindExtensions({
         mode: "print",
@@ -73,7 +73,7 @@ nodeTest(
     };
     session = await create(SessionManager.create(cwd, join(cwd, "sessions")));
     assert(api);
-    api.setActiveTools(["read", "preview_patch"]);
+    api.setActiveTools(["read", "apply_patch"]);
     // Persist the native loadout without a provider request.
     session.sessionManager.appendMessage({
       role: "system",
@@ -98,10 +98,10 @@ nodeTest(
     const before = session.sessionManager.getEntries();
     await session.reload();
     assert.deepEqual(session.sessionManager.getEntries(), before);
-    assert.deepEqual(api.getActiveTools(), ["read", "preview_patch"]);
+    assert.deepEqual(api.getActiveTools(), ["read", "apply_patch"]);
     session.dispose();
     session = await create(SessionManager.open(file));
     assert.deepEqual(session.sessionManager.getEntries(), before);
-    assert.deepEqual(api.getActiveTools(), ["read", "preview_patch"]);
+    assert.deepEqual(api.getActiveTools(), ["read", "apply_patch"]);
   },
 );

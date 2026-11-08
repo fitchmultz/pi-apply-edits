@@ -86,23 +86,23 @@ nodeTest(
     const tools = createEditingTools(() => cwd);
     const input =
       "*** Begin Patch\n*** Update File: link/../target\n@@\n-native\n+changed\n*** End Patch";
-    async function verifyPatchAdmission(name: string): Promise<void> {
-      const tool = tools.find((candidate) => candidate.name === name);
+    async function verifyPatchAdmission(preview: boolean): Promise<void> {
+      const tool = tools.find((candidate) => candidate.name === "apply_patch");
       assert(tool?.prepareArguments);
-      const prepared = tool.prepareArguments({ input });
+      const prepared = tool.prepareArguments({ input, preview });
       assert("input" in prepared && typeof prepared.input === "string");
       assert(prepared.input.includes(`${cwd}/link/../target`));
-      const result = await applyPatchToFiles(prepared.input, cwd, name === "preview_patch");
+      const result = await applyPatchToFiles(prepared.input, cwd, prepared.preview === true);
       assert.equal(result.details.error, undefined, result.summary);
       assert.equal(
         await readFile(join(cwd, "actual", "target"), "utf8"),
-        name === "preview_patch" ? "native\n" : "changed\n",
+        preview ? "native\n" : "changed\n",
       );
       assert.equal(await readFile(join(cwd, "target"), "utf8"), "lexical\n");
     }
-    for (const name of ["preview_patch", "apply_patch"]) {
+    for (const preview of [true, false]) {
       // Preview must observe the original bytes before execution changes the same target.
-      await verifyPatchAdmission(name);
+      await verifyPatchAdmission(preview);
     }
   },
 );

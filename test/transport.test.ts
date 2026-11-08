@@ -325,31 +325,29 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
                 return tool.name;
               })
               .sort(),
-            ["apply_patch", "preview_patch", "replace_text", "write_files"],
+            ["apply_patch", "replace_text", "write_files"],
           );
-          for (const name of ["apply_patch", "preview_patch"]) {
-            const definition: Readonly<Record<string, unknown>> | undefined = request.tools.find(
-              (tool) => tool.name === name,
-            );
-            assert(definition);
-            assert.equal(definition.type, native ? "custom" : "function");
-            if (native) {
-              // Exhaustive transport variants validate native grammar or JSON parameters, never omit a schema.
-              // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
-              assert.deepEqual(definition.format, {
-                type: "grammar",
-                syntax: "lark",
-                definition: PATCH_GRAMMAR,
-              });
-            } else {
-              // Exhaustive transport variants validate the function-call schema when native grammar is absent.
-              // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
-              assert.partialDeepStrictEqual(definition.parameters, {
-                type: "object",
-                required: ["input"],
-                properties: { input: { type: "string" } },
-              });
-            }
+          const definition: Readonly<Record<string, unknown>> | undefined = request.tools.find(
+            (tool) => tool.name === "apply_patch",
+          );
+          assert(definition);
+          assert.equal(definition.type, native ? "custom" : "function");
+          if (native) {
+            // Exhaustive transport variants validate native grammar or JSON parameters, never omit a schema.
+            // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
+            assert.deepEqual(definition.format, {
+              type: "grammar",
+              syntax: "lark",
+              definition: PATCH_GRAMMAR,
+            });
+          } else {
+            // Exhaustive transport variants validate the function-call schema when native grammar is absent.
+            // oxlint-disable-next-line node-test/no-conditional-assertions -- QX-003: Exhaustive variants retain their assertions.
+            assert.partialDeepStrictEqual(definition.parameters, {
+              type: "object",
+              required: ["input"],
+              properties: { input: { type: "string" }, preview: { type: "boolean" } },
+            });
           }
         }
         const latest = f.requests.at(-1);

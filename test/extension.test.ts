@@ -52,7 +52,7 @@ const patch = (path: string, before = "before", after = "after") =>
   `*** Begin Patch\n*** Update File: ${path}\n@@\n-${before}\n+${after}\n*** End Patch`;
 
 nodeTest(
-  "registers exactly four focused tools with native grammar and no legacy alias",
+  "registers exactly three focused tools with native grammar and no legacy alias",
   async (t) => {
     const { tools } = await harness(t);
     assert.deepEqual([...tools.keys()], EDITING_TOOL_NAMES);
@@ -62,15 +62,13 @@ nodeTest(
       assert.equal("freeform" in tool, false);
       assert(!JSON.stringify(tool.parameters).includes('"retry"'));
     }
-    for (const name of ["apply_patch", "preview_patch"]) {
-      const tool = tools.get(name);
-      assert(tool);
-      assert.equal(
-        tool.constrainedSampling === false ? false : tool.constrainedSampling?.type,
-        "grammar",
-      );
-      assert.partialDeepStrictEqual(tool.parameters, { required: ["input"] });
-    }
+    const patchTool = tools.get("apply_patch");
+    assert(patchTool);
+    assert.equal(
+      patchTool.constrainedSampling === false ? false : patchTool.constrainedSampling?.type,
+      "grammar",
+    );
+    assert.partialDeepStrictEqual(patchTool.parameters, { required: ["input"] });
   },
 );
 
@@ -86,16 +84,9 @@ nodeTest(
         ? ["read", ...EDITING_TOOL_NAMES]
         : ["read", "edit", "write", ...EDITING_TOOL_NAMES],
     );
-    await Promise.all(
-      [
-        ["edit", "write"],
-        ["edit", "write", "preview_patch"],
-      ].map(async (active) => {
-        const selected = await harness(t, active);
-        await selected.session.extensionRunner.emit({ type: "session_start", reason: "new" });
-        assert.deepEqual(selected.state.active, active);
-      }),
-    );
+    const selected = await harness(t, ["edit", "write"]);
+    await selected.session.extensionRunner.emit({ type: "session_start", reason: "new" });
+    assert.deepEqual(selected.state.active, ["edit", "write"]);
     const flagged = await harness(t, undefined, true);
     await flagged.session.extensionRunner.emit({ type: "session_start", reason: "new" });
     assert(flagged.state.active.includes("write"));
@@ -239,7 +230,7 @@ nodeTest(
   async (t) => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-preview-")));
     t.after(() => rm(directory, { recursive: true, force: true }));
-    const [, , write, preview] = createEditingTools();
+    const [apply, , write] = createEditingTools();
     const fixture = await harness(t, EDITING_TOOL_NAMES, false, directory);
     const ctx = fixture.session.extensionRunner.createToolContext(
       "preview",
@@ -268,13 +259,14 @@ nodeTest(
       mixed.details.files.map((file) => file.status),
       ["unchanged", "unattempted"],
     );
-    const failed = await preview.execute(
+    const failed = await apply.execute(
       "failed-preview",
       {
         input:
           "*** Begin Patch\n*** Update File: planned\n@@\n-before\n+after\n" +
           "*** Update File: same\n@@\n-missing\n+after\n" +
           "*** Add File: unreached\n+never written\n*** End Patch",
+        preview: true,
       },
       undefined,
       undefined,
@@ -300,7 +292,7 @@ nodeTest(
         labels: ["same (no_change; unchanged)", "planned (rewrite; planned preview)"],
       },
       {
-        tool: preview,
+        tool: apply,
         result: failed,
         labels: [
           "planned (patch; planned preview)",

@@ -15,12 +15,7 @@ import { bindPatchPaths, parsePatch, PATCH_GRAMMAR } from "./patch.ts";
 import { editingResultRenderer } from "./tool-rendering.ts";
 import { receiptSchema, toolResult } from "./tool-results.ts";
 
-export const EDITING_TOOL_NAMES = [
-  "apply_patch",
-  "replace_text",
-  "write_files",
-  "preview_patch",
-] as const;
+export const EDITING_TOOL_NAMES = ["apply_patch", "replace_text", "write_files"] as const;
 const pathSchema = Type.String({
   minLength: 1,
   description:
@@ -35,6 +30,7 @@ export const patchSchema = Type.Object(
       description:
         "Patch between *** Begin Patch and *** End Patch. Headers: *** Add File:, *** Update File: (optional *** Move to:), *** Delete File:. Prefix context with one space, removals with -, additions with +; @@ starts a chunk.",
     }),
+    preview: previewSchema,
   },
   { additionalProperties: false },
 );
@@ -120,7 +116,7 @@ type Details = ApplyEditsBatchDetails | undefined;
 type PatchTool = ToolDefinition<typeof patchSchema, Details, unknown>;
 type ReplaceTool = ToolDefinition<typeof replaceTextSchema, Details, unknown>;
 type WriteTool = ToolDefinition<typeof writeFilesSchema, Details, unknown>;
-export type EditingTools = [PatchTool, ReplaceTool, WriteTool, PatchTool];
+export type EditingTools = [PatchTool, ReplaceTool, WriteTool];
 
 const nestedReceiptGuideline =
   "Nested editing calls, such as codemode's, return full receipts with generated diffs in files[].diff. For compact output, emit the summary and needed fields; on error include error, modifiedFiles, and each file's path and status before retrying.";
@@ -135,32 +131,24 @@ const shared: Pick<
 };
 
 export function createEditingTools(getCwd?: () => string): EditingTools {
-  return [
-    createPatchTool(false, getCwd),
-    createReplaceTool(getCwd),
-    createWriteTool(getCwd),
-    createPatchTool(true, getCwd),
-  ];
+  return [createPatchTool(getCwd), createReplaceTool(getCwd), createWriteTool(getCwd)];
 }
 
-function createPatchTool(preview: boolean, getCwd: (() => string) | undefined): PatchTool {
+/**
+ * OpenAI grammar sampling carries only the patch text, so `preview` exists only where the
+ * provider sends JSON arguments.
+ */
+function createPatchTool(getCwd: (() => string) | undefined): PatchTool {
   return {
     ...shared,
-    name: preview ? "preview_patch" : "apply_patch",
-    label: preview ? "preview patch" : "apply patch",
-    description: preview
-      ? "Preview a Codex-format patch without writing files or running publication probes. Applying later re-reads and validates files."
-      : "Apply a Codex-format patch: Add File, Update File, Delete File, and Move to. Plans all files before publishing. Add/move never overwrite an existing destination. Ambiguous context or missing named anchors fail. Preserves BOM, local line endings, and unchanged bytes; added indentation is literal. Partial publication is reported, never automatically retried.",
-    promptSnippet: preview
-      ? "Read-only patch preview."
-      : "Focused multi-file patches, creates, deletes, and moves.",
+    name: "apply_patch",
+    label: "apply patch",
+    description:
+      "Apply a Codex-format patch: Add File, Update File, Delete File, and Move to. Plans all files before publishing. Add/move never overwrite an existing destination. Ambiguous context or missing named anchors fail. Preserves BOM, local line endings, and unchanged bytes; added indentation is literal. Partial publication is reported, never automatically retried.",
+    promptSnippet: "Focused multi-file patches, creates, deletes, and moves.",
     promptGuidelines: [
-      ...(preview
-        ? []
-        : [
-            "Use apply_patch for focused edits, replace_text for repeated replacements or large anchored ranges, and write_files for complete files. Preview only when needed.",
-            "Inspect the verified, failed, uncertain, and unattempted paths in an error result before retrying. Never replay a whole partially applied batch.",
-          ]),
+      "Use apply_patch for focused edits, replace_text for repeated replacements or large anchored ranges, and write_files for complete files. Preview only when needed.",
+      "Inspect the verified, failed, uncertain, and unattempted paths in an error result before retrying. Never replay a whole partially applied batch.",
       nestedReceiptGuideline,
     ],
     parameters: patchSchema,
@@ -169,15 +157,22 @@ function createPatchTool(preview: boolean, getCwd: (() => string) | undefined): 
       if (!isRecord(raw) || typeof raw.input !== "string") {
         throw new Error("input must be a patch string");
       }
+      optionalType(raw, "preview", "boolean");
       const input = getCwd === undefined ? raw.input : bindPatchPaths(raw.input, getCwd());
       return { ...raw, input };
     },
     // oxlint-disable-next-line max-params -- QX-002: Pi owns this five-parameter SDK callback.
     async execute(_id, params, signal, onUpdate, ctx) {
       return toolResult(
-        await applyPatchToFiles(params.input, ctx.cwd, preview, signal, (summary) => {
-          onUpdate?.({ content: [{ type: "text", text: summary }], details: undefined });
-        }),
+        await applyPatchToFiles(
+          params.input,
+          ctx.cwd,
+          params.preview === true,
+          signal,
+          (summary) => {
+            onUpdate?.({ content: [{ type: "text", text: summary }], details: undefined });
+          },
+        ),
       );
     },
     renderCall(args, theme) {
@@ -190,8 +185,8 @@ function createPatchTool(preview: boolean, getCwd: (() => string) | undefined): 
         // Streaming input can be incomplete.
       }
       return new Text(
-        theme.fg("toolTitle", theme.bold(`${preview ? "preview_patch" : "apply_patch"} `)) +
-          theme.fg("accent", paths),
+        theme.fg("toolTitle", theme.bold("apply_patch ")) +
+          theme.fg("accent", `${args.preview === true ? "preview; " : ""}${paths}`),
         0,
         0,
       );
