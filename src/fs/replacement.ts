@@ -52,6 +52,17 @@ export async function publishReplacement(
   return new ReplacementPublication(snapshot, bytes, signal, hooks).run();
 }
 
+type CommitEvidence =
+  | { readonly kind: "not-issued" }
+  | { readonly kind: "issued-unverified" }
+  | { readonly kind: "target-verified-recovery-conflict" }
+  | { readonly kind: "versions-verified"; readonly recovery: FileState };
+
+type RecoveryDisposition =
+  | { readonly kind: "no-cleanup" }
+  | { readonly kind: "linked"; readonly identity: BigIntStats }
+  | { readonly kind: "retain-uncertain" };
+
 /** Owns the private replacement, recovery link, and truthful commit/cleanup receipt. */
 class ReplacementPublication {
   private readonly snapshot: ReadonlyFileSnapshot;
@@ -66,10 +77,8 @@ class ReplacementPublication {
   private temporaryStats: BigIntStats | undefined;
   private temporaryIdentity: BigIntStats | undefined;
   private temporaryDirectoryStats: BigIntStats | undefined;
-  private recoveryLinked = false;
-  private replacementPublished = false;
-  private replacementVerified = false;
-  private published = false;
+  private recoveryDisposition: RecoveryDisposition = { kind: "no-cleanup" };
+  private commitEvidence: CommitEvidence = { kind: "not-issued" };
   private temporaryCleanupFailed = false;
   private readonly warnings: string[] = [];
 
@@ -105,9 +114,9 @@ class ReplacementPublication {
       } else {
         await this.commitRename();
       }
-      const retained = await this.verifyCommit();
-      this.published = true;
-      await this.cleanupRecovery(retained);
+      const verified = await this.verifyCommit();
+      this.commitEvidence = verified;
+      await this.cleanupRecovery(verified.recovery);
       const warning = await syncDirectory(this.directory);
       if (warning !== undefined) {
         this.warnings.push(warning);
@@ -124,12 +133,19 @@ class ReplacementPublication {
   }
 
   private receipt(message: string, cause?: unknown): PublicationError {
-    return new PublicationError(
-      message,
-      this.replacementVerified ? [this.snapshot.actualPath] : [],
-      this.replacementPublished && !this.replacementVerified ? [this.snapshot.actualPath] : [],
-      cause,
-    );
+    switch (this.commitEvidence.kind) {
+      case "not-issued":
+        return new PublicationError(message, [], [], cause);
+      case "issued-unverified":
+        return new PublicationError(message, [], [this.snapshot.actualPath], cause);
+      case "target-verified-recovery-conflict":
+      case "versions-verified":
+        return new PublicationError(message, [this.snapshot.actualPath], [], cause);
+      default: {
+        const exhaustive: never = this.commitEvidence;
+        return exhaustive;
+      }
+    }
   }
 
   private async prepare(): Promise<void> {
@@ -220,7 +236,7 @@ class ReplacementPublication {
         prepared,
         this.snapshot.stats,
       );
-      this.replacementPublished = true;
+      this.commitEvidence = { kind: "issued-unverified" };
       const retained = await movePreparedFileNoReplace(
         this.temporary,
         this.recovery,
@@ -229,11 +245,14 @@ class ReplacementPublication {
       if (!retained) {
         throw new Error(`Recovery path appeared during atomic replacement: ${this.recovery}`);
       }
-      this.recoveryLinked = true;
+      this.recoveryDisposition = { kind: "linked", identity: this.snapshot.stats };
     } catch (error) {
-      if (this.replacementPublished || error instanceof AtomicMoveUncertainError) {
-        this.recoveryLinked = true;
-        this.replacementPublished = true;
+      if (
+        this.commitEvidence.kind === "issued-unverified" ||
+        error instanceof AtomicMoveUncertainError
+      ) {
+        this.recoveryDisposition = { kind: "retain-uncertain" };
+        this.commitEvidence = { kind: "issued-unverified" };
         throw new AtomicMoveUncertainError(
           `Atomic replacement or recovery retention could not be verified. Commit status is uncertain; inspect ${this.snapshot.actualPath}, ${this.temporary}, and ${this.recovery}. Cause: ${errorMessage(error)}`,
           { cause: error },
@@ -247,7 +266,7 @@ class ReplacementPublication {
     // ponytail: Node has no portable compare-and-swap rename. Recovery protects in-place
     // external writes; upgrade to platform exchange if atomic-replacement races are observed.
     await link(this.snapshot.actualPath, this.recovery);
-    this.recoveryLinked = true;
+    this.recoveryDisposition = { kind: "linked", identity: this.snapshot.stats };
     const baseline = await assertLinkedTargetCurrent(this.snapshot);
     await this.hooks?.beforeRename?.({
       target: this.snapshot.actualPath,
@@ -263,7 +282,7 @@ class ReplacementPublication {
     await assertLinkedTargetCurrent(this.snapshot, baseline);
     throwIfAborted(this.signal);
     await rename(this.temporary, this.snapshot.actualPath);
-    this.replacementPublished = true;
+    this.commitEvidence = { kind: "issued-unverified" };
   }
 
   private async readCommittedVersions(): Promise<{
@@ -289,18 +308,20 @@ class ReplacementPublication {
     }
   }
 
-  private async verifyCommit(): Promise<FileState> {
+  private async verifyCommit(): Promise<Extract<CommitEvidence, { kind: "versions-verified" }>> {
     const versions = await this.readCommittedVersions();
     const targetMatches =
       this.temporaryStats !== undefined &&
       samePublishedState(this.temporaryStats, versions.target.stats) &&
       versions.target.bytes.equals(this.bytes);
-    this.replacementVerified = targetMatches;
     if (
       !samePublishedState(this.snapshot.stats, versions.recovery.stats) ||
       !sameSnapshotStats(versions.baseline, versions.recovery.stats) ||
       !versions.recovery.bytes.equals(this.snapshot.bytes)
     ) {
+      if (targetMatches) {
+        this.commitEvidence = { kind: "target-verified-recovery-conflict" };
+      }
       await this.reportConflict(targetMatches);
     }
     if (!targetMatches) {
@@ -308,7 +329,7 @@ class ReplacementPublication {
         `File changed immediately after commit: ${this.snapshot.inputPath}. The external content was kept, and the pre-edit content remains at ${this.recovery}. Retry after inspecting both files.`,
       );
     }
-    return versions.recovery;
+    return { kind: "versions-verified", recovery: versions.recovery };
   }
 
   private async reportConflict(targetMatches: boolean): Promise<never> {
@@ -347,7 +368,7 @@ class ReplacementPublication {
         "Recovery link",
         retained,
       );
-      this.recoveryLinked = false;
+      this.recoveryDisposition = { kind: "no-cleanup" };
       if (!removed) {
         this.warnings.push(
           `The edit was committed, but the pre-edit recovery link is no longer at ${this.recovery}; its location is uncertain and the previous content may remain elsewhere.`,
@@ -367,7 +388,7 @@ class ReplacementPublication {
     const failures = await this.cleanupUnpublishedContent();
     const directoryFailure = await this.removeTemporaryDirectory();
     if (directoryFailure !== undefined) {
-      if (this.published) {
+      if (this.commitEvidence.kind === "versions-verified") {
         this.warnings.push(directoryFailure);
       } else {
         failures.push(directoryFailure);
@@ -383,14 +404,14 @@ class ReplacementPublication {
 
   private async cleanupUnpublishedContent(): Promise<string[]> {
     const failures: string[] = [];
-    if (!this.published && !this.replacementPublished) {
+    if (this.commitEvidence.kind === "not-issued") {
       const message = await this.removeTemporary();
       if (message !== undefined) {
         failures.push(message);
       }
     }
-    if (this.recoveryLinked && !this.replacementPublished) {
-      const message = await this.removeUncommittedRecovery();
+    if (this.recoveryDisposition.kind === "linked" && this.commitEvidence.kind === "not-issued") {
+      const message = await this.removeUncommittedRecovery(this.recoveryDisposition.identity);
       if (message !== undefined) {
         failures.push(message);
       }
@@ -415,9 +436,9 @@ class ReplacementPublication {
     return;
   }
 
-  private async removeUncommittedRecovery(): Promise<string | undefined> {
+  private async removeUncommittedRecovery(identity: BigIntStats): Promise<string | undefined> {
     try {
-      const removed = await unlinkOwnedPath(this.recovery, this.snapshot.stats, "Recovery link");
+      const removed = await unlinkOwnedPath(this.recovery, identity, "Recovery link");
       if (!removed) {
         return `the pre-edit recovery link is no longer at ${this.recovery}; its location is uncertain and the target may remain hard-linked to it`;
       }
