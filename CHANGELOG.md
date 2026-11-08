@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- After a filesystem refusal, restore suppressed writer names only while they still belong to Pi's built-ins or the working-directory owner. Keep unrelated custom writers inactive, and support the directory owner's wrappers in either load order.
 - Honour cancellation before case-only and Unicode respelling renames. Recheck replacement identity and content after hooks and after rename, retaining already published content in failure receipts.
 - Remove `preview_patch`. Add top-level `preview: true` to an `apply_patch` call instead; models that send patches through native grammar sampling pass only the patch text, so their patches always apply.
 - Report a replacement conflict truthfully: when the earlier content changes during commit, the error now says the edit was published to the target, instead of saying the target was left untouched.

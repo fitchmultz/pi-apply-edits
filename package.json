@@ -57,6 +57,7 @@
     "oxfmt": "0.75.0",
     "oxlint": "1.90.0",
     "oxlint-tsgolint": "7.0.2005",
+    "pi-change-working-dir": "git+https://github.com/fitchmultz/pi-change-working-dir.git#c55109c12f23e240389719ae22c9240c846692fc",
     "typebox": "1.3.34",
     "typescript": "7.0.2"
   },
