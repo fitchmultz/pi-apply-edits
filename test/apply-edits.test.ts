@@ -4591,6 +4591,72 @@ nodeTest(
 );
 
 nodeTest(
+  "exclusive create keeps an unidentified visible target uncertain and cleans its private source",
+  { skip: process.platform === "android" },
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const target = join(await realpath(directory), "file");
+      const originalLink = nodeFs.promises.link;
+      const originalOpen = nodeFs.promises.open;
+      const failure = new Error("first target descriptor stat failed");
+      let fallbackStarted = false;
+      let statFailed = false;
+
+      await withRacingEditing(
+        (mock) => {
+          mock.method(
+            nodeFs.promises,
+            "link",
+            async (...args: Readonly<Parameters<typeof originalLink>>) => {
+              if (filePath(args[1]) === target) {
+                fallbackStarted = true;
+                throw Object.assign(new Error("forced link refusal"), { code: "EPERM" });
+              }
+              return originalLink(...args);
+            },
+          );
+          mock.method(
+            nodeFs.promises,
+            "open",
+            async (...args: Readonly<Parameters<typeof originalOpen>>) => {
+              const handle = await originalOpen(...args);
+              if (fallbackStarted && filePath(args[0]) === target && args[1] === "wx") {
+                mock.method(handle, "stat", async () => {
+                  statFailed = true;
+                  throw failure;
+                });
+              }
+              return handle;
+            },
+          );
+        },
+        async (module) => {
+          const result = await module.writeFiles(
+            { files: [{ path: "file", content: "created\n", mode: "create" }] },
+            directory,
+          );
+          assert.match(result.details.error ?? "", /first target descriptor stat failed/);
+          assert.deepEqual(result.details.modifiedFiles, []);
+          assert.deepEqual(
+            result.details.files.map((file) => ({
+              path: file.path,
+              status: file.status,
+              editsApplied: file.editsApplied,
+            })),
+            [{ path: join(directory, "file"), status: "uncertain", editsApplied: 0 }],
+          );
+        },
+      );
+
+      assert(fallbackStarted);
+      assert(statFailed);
+      assert.equal((await readFile(target)).length, 0);
+      assert.deepEqual(await readdir(directory), ["file"]);
+    });
+  },
+);
+
+nodeTest(
   "create reports an uncertain commit when the parent moves after exclusive open",
   { skip: process.platform === "win32" || process.platform === "android" },
   async () => {

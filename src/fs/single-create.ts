@@ -33,6 +33,11 @@ import { assertNewFilePlanCurrent, TraversalDirectories } from "./planning.ts";
 import { movePreparedFileNoReplace, replacementSupportInfo, transferMacosAcl } from "./platform.ts";
 import { preparePrivatePublicationFile } from "./preparation.ts";
 
+type CreatePublication =
+  | { readonly kind: "not-visible" }
+  | { readonly kind: "visible-unverified" }
+  | { readonly kind: "verified" };
+
 export async function publishSingleNewFile(
   plan: ReadonlyNewFilePlan,
   bytes: Buffer,
@@ -56,9 +61,8 @@ class SingleCreation {
   private temporaryStats: BigIntStats | undefined;
   private temporaryIdentity: BigIntStats | undefined;
   private temporaryDirectoryStats: BigIntStats | undefined;
-  private published = false;
-  private publicationStarted = false;
-  private publicationVerified = false;
+  private publication: CreatePublication = { kind: "not-visible" };
+  private sourceCleanup: "eligible" | "retained" | "handled" = "eligible";
   private temporaryCleanupFailed = false;
   private readonly warnings: string[] = [];
 
@@ -115,8 +119,8 @@ class SingleCreation {
   private receipt(message: string, cause?: unknown): PublicationError {
     return new PublicationError(
       message,
-      this.publicationVerified ? [this.plan.targetPath] : [],
-      this.publicationStarted && !this.publicationVerified ? [this.plan.targetPath] : [],
+      this.publication.kind === "verified" ? [this.plan.targetPath] : [],
+      this.publication.kind === "visible-unverified" ? [this.plan.targetPath] : [],
       cause,
     );
   }
@@ -163,7 +167,7 @@ class SingleCreation {
         await this.publishLink();
       }
     } catch (error) {
-      if (this.publicationStarted) {
+      if (this.publication.kind !== "not-visible") {
         throw error;
       }
       if (isCode(error, "EEXIST")) {
@@ -181,18 +185,27 @@ class SingleCreation {
         this.temporary,
         this.signal,
       );
-      this.publicationStarted = outcome.publicationStarted;
-      this.published = outcome.retainTemporary;
-      if (!outcome.completed) {
-        if (outcome.error instanceof Error) {
-          throw outcome.error;
-        }
-        throw new Error(errorMessage(outcome.error), { cause: error });
+      switch (outcome.kind) {
+        case "verified":
+          this.publication = { kind: "verified" };
+          this.warnings.push(
+            "Atomic hard-link publication was unavailable; used exclusive write publication.",
+          );
+          return;
+        case "before-visible-failure":
+          this.publication = { kind: "not-visible" };
+          break;
+        case "visible-unverified-failure":
+          this.publication = { kind: "visible-unverified" };
+          if (outcome.sourceCleanup === "retain") {
+            this.sourceCleanup = "retained";
+          }
+          break;
       }
-      this.publicationVerified = true;
-      this.warnings.push(
-        "Atomic hard-link publication was unavailable; used exclusive write publication.",
-      );
+      if (outcome.error instanceof Error) {
+        throw outcome.error;
+      }
+      throw new Error(errorMessage(outcome.error), { cause: error });
     }
   }
 
@@ -204,8 +217,8 @@ class SingleCreation {
       moved = await movePreparedFileNoReplace(candidate, this.plan.targetPath, stats);
     } catch (error) {
       if (error instanceof AtomicMoveUncertainError) {
-        this.publicationStarted = true;
-        this.published = true;
+        this.publication = { kind: "visible-unverified" };
+        this.sourceCleanup = "retained";
         throw error;
       }
       try {
@@ -224,14 +237,14 @@ class SingleCreation {
         `File appeared before create: ${this.plan.targetPath}. No changes were written.`,
       );
     }
-    this.publicationStarted = true;
+    this.publication = { kind: "visible-unverified" };
     await this.hooks?.afterFilePublish?.({ target: this.plan.targetPath });
     await this.verifyPublication(stats);
   }
 
   private async publishLink(): Promise<void> {
     await link(this.temporary, this.plan.targetPath);
-    this.publicationStarted = true;
+    this.publication = { kind: "visible-unverified" };
     await this.hooks?.afterFilePublish?.({ target: this.plan.targetPath });
     const state = await this.readPublishedTarget();
     const temporary = await readStableFile(this.temporary);
@@ -239,8 +252,7 @@ class SingleCreation {
       throw new Error(`Created file changed during publication: ${this.plan.targetPath}.`);
     }
     await this.verifyParent(state.stats);
-    this.published = true;
-    this.publicationVerified = true;
+    this.publication = { kind: "verified" };
   }
 
   private async verifyPublication(identity: BigIntStats): Promise<void> {
@@ -249,8 +261,7 @@ class SingleCreation {
       throw new Error(`Created file changed during publication: ${this.plan.targetPath}.`);
     }
     await this.verifyParent(state.stats);
-    this.published = true;
-    this.publicationVerified = true;
+    this.publication = { kind: "verified" };
   }
 
   private async readPublishedTarget(): Promise<{
@@ -260,7 +271,7 @@ class SingleCreation {
     try {
       return await readStableRegularEntry(this.plan.targetPath);
     } catch (error) {
-      this.published = true;
+      this.sourceCleanup = "retained";
       throw new Error(
         `Create publication could not be verified at ${this.plan.targetPath}. Commit status is uncertain; nothing was rolled back. Inspect ${this.plan.targetPath} and the temporary source ${this.temporary}, and their new locations if a parent directory moved. Cause: ${errorMessage(error)}`,
         { cause: error },
@@ -280,7 +291,7 @@ class SingleCreation {
             { cause: parentError },
           );
         }
-        this.publicationStarted = false;
+        this.publication = { kind: "not-visible" };
       } catch (cleanupError) {
         throw new Error(
           `${errorMessage(parentError)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
@@ -292,6 +303,7 @@ class SingleCreation {
   }
 
   private async cleanupCommittedSource(): Promise<void> {
+    this.sourceCleanup = "handled";
     try {
       const removed = await unlinkOwnedPath(
         this.temporary,
@@ -328,7 +340,7 @@ class SingleCreation {
     await this.handle?.close().catch(() => {
       // Descriptor-close failure must not replace the publication and identity-cleanup outcome.
     });
-    if (this.published) {
+    if (this.sourceCleanup !== "eligible") {
       return;
     }
     const failures: string[] = [];
