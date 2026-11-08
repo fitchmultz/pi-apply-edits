@@ -126,22 +126,30 @@ export interface MutationInput extends ReadonlyApplyEditsInput {
   readonly patch?: ReadonlyPatchUpdate | undefined;
   readonly delete?: true | undefined;
 }
-export interface PlannedMutation {
+interface PlannedContent {
   readonly inputPath: string;
   readonly displayPath: string;
-  readonly snapshot: ReadonlyFileSnapshot | undefined;
   readonly nextBytes: Buffer;
   readonly originalText: string;
   readonly nextText: string;
   readonly matches: readonly ReadonlyAppliedEditDetail[];
-  readonly operation: ApplyEditsDetails["operation"];
   readonly editsRequested: number;
-  readonly needsWrite: boolean;
-  readonly createPlan?: ReadonlyNewFilePlan | undefined;
   readonly lockKey?: string | undefined;
-  readonly entry?: ReadonlyEntrySnapshot | undefined;
-  readonly movePlan?: ReadonlyEntryMovePlan | undefined;
 }
+export type PlannedMutation = PlannedContent &
+  (
+    | {
+        readonly operation: "edit" | "rewrite" | "patch" | "no_change";
+        readonly snapshot: ReadonlyFileSnapshot;
+      }
+    | { readonly operation: "create"; readonly createPlan: ReadonlyNewFilePlan }
+    | { readonly operation: "delete"; readonly entry: ReadonlyEntrySnapshot }
+    | {
+        readonly operation: "move";
+        readonly movePlan: ReadonlyEntryMovePlan;
+        readonly snapshot: ReadonlyFileSnapshot | undefined;
+      }
+  );
 export interface TextEditResult {
   text: string;
   matches: AppliedEditDetail[];

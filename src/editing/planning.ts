@@ -14,7 +14,7 @@ import {
   publishNewFile,
   throwIfAborted,
 } from "../file-system.ts";
-import type { ReadonlyFileSnapshot } from "../fs/contracts.ts";
+import type { ReadonlyFileSnapshot, ReadonlyNewFilePlan } from "../fs/contracts.ts";
 import {
   assertPlannedPathBudget,
   assertReplacementPathBudget,
@@ -77,17 +77,18 @@ async function planEntry(
           options.preview,
         );
   const content = await entryContent(input, inputPath, options);
-  return {
+  const planned = {
     inputPath,
     displayPath,
-    ...content,
-    entry,
-    movePlan,
-    createPlan: movePlan?.destination,
-    operation: movePlan === undefined ? "delete" : "move",
+    nextBytes: content.nextBytes,
+    originalText: content.originalText,
+    nextText: content.nextText,
+    matches: content.matches,
     editsRequested: Math.max(1, chunkCount(input)),
-    needsWrite: true,
   };
+  return movePlan === undefined
+    ? { ...planned, operation: "delete", entry }
+    : { ...planned, operation: "move", movePlan, snapshot: content.snapshot };
 }
 function chunkCount(input: MutationInput): number {
   return input.patch?.chunks.length ?? 0;
@@ -96,9 +97,13 @@ async function entryContent(
   input: MutationInput,
   path: string,
   options: ExecutionOptions,
-): Promise<
-  Pick<PlannedMutation, "snapshot" | "originalText" | "nextText" | "nextBytes" | "matches">
-> {
+): Promise<{
+  readonly snapshot: ReadonlyFileSnapshot | undefined;
+  readonly originalText: string;
+  readonly nextText: string;
+  readonly nextBytes: Buffer;
+  readonly matches: TextEditResult["matches"];
+}> {
   const snapshot =
     chunkCount(input) > 0 ? await captureSnapshot(path, !options.preview) : undefined;
   const originalText =
@@ -141,7 +146,7 @@ function assertSourceMode(
   }
 }
 interface ContentUpdate extends TextEditResult {
-  readonly operation: ApplyEditsDetails["operation"];
+  readonly operation: Extract<ApplyEditsDetails["operation"], "edit" | "rewrite" | "patch">;
 }
 function updatedText(
   input: MutationInput,
@@ -183,7 +188,7 @@ function rewriteContent(
   const preserve = exists && input.preserveFormatting !== false;
   const body = preserve ? convertLineEndings(rewrite, detectLineEnding(original.body)) : rewrite;
   const bom = preserve && original.hadBom && !body.startsWith("\uFEFF") ? "\uFEFF" : "";
-  return { text: bom + body, matches: [], operation: exists ? "rewrite" : "create" };
+  return { text: bom + body, matches: [], operation: "rewrite" };
 }
 async function targetExists(path: string): Promise<boolean> {
   try {
@@ -220,41 +225,52 @@ async function planContent(
     );
   }
   const nextBytes = Buffer.from(update.text, "utf8");
-  const needsWrite = !(snapshot !== undefined && nextBytes.equals(snapshot.bytes));
   throwIfAborted(options.signal);
-  return {
+  const planned = {
     inputPath,
     displayPath,
-    snapshot,
-    createPlan,
     nextBytes,
     originalText: original.text,
     nextText: update.text,
     matches: update.matches,
-    operation: needsWrite ? update.operation : "no_change",
     editsRequested: requestedEditCount(input),
-    needsWrite,
   };
+  return snapshot === undefined
+    ? { ...planned, operation: "create", createPlan: required(createPlan) }
+    : {
+        ...planned,
+        operation: nextBytes.equals(snapshot.bytes) ? "no_change" : update.operation,
+        snapshot,
+      };
 }
 async function assertPublicationSupported(
   plan: PlannedMutation,
   signal?: AbortSignal,
 ): Promise<void> {
-  if (plan.entry !== undefined) {
-    if (plan.snapshot !== undefined) {
+  switch (plan.operation) {
+    case "delete":
+    case "no_change":
+      return;
+    case "move":
+      if (plan.snapshot !== undefined) {
+        await assertSafeToReplace(plan.snapshot, signal);
+      }
+      return;
+    case "create":
+      assertCreatePathBudget(plan.createPlan, plan.displayPath);
+      return;
+    case "edit":
+    case "rewrite":
+    case "patch":
+      assertReplacementPathBudget(plan.snapshot.actualPath, plan.displayPath);
       await assertSafeToReplace(plan.snapshot, signal);
-    }
-    return;
   }
-  if (!plan.needsWrite) {
-    return;
+}
+export function plannedCreate(plan: PlannedMutation): ReadonlyNewFilePlan | undefined {
+  if (plan.operation === "create") {
+    return plan.createPlan;
   }
-  if (plan.snapshot !== undefined) {
-    assertReplacementPathBudget(plan.snapshot.actualPath, plan.displayPath);
-    await assertSafeToReplace(plan.snapshot, signal);
-  } else {
-    assertCreatePathBudget(required(plan.createPlan), plan.displayPath);
-  }
+  return plan.operation === "move" ? plan.movePlan.destination : undefined;
 }
 export async function planFile(
   input: MutationInput,
@@ -278,22 +294,25 @@ export async function commitPlannedMutation(
   signal?: AbortSignal,
 ): Promise<string[]> {
   throwIfAborted(signal);
-  if (!plan.needsWrite) {
-    if (plan.snapshot !== undefined) {
+  switch (plan.operation) {
+    case "no_change":
       await assertSnapshotCurrent(plan.snapshot);
-    }
-    return [];
+      return [];
+    case "move":
+      return publishEntryMove(
+        plan.movePlan,
+        plan.snapshot === undefined
+          ? undefined
+          : { snapshot: plan.snapshot, bytes: plan.nextBytes },
+        signal,
+      );
+    case "delete":
+      return publishEntryDelete(plan.entry, signal);
+    case "create":
+      return publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan);
+    case "edit":
+    case "rewrite":
+    case "patch":
+      return publishReplacement(plan.snapshot, plan.nextBytes, signal);
   }
-  if (plan.movePlan !== undefined) {
-    const replacement =
-      plan.snapshot === undefined ? undefined : { snapshot: plan.snapshot, bytes: plan.nextBytes };
-    return publishEntryMove(plan.movePlan, replacement, signal);
-  }
-  if (plan.entry !== undefined) {
-    return publishEntryDelete(plan.entry, signal);
-  }
-  if (plan.snapshot !== undefined) {
-    return publishReplacement(plan.snapshot, plan.nextBytes, signal);
-  }
-  return publishNewFile(plan.inputPath, plan.nextBytes, signal, plan.createPlan);
 }

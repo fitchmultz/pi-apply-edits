@@ -80,11 +80,12 @@ function receiptContent(
   plan: PlannedMutation,
   counts: { readonly addedLines: number | undefined; readonly deletedLines: number | undefined },
 ): Pick<ApplyEditsDetails, "bytesBefore" | "bytesAfter" | "addedLines" | "deletedLines"> {
-  if (plan.entry !== undefined && plan.snapshot === undefined) {
-    const bytesBefore = Number(plan.entry.stats.size);
+  if (plan.operation === "delete" || (plan.operation === "move" && plan.snapshot === undefined)) {
+    const entry = plan.operation === "delete" ? plan.entry : plan.movePlan.entry;
+    const bytesBefore = Number(entry.stats.size);
     return {
       bytesBefore,
-      bytesAfter: plan.movePlan === undefined ? 0 : bytesBefore,
+      bytesAfter: plan.operation === "delete" ? 0 : bytesBefore,
       addedLines: undefined,
       deletedLines: undefined,
     };
@@ -111,9 +112,9 @@ function receiptForPlan(plan: PlannedMutation, preview: boolean): FileReceipt {
     diff: patch ?? "[Diff omitted: input size or diff work exceeded the bounded budget.]",
     diffTruncated: patch === undefined,
     warnings: [],
-    status: plan.needsWrite ? "unattempted" : "unchanged",
+    status: plan.operation === "no_change" ? "unchanged" : "unattempted",
     ...(preview ? { preview: true } : {}),
-    ...(plan.movePlan === undefined ? {} : { moveTo: plan.movePlan.destination.inputPath }),
+    ...(plan.operation === "move" ? { moveTo: plan.movePlan.destination.inputPath } : {}),
   };
 }
 function inputOperation(input: MutationInput): ApplyEditsDetails["operation"] {
@@ -189,15 +190,19 @@ export function failedExecution(
   return { summary: message, details: mutableDetails(details) };
 }
 function committedPaths(plan: PlannedMutation): string[] {
-  if (plan.movePlan !== undefined) {
-    return [plan.movePlan.entry.actualPath, plan.movePlan.destination.targetPath];
+  switch (plan.operation) {
+    case "move":
+      return [plan.movePlan.entry.actualPath, plan.movePlan.destination.targetPath];
+    case "delete":
+      return [plan.entry.actualPath];
+    case "create":
+      return [plan.createPlan.targetPath];
+    case "edit":
+    case "rewrite":
+    case "patch":
+    case "no_change":
+      return [plan.snapshot.actualPath];
   }
-  return [
-    plan.entry?.actualPath ??
-      plan.snapshot?.actualPath ??
-      plan.createPlan?.targetPath ??
-      plan.inputPath,
-  ];
 }
 function correctionSummary(files: readonly ApplyEditsDetails[]): string {
   const notes = files.flatMap((file) =>
@@ -325,8 +330,8 @@ export class BatchReceipts {
   }
   complete(index: number, plan: PlannedMutation): void {
     this.completed.add(index);
-    this.setStatus(index, plan.needsWrite ? "applied" : "unchanged");
-    if (plan.needsWrite) {
+    this.setStatus(index, plan.operation === "no_change" ? "unchanged" : "applied");
+    if (plan.operation !== "no_change") {
       this.modifiedFiles.push(...committedPaths(plan));
     }
   }
