@@ -525,6 +525,120 @@ nodeTest("move cancellation before publication leaves the source untouched", asy
   });
 });
 
+nodeTest("pure respelling honours cancellation in beforeCommit", async (t) => {
+  await fixture(async (directory) => {
+    const source = join(directory, "readme.md");
+    const target = join(directory, "README.md");
+    await writeFile(source, "source\n");
+    const entry = await captureEntrySnapshot(source);
+    assert.ok(entry);
+    const plan = await planEntryMove(entry, target);
+    if (plan.respelling !== true) {
+      t.skip("requires a case-insensitive temporary directory");
+      return;
+    }
+    const abort = new AbortController();
+    await assert.rejects(
+      publishEntryMove(plan, undefined, abort.signal, { beforeCommit: () => abort.abort() }),
+      outcome([], []),
+    );
+    assert.deepEqual(await readdir(directory), ["readme.md"]);
+    assert.equal(await readFile(source, "utf8"), "source\n");
+  });
+});
+
+nodeTest(
+  "pure respelling preserves a symbolic-link entry",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    await fixture(async (directory) => {
+      const source = join(directory, "link");
+      const target = join(directory, "LINK");
+      await symlink("missing", source);
+      const entry = await captureEntrySnapshot(source);
+      assert.ok(entry);
+      const plan = await planEntryMove(entry, target);
+      if (plan.respelling !== true) {
+        t.skip("requires a case-insensitive temporary directory");
+        return;
+      }
+      assert.deepEqual(await publishEntryMove(plan), []);
+      assert.deepEqual(await readdir(directory), ["LINK"]);
+      assert.equal(await readlink(target), "missing");
+      assert.equal((await lstat(target, { bigint: true })).ino, entry.stats.ino);
+    });
+  },
+);
+
+nodeTest(
+  "content respelling rejects external writes in beforeCommit without renaming",
+  { skip: replacementUnsupported },
+  async (t) => {
+    await fixture(async (directory) => {
+      const source = join(directory, "readme.md");
+      const target = join(directory, "README.md");
+      await writeFile(source, "old\n");
+      const entry = await captureEntrySnapshot(source);
+      const snapshot = await captureSnapshot(source);
+      assert.ok(entry && snapshot);
+      const plan = await planEntryMove(entry, target);
+      if (plan.respelling !== true) {
+        t.skip("requires a case-insensitive temporary directory");
+        return;
+      }
+      await assert.rejects(
+        publishEntryMove(plan, { snapshot, bytes: Buffer.from("requested\n") }, undefined, {
+          beforeCommit: async () => {
+            assert.equal(await readFile(source, "utf8"), "requested\n");
+            await writeFile(source, "external\n");
+          },
+        }),
+        (error: unknown) => {
+          assert(outcome([source], [])(error));
+          assert.match(error.message, /changed before.*respelling/i);
+          assert.doesNotMatch(error.message, /No changes were written/);
+          return true;
+        },
+      );
+      assert.deepEqual(await readdir(directory), ["readme.md"]);
+      assert.equal(await readFile(source, "utf8"), "external\n");
+    });
+  },
+);
+
+nodeTest(
+  "content respelling cancellation retains the earlier committed content",
+  { skip: replacementUnsupported },
+  async (t) => {
+    await fixture(async (directory) => {
+      const source = join(directory, "readme.md");
+      const target = join(directory, "README.md");
+      await writeFile(source, "old\n");
+      const entry = await captureEntrySnapshot(source);
+      const snapshot = await captureSnapshot(source);
+      assert.ok(entry && snapshot);
+      const plan = await planEntryMove(entry, target);
+      if (plan.respelling !== true) {
+        t.skip("requires a case-insensitive temporary directory");
+        return;
+      }
+      const abort = new AbortController();
+      await assert.rejects(
+        publishEntryMove(plan, { snapshot, bytes: Buffer.from("requested\n") }, abort.signal, {
+          beforeCommit: () => abort.abort(),
+        }),
+        (error: unknown) => {
+          assert(outcome([source], [])(error));
+          assert.match(error.message, /aborted.*content change was already published/i);
+          return true;
+        },
+      );
+      assert.deepEqual(await readdir(directory), ["readme.md"]);
+      assert.equal(await readFile(source, "utf8"), "requested\n");
+    });
+  },
+);
+
 nodeTest("move finishes source removal after a post-publication abort", async () => {
   await fixture(async (directory) => {
     const source = join(directory, "source");

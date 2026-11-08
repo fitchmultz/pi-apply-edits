@@ -133,6 +133,69 @@ nodeTest(
 );
 
 nodeTest(
+  "Unicode case respelling supports pure moves and verifies replacement bytes",
+  { skip: !caseInsensitiveTmp && "requires a case-insensitive temporary directory" },
+  async (t) => {
+    const cwd = await fixture(t);
+    await writeFile(join(cwd, "café.md"), "old\n");
+    const edited = await applyPatchToFiles(
+      patch("*** Update File: café.md\n*** Move to: CAFÉ.md\n@@\n-old\n+requested"),
+      cwd,
+    );
+    assert.equal(edited.details.error, undefined, edited.summary);
+    assert.deepEqual(edited.details.modifiedFiles, [join(cwd, "café.md"), join(cwd, "CAFÉ.md")]);
+    assert.equal(await readFile(join(cwd, "CAFÉ.md"), "utf8"), "requested\n");
+    const before = await lstat(join(cwd, "CAFÉ.md"));
+    const moved = await applyPatchToFiles(
+      patch("*** Update File: CAFÉ.md\n*** Move to: Café.md"),
+      cwd,
+    );
+    assert.equal(moved.details.error, undefined, moved.summary);
+    assert.equal((await lstat(join(cwd, "Café.md"))).ino, before.ino);
+    assert.deepEqual((await readdir(cwd)).map((name) => name.normalize("NFC")).sort(), ["Café.md"]);
+    assert.equal(await readFile(join(cwd, "Café.md"), "utf8"), "requested\n");
+  },
+);
+
+nodeTest(
+  "content respelling reports interference after rename as uncertain, not success",
+  { skip: !caseInsensitiveTmp && "requires a case-insensitive temporary directory" },
+  async (t) => {
+    const cwd = await fixture(t);
+    const source = join(cwd, "readme.md");
+    const target = join(cwd, "README.md");
+    await writeFile(source, "old\n");
+    const originalRename = nodeFs.promises.rename;
+    await withRacingEditing(
+      (mock) => {
+        mock.method(
+          nodeFs.promises,
+          "rename",
+          async (...args: Readonly<Parameters<typeof originalRename>>) => {
+            await originalRename(...args);
+            if (String(args[0]) === source && String(args[1]) === target) {
+              await writeFile(target, "external\n");
+            }
+          },
+        );
+      },
+      async (module) => {
+        const result = await module.applyPatchToFiles(
+          patch("*** Update File: readme.md\n*** Move to: README.md\n@@\n-old\n+requested"),
+          cwd,
+        );
+        assert.match(result.details.error ?? "", /Move destination could not be verified/);
+        assert.deepEqual(result.details.modifiedFiles, [source]);
+        assert.equal(result.details.files[0]?.status, "uncertain");
+        assert.ok(result.summary.includes(`Uncertain paths: ${target}`), result.summary);
+      },
+    );
+    assert.deepEqual(await readdir(cwd), ["README.md"]);
+    assert.equal(await readFile(target, "utf8"), "external\n");
+  },
+);
+
+nodeTest(
   "a case-only move in an unreadable directory is refused before writing",
   {
     skip: caseInsensitiveTmp
