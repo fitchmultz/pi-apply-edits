@@ -44,17 +44,24 @@ export async function publishNestedFile(
   await new NestedFilePublication(entry, destination, support, signal).run();
 }
 
+type NestedFileStrategy =
+  | { readonly kind: "link" }
+  | { readonly kind: "move"; readonly identity: BigIntStats }
+  | {
+      readonly kind: "copy";
+      readonly descriptor:
+        | { readonly kind: "open"; readonly handle: Awaited<ReturnType<typeof open>> }
+        | { readonly kind: "closed" };
+    };
+
 /** Owns one staged file's link/move/copy transition and its identity-checked rollback. */
 class NestedFilePublication {
   private readonly entry: ReadonlyPlannedNewFile;
   private readonly destination: NestedFileDestination;
   private readonly support: ReplacementSupport;
   private readonly signal: AbortSignal | undefined;
-  private publication: "link" | "move" | "copy" = "link";
-  private movedIdentity: BigIntStats | undefined;
-  private copyHandle: Awaited<ReturnType<typeof open>> | undefined;
-  private published = false;
-  private verified = false;
+  private strategy: NestedFileStrategy = { kind: "link" };
+  private evidence: "unpublished" | "unverified" | "verified" = "unpublished";
 
   constructor(
     entry: ReadonlyPlannedNewFile,
@@ -86,13 +93,15 @@ class NestedFilePublication {
       await this.destination.hooks?.afterFilePublish?.({ target: this.destination.target });
       await this.verify();
     } catch (error) {
-      await this.copyHandle?.close().catch(() => {
-        // Preserve publication failure and the target's verified/uncertain receipt.
-      });
+      if (this.strategy.kind === "copy" && this.strategy.descriptor.kind === "open") {
+        await this.strategy.descriptor.handle.close().catch(() => {
+          // Preserve publication failure and the target's verified/uncertain receipt.
+        });
+      }
       throw new PublicationError(
         errorMessage(error),
-        this.verified ? [this.destination.target] : [],
-        this.published && !this.verified ? [this.destination.target] : [],
+        this.evidence === "verified" ? [this.destination.target] : [],
+        this.evidence === "unverified" ? [this.destination.target] : [],
         error,
       );
     }
@@ -107,12 +116,12 @@ class NestedFilePublication {
   }
 
   private async publishAtomicMove(): Promise<void> {
-    this.publication = "move";
-    this.movedIdentity = await preparePrivatePublicationFile(
+    const identity = await preparePrivatePublicationFile(
       this.destination.candidate,
       this.entry.bytes,
       this.signal,
     );
+    this.strategy = { kind: "move", identity };
     await assertPublishedDirectoriesCurrent(this.destination.directories);
     throwIfAborted(this.signal);
     let moved: boolean;
@@ -120,19 +129,15 @@ class NestedFilePublication {
       moved = await movePreparedFileNoReplace(
         this.destination.candidate,
         this.destination.target,
-        this.movedIdentity,
+        identity,
       );
     } catch (error) {
       if (error instanceof AtomicMoveUncertainError) {
-        this.published = true;
+        this.evidence = "unverified";
         throw error;
       }
       try {
-        await unlinkOwnedPath(
-          this.destination.candidate,
-          this.movedIdentity,
-          "Atomic create candidate",
-        );
+        await unlinkOwnedPath(this.destination.candidate, identity, "Atomic create candidate");
       } catch (cleanupError) {
         throw new Error(
           `${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
@@ -142,21 +147,17 @@ class NestedFilePublication {
       throw error;
     }
     if (!moved) {
-      await unlinkOwnedPath(
-        this.destination.candidate,
-        this.movedIdentity,
-        "Atomic create candidate",
-      );
+      await unlinkOwnedPath(this.destination.candidate, identity, "Atomic create candidate");
       throw new Error(`File appeared before create: ${this.destination.target}.`);
     }
-    this.published = true;
+    this.evidence = "unverified";
   }
 
   private async publishLinkOrCopy(): Promise<void> {
     try {
       throwIfAborted(this.signal);
       await link(this.destination.stagedTarget, this.destination.target);
-      this.published = true;
+      this.evidence = "unverified";
     } catch (error) {
       if (isCode(error, "EEXIST")) {
         throw new Error(`File appeared before create: ${this.destination.target}.`, {
@@ -171,12 +172,12 @@ class NestedFilePublication {
   }
 
   private async publishCopy(): Promise<void> {
-    this.publication = "copy";
     await assertPublishedDirectoriesCurrent(this.destination.directories);
     throwIfAborted(this.signal);
-    this.copyHandle = await open(this.destination.target, "wx", 0o666);
-    this.published = true;
-    const opened = await this.copyHandle.stat({ bigint: true });
+    const handle = await open(this.destination.target, "wx", 0o666);
+    this.strategy = { kind: "copy", descriptor: { kind: "open", handle } };
+    this.evidence = "unverified";
+    const opened = await handle.stat({ bigint: true });
     const pathStats = await lstat(this.destination.target, { bigint: true });
     if (!pathStats.isFile() || pathStats.isSymbolicLink() || !sameIdentity(opened, pathStats)) {
       throw new Error(`Created file path changed during publication: ${this.destination.target}.`);
@@ -197,23 +198,23 @@ class NestedFilePublication {
             { cause: error },
           );
         }
-        this.published = false;
+        this.evidence = "unpublished";
       } catch (cleanupError) {
         throw new Error(
           `${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
           { cause: cleanupError },
         );
       } finally {
-        await this.copyHandle.close();
-        this.copyHandle = undefined;
+        await handle.close();
+        this.strategy = { kind: "copy", descriptor: { kind: "closed" } };
       }
       throw error;
     }
-    await this.copyHandle.writeFile(this.entry.bytes, { signal: this.signal });
-    await this.copyHandle.sync();
-    const copied = await this.copyHandle.stat({ bigint: true });
-    await this.copyHandle.close();
-    this.copyHandle = undefined;
+    await handle.writeFile(this.entry.bytes, { signal: this.signal });
+    await handle.sync();
+    const copied = await handle.stat({ bigint: true });
+    await handle.close();
+    this.strategy = { kind: "copy", descriptor: { kind: "closed" } };
     const state = await readStableRegularEntry(this.destination.target);
     if (!samePublishedState(copied, state.stats) || !state.bytes.equals(this.entry.bytes)) {
       throw new Error(`Created file changed during publication: ${this.destination.target}.`);
@@ -228,14 +229,10 @@ class NestedFilePublication {
     if (!state.bytes.equals(this.entry.bytes)) {
       throw new Error(`Created file changed during publication: ${this.destination.target}.`);
     }
-    if (this.publication !== "copy") {
+    if (this.strategy.kind !== "copy") {
       const staged = await readStableFile(this.destination.stagedTarget);
-      const identity = this.publication === "link" ? staged.stats : this.movedIdentity;
-      if (
-        !identity ||
-        !sameIdentity(identity, state.stats) ||
-        !staged.bytes.equals(this.entry.bytes)
-      ) {
+      const identity = this.strategy.kind === "link" ? staged.stats : this.strategy.identity;
+      if (!sameIdentity(identity, state.stats) || !staged.bytes.equals(this.entry.bytes)) {
         throw new Error(
           `Staged create file changed during publication: ${this.destination.stagedTarget}.`,
         );
@@ -245,12 +242,12 @@ class NestedFilePublication {
     try {
       await assertPublishedDirectoriesCurrent(this.destination.directories);
     } catch (error) {
-      if (this.publication !== "copy") {
+      if (this.strategy.kind !== "copy") {
         await this.rollback(state.stats, error);
       }
       throw error;
     }
-    this.verified = true;
+    this.evidence = "verified";
   }
 
   private async rollback(stats: BigIntStats, failure: unknown): Promise<void> {
@@ -272,7 +269,7 @@ class NestedFilePublication {
         );
       }
       this.destination.rememberStaging(restored.stats);
-      this.published = false;
+      this.evidence = "unpublished";
     } catch (cleanupError) {
       throw new Error(
         `${errorMessage(failure)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
