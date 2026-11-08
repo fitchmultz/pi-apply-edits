@@ -173,6 +173,12 @@ export async function publishMoveDestination(
   return new DestinationMove(plan, candidate, signal).run();
 }
 
+type MoveStage =
+  | { readonly kind: "not-started" }
+  | { readonly kind: "destination-unverified" }
+  | { readonly kind: "destination-verified" }
+  | { readonly kind: "source-removal-verified" };
+
 class DestinationMove {
   private readonly plan: ReadonlyEntryMovePlan;
   private readonly candidate: MoveCandidate;
@@ -180,7 +186,7 @@ class DestinationMove {
   private readonly modified: string[] = [];
   private readonly traversal = new TraversalDirectories();
   private readonly atomicMove = process.platform === "android";
-  private started = false;
+  private stage: MoveStage = { kind: "not-started" };
 
   constructor(plan: ReadonlyEntryMovePlan, candidate: MoveCandidate, signal?: AbortSignal) {
     this.plan = plan;
@@ -199,7 +205,7 @@ class DestinationMove {
       await this.verifyDestination();
       return await this.finishSource();
     } catch (error) {
-      if (!this.started) {
+      if (this.stage.kind === "not-started") {
         try {
           await this.traversal.remove();
         } catch (cleanupError) {
@@ -255,11 +261,11 @@ class DestinationMove {
       }
     } catch (error) {
       if (error instanceof AtomicMoveUncertainError) {
-        this.started = true;
+        this.stage = { kind: "destination-unverified" };
       }
       throw error;
     }
-    this.started = true;
+    this.stage = { kind: "destination-unverified" };
   }
 
   private async verifyDestination(): Promise<void> {
@@ -287,6 +293,7 @@ class DestinationMove {
     }
     await assertNewFilePlanCurrent(destination);
     this.modified.push(destination.targetPath);
+    this.stage = { kind: "destination-verified" };
   }
 
   private async finishSource(): Promise<string[]> {
@@ -312,6 +319,7 @@ class DestinationMove {
       throw new Error(`Move source removal could not be verified: ${entry.inputPath}`);
     }
     this.modified.push(entry.actualPath);
+    this.stage = { kind: "source-removal-verified" };
     await this.candidate.hooks?.afterCommit?.();
     return [];
   }
@@ -332,6 +340,7 @@ class DestinationMove {
       this.candidate.replacement ? entry : { ...entry, stats: sourceStats },
     );
     this.modified.push(entry.actualPath);
+    this.stage = { kind: "source-removal-verified" };
     return warnings;
   }
 
@@ -348,19 +357,22 @@ class DestinationMove {
   }
 
   private unverifiedPublicationPaths(): string[] {
-    const uncertain: string[] = [];
-    if (this.started && !this.modified.includes(this.plan.destination.targetPath)) {
-      uncertain.push(this.plan.destination.targetPath);
+    const atomicSource = this.atomicMove && !this.candidate.replacement;
+    switch (this.stage.kind) {
+      case "not-started":
+      case "source-removal-verified":
+        return [];
+      case "destination-unverified":
+        return atomicSource
+          ? [this.plan.destination.targetPath, this.plan.entry.actualPath]
+          : [this.plan.destination.targetPath];
+      case "destination-verified":
+        return atomicSource ? [this.plan.entry.actualPath] : [];
+      default: {
+        const _exhaustive: never = this.stage;
+        return _exhaustive;
+      }
     }
-    if (
-      this.started &&
-      this.atomicMove &&
-      !this.candidate.replacement &&
-      !this.modified.includes(this.plan.entry.actualPath)
-    ) {
-      uncertain.push(this.plan.entry.actualPath);
-    }
-    return uncertain;
   }
 }
 
@@ -392,7 +404,6 @@ class ReplacementMove {
   private readonly candidate: string;
   private directoryStats: BigIntStats | undefined;
   private candidateIdentity: BigIntStats | undefined;
-  private candidateStats: BigIntStats | undefined;
   private readonly warnings: string[] = [];
 
   constructor(
@@ -417,7 +428,7 @@ class ReplacementMove {
       const directoryStats = await lstat(this.directory, { bigint: true });
       assertCreatedDirectoryOwner(directoryStats, this.directory);
       this.directoryStats = directoryStats;
-      this.candidateStats = await prepareMoveReplacement(
+      const candidateStats = await prepareMoveReplacement(
         {
           path: this.candidate,
           own: (identity) => {
@@ -433,7 +444,7 @@ class ReplacementMove {
           this.plan,
           {
             path: this.candidate,
-            stats: this.candidateStats,
+            stats: candidateStats,
             replacement: this.replacement,
             hooks: this.hooks,
           },

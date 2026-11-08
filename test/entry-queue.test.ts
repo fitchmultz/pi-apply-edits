@@ -179,6 +179,46 @@ nodeTest(
 );
 
 nodeTest(
+  "an unverified linked move reports destination uncertainty and retains its source",
+  { skip: process.platform === "android" },
+  async (t) => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-unverified-move-")));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    const source = join(cwd, "source");
+    const destination = join(cwd, "destination");
+    await writeFile(source, "retained\n");
+    const originalLstat = nodeFs.promises.lstat;
+    const mock = t.mock.method(
+      nodeFs.promises,
+      "lstat",
+      async (...args: Readonly<Parameters<typeof originalLstat>>) => {
+        const stats = await originalLstat(...args);
+        if (args[0] === destination) {
+          throw new Error("Fixture destination verification unavailable");
+        }
+        return stats;
+      },
+    );
+    syncBuiltinESMExports();
+    try {
+      const result = await applyPatchToFiles(
+        "*** Begin Patch\n*** Update File: source\n*** Move to: destination\n*** End Patch",
+        cwd,
+      );
+      assert.match(result.details.error ?? "", /Fixture destination verification unavailable/);
+      assert.deepEqual(result.details.modifiedFiles, []);
+      assert.equal(result.details.files[0]?.status, "uncertain");
+      assert(result.summary.includes(`Uncertain paths: ${destination}\n`));
+      assert.equal(await readFile(source, "utf8"), "retained\n");
+      assert.equal(await readFile(destination, "utf8"), "retained\n");
+    } finally {
+      mock.mock.restore();
+      syncBuiltinESMExports();
+    }
+  },
+);
+
+nodeTest(
   "partial move text exposes its verified destination even when source removal fails",
   async (t) => {
     const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-partial-")));
