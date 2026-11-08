@@ -3,9 +3,9 @@ import {
   assertionCall,
   ownsAssertions,
   proves,
-  type CallEvent,
+  type ResolvedCallEvent,
   type FlowSummary,
-  type FunctionFlow,
+  type ResolvedFunctionFlow,
   type ConditionalControl,
   type AssertionContext,
   type AssertionHelper,
@@ -31,7 +31,6 @@ export interface ControlView extends ExpressionView {
 export interface ControlFacts {
   readonly controls: readonly ConditionalControl[];
   readonly conditional: boolean;
-  readonly caught: boolean;
   readonly catches: readonly number[];
   readonly finalizers: readonly number[];
 }
@@ -69,7 +68,7 @@ export function controlFacts(
       finalizers.push(finalizer);
     }
   }
-  return { controls, conditional, caught: false, catches, finalizers };
+  return { controls, conditional, catches, finalizers };
 }
 
 function overridingFinalizer(
@@ -211,8 +210,8 @@ export function stableOperand(node: ExpressionView | undefined): boolean {
 }
 
 export function failClosed(
-  event: CallEvent,
-  flow: FunctionFlow,
+  event: ResolvedCallEvent,
+  flow: ResolvedFunctionFlow,
   source: string,
   helpers: readonly AssertionHelper[],
 ): boolean {
@@ -230,7 +229,7 @@ export function failClosed(
   );
 }
 function hardDiscriminator(
-  prior: CallEvent,
+  prior: ResolvedCallEvent,
   control: ConditionalControl,
   source: string,
   helpers: readonly AssertionHelper[],
@@ -256,7 +255,7 @@ function hardDiscriminator(
   );
 }
 
-function strictEquality(prior: CallEvent, method: string): boolean {
+function strictEquality(prior: ResolvedCallEvent, method: string): boolean {
   return (
     method === "strictEqual" ||
     (method === "equal" &&
@@ -265,8 +264,8 @@ function strictEquality(prior: CallEvent, method: string): boolean {
 }
 
 export function exhaustive(
-  event: CallEvent,
-  flow: FunctionFlow,
+  event: ResolvedCallEvent,
+  flow: ResolvedFunctionFlow,
   summaries: ReadonlyMap<number, FlowSummary>,
   context: AssertionContext,
 ): boolean {
