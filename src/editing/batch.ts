@@ -26,7 +26,7 @@ import {
   failedExecution,
   displayPathFor,
 } from "./receipts.ts";
-import { planFile, commitPlannedMutation } from "./planning.ts";
+import { planFile, commitPlannedMutation, plannedCreate } from "./planning.ts";
 import { validateBatch } from "./validation.ts";
 import {
   required,
@@ -46,15 +46,16 @@ interface ResolvedBatch {
   readonly targets: readonly QueueTarget[];
 }
 function rootKey(plan: PlannedMutation): string | undefined {
+  const create = plannedCreate(plan);
   if (
     plan.lockKey === undefined ||
-    plan.createPlan === undefined ||
-    plan.createPlan.missingDirectories.length === 0
+    create === undefined ||
+    create.missingDirectories.length === 0
   ) {
     return;
   }
   let key = plan.lockKey;
-  for (let index = 0; index < plan.createPlan.missingDirectories.length; index++) {
+  for (let index = 0; index < create.missingDirectories.length; index++) {
     key = dirname(key);
   }
   return key;
@@ -73,11 +74,11 @@ function overlapsRoot(
   );
 }
 function preparedEntry(plan: PlannedMutation): ReadonlyPlannedNewFile {
-  const create = { plan: required(plan.createPlan), bytes: plan.nextBytes };
-  if (plan.movePlan === undefined) {
+  const create = { plan: required(plannedCreate(plan)), bytes: plan.nextBytes };
+  if (plan.operation !== "move") {
     return create;
   }
-  return { ...create, move: { entry: required(plan.entry), snapshot: plan.snapshot } };
+  return { ...create, move: { entry: plan.movePlan.entry, snapshot: plan.snapshot } };
 }
 async function resolveMoveDestination(
   moveTo: string,
@@ -179,11 +180,13 @@ class EditingBatch {
   }
   private async assertLinksRetained(): Promise<void> {
     const removedLinks = new Map(
-      this.plans.flatMap((plan, index) =>
-        plan.entry?.symbolicLink === true
-          ? [[normalizeLockKey(plan.entry.actualPath), index] as const]
-          : [],
-      ),
+      this.plans.flatMap((plan, index) => {
+        if (plan.operation !== "delete" && plan.operation !== "move") {
+          return [];
+        }
+        const entry = plan.operation === "delete" ? plan.entry : plan.movePlan.entry;
+        return entry.symbolicLink ? [[normalizeLockKey(entry.actualPath), index] as const] : [];
+      }),
     );
     if (removedLinks.size === 0) {
       return;
@@ -209,7 +212,7 @@ class EditingBatch {
   }
   private assertTraversalDisjoint(): void {
     for (const [index, plan] of this.plans.entries()) {
-      for (const path of plan.createPlan?.traversalDirectories ?? []) {
+      for (const path of plannedCreate(plan)?.traversalDirectories ?? []) {
         const directory = normalizeLockKey(path);
         const ownRoot = rootKey(plan);
         const targetConflict = this.resolved.targets.some(
@@ -241,7 +244,7 @@ class EditingBatch {
     for (const group of this.groups.values()) {
       const spellings = new Set(
         group.map(
-          (index) => required(required(this.plans[index]).createPlan).missingDirectories[0],
+          (index) => required(plannedCreate(required(this.plans[index]))).missingDirectories[0],
         ),
       );
       if (spellings.size > 1) {
