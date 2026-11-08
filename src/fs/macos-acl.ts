@@ -11,6 +11,16 @@ interface PendingReply {
   readonly reply: PromiseWithResolvers<void>;
 }
 
+type AclProcessState =
+  | { readonly kind: "ready" }
+  | { readonly kind: "awaiting"; readonly pending: PendingReply }
+  | {
+      readonly kind: "stopping";
+      readonly pending: PendingReply | undefined;
+      readonly firstFailure: unknown;
+    }
+  | { readonly kind: "closed" };
+
 export const macosAclScript = fileURLToPath(new URL("../macos-acl.js", import.meta.url));
 const sessions = new AsyncLocalStorage<MacosAclSession>();
 // Owners that keep a finished batch's helper for the next batch, and that idle helper.
@@ -65,10 +75,8 @@ class AclProcess {
     "JavaScript",
     macosAclScript,
   ]);
-  #pending: PendingReply | undefined;
-  #failure: unknown;
+  #state: AclProcessState = { kind: "ready" };
   #stderr = "";
-  #stopping = false;
 
   private constructor() {
     const exit: PromiseWithResolvers<void> = Promise.withResolvers();
@@ -94,12 +102,12 @@ class AclProcess {
   }
 
   get usable(): boolean {
-    return !this.#stopping;
+    return this.#state.kind === "ready" || this.#state.kind === "awaiting";
   }
 
   request(request: AclRequest): Promise<void> {
     const reply: PromiseWithResolvers<void> = Promise.withResolvers();
-    this.#pending = { request, reply };
+    this.#state = { kind: "awaiting", pending: { request, reply } };
     this.#child.stdin.write(`${JSON.stringify(request)}\n`);
     return reply.promise;
   }
@@ -111,7 +119,14 @@ class AclProcess {
   end(): Promise<void> {
     // Waiting for the exit keeps the host running until the helper closes.
     this.reference(true);
-    this.#stopping = true;
+    const state = this.#state;
+    if (state.kind === "ready" || state.kind === "awaiting") {
+      this.#state = {
+        kind: "stopping",
+        pending: state.kind === "awaiting" ? state.pending : undefined,
+        firstFailure: undefined,
+      };
+    }
     this.#child.stdin.end();
     return this.closed;
   }
@@ -149,26 +164,36 @@ class AclProcess {
   }
 
   #stop(failure?: unknown): void {
-    this.#failure ??= failure;
-    if (!this.#stopping) {
-      this.#stopping = true;
-      this.#child.kill();
+    const state = this.#state;
+    if (state.kind === "closed") {
+      return;
     }
+    if (state.kind === "stopping") {
+      this.#state = { ...state, firstFailure: state.firstFailure ?? failure };
+      return;
+    }
+    this.#state = {
+      kind: "stopping",
+      pending: state.kind === "awaiting" ? state.pending : undefined,
+      firstFailure: failure,
+    };
+    this.#child.kill();
   }
 
   #receive(line: string): void {
     // Once stopping, even a valid reply leaves its request pending until the child closes, so the
     // caller observes the abort or first failure and cleans up only after the helper exited.
-    if (this.#stopping) {
+    const state = this.#state;
+    if (state.kind === "stopping" || state.kind === "closed") {
       return;
     }
-    const pending = this.#pending;
+    const pending = state.kind === "awaiting" ? state.pending : undefined;
     const reply = parseReply(line);
     if (pending === undefined || reply === undefined || reply.id !== pending.request.id) {
       this.#stop(new Error(`unexpected output ${line}`));
       return;
     }
-    this.#pending = undefined;
+    this.#state = { kind: "ready" };
     if (reply.error === undefined) {
       pending.reply.resolve();
       return;
@@ -182,20 +207,22 @@ class AclProcess {
   // Stopped or failed requests settle only after the child closed, so callers clean up afterward.
   // The first stream, process or protocol error stays the cause beside the helper's own report.
   #settleExit(code: number | null, signal: NodeJS.Signals | null): void {
-    this.#stopping = true;
-    const pending = this.#pending;
-    this.#pending = undefined;
+    const state = this.#state;
+    this.#state = { kind: "closed" };
+    const pending =
+      state.kind === "awaiting" || state.kind === "stopping" ? state.pending : undefined;
     if (pending === undefined) {
       return;
     }
+    const firstFailure = state.kind === "stopping" ? state.firstFailure : undefined;
     const status =
       signal === null ? `exited with code ${String(code)}` : `was stopped by ${signal}`;
-    const failure = this.#failure === undefined ? [] : [errorMessage(this.#failure)];
+    const failure = firstFailure === undefined ? [] : [errorMessage(firstFailure)];
     const details = [...failure, this.#stderr.trim()].filter((detail) => detail.length > 0);
     pending.reply.reject(
       new Error(
         `macOS ACL helper ${status} without a valid reply${details.length > 0 ? `: ${details.join("; ")}` : ""}`,
-        this.#failure === undefined ? undefined : { cause: this.#failure },
+        firstFailure === undefined ? undefined : { cause: firstFailure },
       ),
     );
   }
