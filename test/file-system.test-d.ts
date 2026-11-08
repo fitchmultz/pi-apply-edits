@@ -41,6 +41,8 @@ async function reviseMutableResults(path: string): Promise<void> {
   prepared.entries.push({ plan, bytes: Buffer.from("other") });
   prepared.firstPlan.missingDirectories.push("recorded");
   prepared.published = false;
+  prepared.discardAttempted = false;
+  prepared.cleanupBlocked = undefined;
   const inline = await preparePlannedNestedFiles([{ plan, bytes: Buffer.from("content") }]);
   inline.entries.push({ plan, bytes: Buffer.from("other") });
   inline.firstPlan.traversalParents.clear();

@@ -38,6 +38,7 @@ import type {
   ReadonlyApplyEditsDetails,
 } from "../src/editing/contracts.ts";
 import { createEditingTools } from "../src/tools.ts";
+import { preparedOwner } from "../src/fs/nested-staging.ts";
 
 import {
   assertSnapshotCurrent,
@@ -4194,6 +4195,11 @@ nodeTest(
       assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
       assert.equal(await readFile(join(directory, "shared/b.txt"), "utf8"), "EXTERNAL\n");
       assert.equal(await readFile(join(prepared.staging, "a.txt"), "utf8"), "A\n");
+      assert.equal(preparedOwner(prepared).discardState.kind, "retained");
+      await discardPreparedNestedFiles(prepared);
+      await discardPreparedNestedFiles(prepared);
+      assert.equal(await readFile(join(prepared.staging, "a.txt"), "utf8"), "A\n");
+      assert.equal(await readFile(join(directory, "shared/a.txt"), "utf8"), "A\n");
       await rm(join(directory, "shared"), { recursive: true });
       await rm(prepared.container, { recursive: true });
     });
@@ -4359,6 +4365,10 @@ nodeTest(
       await discardPreparedNestedFiles(first);
       await discardPreparedNestedFiles(second);
 
+      assert.equal(first.discardAttempted, true);
+      assert.equal(second.discardAttempted, true);
+      assert.equal(preparedOwner(first).discardState.kind, "discarded");
+      assert.equal(preparedOwner(second).discardState.kind, "discarded");
       await assert.rejects(lstat(first.container), /ENOENT/);
       await assert.rejects(lstat(second.container), /ENOENT/);
     });
@@ -4377,7 +4387,41 @@ nodeTest(
       await assert.rejects(discardPreparedNestedFiles(prepared), {
         message: `Staging cleanup was skipped because ${prepared.staging} is not owned by this user; the staging container was left untouched at ${prepared.container}`,
       });
+      assert.equal(prepared.discardAttempted, true);
+      assert.equal(preparedOwner(prepared).discardState.kind, "retained");
+      // Clearing the block does not turn a previous failed attempt into cleanup authority.
+      prepared.cleanupBlocked = undefined;
+      await discardPreparedNestedFiles(prepared);
+      await discardPreparedNestedFiles(prepared);
       assert.equal(await readFile(join(prepared.staging, "child.txt"), "utf8"), "staged\n");
+    });
+  },
+);
+
+nodeTest(
+  "nested owner honors explicit resets of writable cleanup compatibility flags",
+  async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const plan = await planNewFile(join(directory, "missing", "child.txt"));
+      const entries = [{ plan, bytes: Buffer.from("staged\n") }];
+      const hooks = {};
+      const prepared = await preparePlannedNestedFiles(entries, undefined, hooks);
+      assert.equal(prepared.entries, entries);
+      assert.equal(prepared.firstPlan, plan);
+      assert.equal(prepared.hooks, hooks);
+      prepared.published = true;
+      await discardPreparedNestedFiles(prepared);
+      assert.equal(prepared.discardAttempted, false);
+      assert.equal(await readFile(join(prepared.staging, "child.txt"), "utf8"), "staged\n");
+      prepared.published = false;
+      prepared.discardAttempted = true;
+      await discardPreparedNestedFiles(prepared);
+      assert.equal(preparedOwner(prepared).discardState.kind, "retained");
+      assert.equal(await readFile(join(prepared.staging, "child.txt"), "utf8"), "staged\n");
+      prepared.discardAttempted = false;
+      await discardPreparedNestedFiles(prepared);
+      assert.equal(preparedOwner(prepared).discardState.kind, "discarded");
+      await assert.rejects(lstat(prepared.container), /ENOENT/);
     });
   },
 );
