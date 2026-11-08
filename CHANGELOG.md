@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Honour cancellation before case-only and Unicode respelling renames. Recheck replacement identity and content after hooks and after rename, retaining already published content in failure receipts.
 - Remove `preview_patch`. Add top-level `preview: true` to an `apply_patch` call instead; models that send patches through native grammar sampling pass only the patch text, so their patches always apply.
 - Report a replacement conflict truthfully: when the earlier content changes during commit, the error now says the edit was published to the target, instead of saying the target was left untouched.
 - Refuse edits, creates, and moves before staging on filesystems that cannot support verified publication, such as FAT and exFAT on macOS and Docker Desktop's VirtioFS. No private copies are left behind, and Pi's built-in `edit` and `write` tools become active again for the session.
