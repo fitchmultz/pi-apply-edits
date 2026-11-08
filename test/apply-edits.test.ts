@@ -3458,26 +3458,28 @@ nodeTest("nested create staging failures are detected before earlier batch write
     const sentinel = join(directory, "sentinel.txt");
     await writeFile(sentinel, "old\n");
 
-    await assertFailure(
-      () =>
-        writeFiles(
+    const result = await writeFiles(
+      {
+        files: [
+          { path: "sentinel.txt", content: "new\n", mode: "replace" },
+          { path: "ready/child.txt", content: "ready\n", mode: "create" },
           {
-            files: [
-              { path: "sentinel.txt", content: "new\n", mode: "replace" },
-              {
-                path: `missing/${"x".repeat(300)}.txt`,
-                content: "content\n",
-                mode: "create",
-              },
-            ],
+            path: `missing/${"x".repeat(300)}.txt`,
+            content: "content\n",
+            mode: "create",
           },
-          directory,
-        ),
-      /could not be prepared|ENAMETOOLONG/,
+        ],
+      },
+      directory,
     );
-
+    assert.match(result.details.error ?? "", /could not be prepared|ENAMETOOLONG/);
+    assert.deepEqual(result.details.modifiedFiles, []);
+    assert.deepEqual(
+      result.details.files.map((file) => file.status),
+      ["unattempted", "unattempted", "failed"],
+    );
     assert.equal(await readFile(sentinel, "utf8"), "old\n");
-    await assert.rejects(() => readFile(join(directory, "missing"), "utf8"), /ENOENT/);
+    assert.deepEqual(await readdir(directory), ["sentinel.txt"]);
   });
 });
 

@@ -45,6 +45,10 @@ interface ResolvedBatch {
   readonly resolved: readonly ResolvedMutation[];
   readonly targets: readonly QueueTarget[];
 }
+interface PreparedGroup {
+  readonly indices: readonly number[];
+  readonly files: ReadonlyPreparedNestedFiles;
+}
 function rootKey(plan: PlannedMutation): string | undefined {
   const create = plannedCreate(plan);
   if (
@@ -95,8 +99,6 @@ class EditingBatch {
   private readonly receipts: BatchReceipts;
   private resolved: ResolvedBatch = { resolved: [], targets: [] };
   private readonly plans: PlannedMutation[] = [];
-  private readonly groups = new Map<string, number[]>();
-  private readonly prepared = new Map<string, ReadonlyPreparedNestedFiles>();
   // Preparation and publication share one ACL helper; progress callbacks stay outside its scope.
   private readonly acl = new MacosAclSession();
   constructor(files: readonly MutationInput[], options: ExecutionOptions) {
@@ -231,17 +233,18 @@ class EditingBatch {
       }
     }
   }
-  private groupCreates(): void {
+  private groupCreates(): readonly (readonly number[])[] {
+    const groups = new Map<string, number[]>();
     for (const [index, plan] of this.plans.entries()) {
       const key = rootKey(plan);
       if (key === undefined) {
         continue;
       }
-      const group = this.groups.get(key) ?? [];
+      const group = groups.get(key) ?? [];
       group.push(index);
-      this.groups.set(key, group);
+      groups.set(key, group);
     }
-    for (const group of this.groups.values()) {
+    for (const group of groups.values()) {
       const spellings = new Set(
         group.map(
           (index) => required(plannedCreate(required(this.plans[index]))).missingDirectories[0],
@@ -253,36 +256,37 @@ class EditingBatch {
         );
       }
     }
+    return [...groups.values()];
   }
-  private async prepareCreates(): Promise<void> {
-    for (const [key, group] of this.groups) {
-      try {
-        const entries = group.map((index) => preparedEntry(required(this.plans[index])));
-        // Prepare every subtree before publishing any target; failure cleanup owns prior groups.
-        const prepared = await this.acl.run(() =>
-          preparePlannedNestedFiles(entries, this.options.signal),
-        );
-        this.prepared.set(key, prepared);
-      } catch (error) {
-        this.receipts.fail(group);
-        throw this.receipts.failure(
-          `files[${group.join(", ")}] could not be prepared. ${errorMessage(error)}`,
-        );
-      }
+  private async prepareGroup(indices: readonly number[]): Promise<PreparedGroup> {
+    try {
+      const entries = indices.map((index) => preparedEntry(required(this.plans[index])));
+      const files = await this.acl.run(() =>
+        preparePlannedNestedFiles(entries, this.options.signal),
+      );
+      return { indices, files };
+    } catch (error) {
+      this.receipts.fail(indices);
+      throw this.receipts.failure(
+        `files[${indices.join(", ")}] could not be prepared. ${errorMessage(error)}`,
+      );
     }
   }
-  private async publishGroup(index: number, plan: PlannedMutation): Promise<void> {
-    const key = rootKey(plan);
-    const group = key === undefined ? [index] : required(this.groups.get(key));
+  private async publishGroup(
+    index: number,
+    plan: PlannedMutation,
+    prepared: PreparedGroup | undefined,
+  ): Promise<void> {
+    const group = prepared?.indices ?? [index];
     const names = group.map((item) => required(this.plans[item]).displayPath).join(", ");
     try {
       this.options.onProgress?.(
         `Publishing ${names} (${this.receipts.completedCount()}/${this.plans.length} files complete).`,
       );
       const warnings = await this.acl.run(() =>
-        key === undefined
+        prepared === undefined
           ? commitPlannedMutation(plan, this.options.signal)
-          : publishPreparedNestedFiles(required(this.prepared.get(key)), this.options.signal),
+          : publishPreparedNestedFiles(prepared.files, this.options.signal),
       );
       this.receipts.warnings(required(group[0]), warnings);
       for (const item of group) {
@@ -295,39 +299,43 @@ class EditingBatch {
       throw this.receipts.publicationFailure(error, index, group, this.plans);
     }
   }
-  private async publishFiles(): Promise<void> {
+  private async publishFiles(prepared: ReadonlyMap<number, PreparedGroup>): Promise<void> {
     for (const [index, plan] of this.plans.entries()) {
       if (this.receipts.hasCompleted(index)) {
         continue;
       }
       // Publication order determines partial receipts and the next cancellation boundary.
-      await this.publishGroup(index, plan);
+      await this.publishGroup(index, plan, prepared.get(index));
     }
   }
-  private async cleanup(): Promise<readonly string[]> {
+  private async cleanup(prepared: ReadonlyMap<number, PreparedGroup>): Promise<readonly string[]> {
     const failures: string[] = [];
-    for (const prepared of this.prepared.values()) {
+    for (const group of prepared.values()) {
       try {
         // Discard each owned group completely before advancing to the next cleanup boundary.
-        await discardPreparedNestedFiles(prepared);
+        await discardPreparedNestedFiles(group.files);
       } catch (error) {
         failures.push(errorMessage(error));
       }
     }
     return failures;
   }
-  private async publish(): Promise<void> {
+  private async publish(groups: readonly (readonly number[])[]): Promise<void> {
+    const prepared = new Map<number, PreparedGroup>();
     let failure: BatchPublicationError | undefined;
     try {
-      await this.prepareCreates();
-      await this.publishFiles();
+      for (const group of groups) {
+        // Own each prepared subtree across throws; publish nothing until every group is ready.
+        prepared.set(required(group[0]), await this.prepareGroup(group));
+      }
+      await this.publishFiles(prepared);
     } catch (error) {
       failure =
         error instanceof BatchPublicationError ? error : this.receipts.failure(errorMessage(error));
     }
     // An interrupted in-flight transfer already awaited its helper's exit; this ends an idle one.
     await this.acl.close();
-    const cleanupFailures = await this.cleanup();
+    const cleanupFailures = await this.cleanup(prepared);
     if (cleanupFailures.length > 0) {
       failure = this.receipts.failure(
         `${failure === undefined ? "" : `${failure.message} `}Staged create cleanup was incomplete: ${cleanupFailures.join("; ")}`,
@@ -342,8 +350,7 @@ class EditingBatch {
     await this.assertLinksRetained();
     this.assertTraversalDisjoint();
     if (!this.options.preview) {
-      this.groupCreates();
-      await this.publish();
+      await this.publish(this.groupCreates());
     }
     return describeBatch(this.receipts.snapshot(), this.options.cwd);
   }
