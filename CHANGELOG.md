@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Skip a `replace_text` edit whose `oldText` and `newText` are identical when its text is in the file and another edit in the call changes a file. The other edits apply; the summary and the file's `warnings` name the skipped edit, its `matches` entry reports zero replacements, and `editsApplied` excludes it. The call still fails without writing when every edit is such a pair, or when the pair's text is not in the file.
+- Make `apply_patch` ambiguous-context errors enough to retry from: list the first four matching lines, count the rest, and print for each listed match the fewest lines above it that make it unique. Adding those lines as context selects that match without re-reading the file. The tool description states the rule: each chunk's context must match exactly one place in the rest of the file, not just the first. The check refuses the same patches as before.
 - After a filesystem refusal, restore suppressed writer names only while they still belong to Pi's built-ins or the working-directory owner. Keep unrelated custom writers inactive, and support the directory owner's wrappers in either load order.
 - Honour cancellation before case-only and Unicode respelling renames. Recheck replacement identity and content after hooks and after rename, retaining already published content in failure receipts.
 - Remove `preview_patch`. Add top-level `preview: true` to an `apply_patch` call instead; models that send patches through native grammar sampling pass only the patch text, so their patches always apply.

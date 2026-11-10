@@ -1,5 +1,5 @@
 import type { MatchStrategy, PatchMatch } from "./source.ts";
-import { missingPatchMessage } from "./diagnostics.ts";
+import { ambiguousPatchMessage, missingPatchMessage } from "./diagnostics.ts";
 
 // Corrected-match ceilings mirror targeted edits; exact matching has no size ceiling.
 const FUZZY_PATTERN_BYTES = 64 * 1024;
@@ -32,7 +32,7 @@ function prefixTable(pattern: readonly string[]): Uint32Array {
   return prefix;
 }
 
-/** KMP keeps repeated, long exact context linear; two hits suffice to prove ambiguity. */
+/** KMP keeps repeated, long exact context linear; every hit is kept as ambiguity evidence. */
 function occurrences(
   source: readonly string[],
   pattern: readonly string[],
@@ -51,9 +51,6 @@ function occurrences(
     }
     if (j === pattern.length) {
       found.push(i - pattern.length + 1);
-      if (found.length === 2) {
-        break;
-      }
       j = prefix[j - 1] ?? 0;
     }
   }
@@ -111,9 +108,7 @@ export class PatchMatcher {
         candidates.unshift(0);
       }
       if (candidates.length > 1) {
-        throw new Error(
-          `Ambiguous ${scope.label}: matches at lines ${candidates.map((line) => line + 1).join(", ")}. Add unique anchors or surrounding context.`,
-        );
+        throw new Error(ambiguousPatchMessage(this.#source, candidates, scope, pass.normalize));
       }
       const line = candidates[0];
       if (line !== undefined) {

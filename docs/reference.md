@@ -107,6 +107,14 @@ marked. Numeric unified-diff headers such as `@@ -1 +1 @@` are not line selector
 use bare `@@` or `@@ literal source line`. A numeric-looking literal source anchor
 can still match normally.
 
+Ambiguous-context errors list the first four matching lines and count the rest.
+For each listed match they print the fewest lines directly above it, up to three,
+that no other match shares. Adding those lines as context at the start of the
+chunk selects that match; more context below the match works too. A match gets no
+lines when its nearest three are shared with another match or lie above the
+preceding chunk or anchor. A named anchor only removes the matches above it:
+context repeated below the anchor is still ambiguous.
+
 Parser portions are covered by [Apache-2.0](../LICENSE-codex). Strict envelopes,
 ambiguity rejection, stacked anchors, anchored insertion, and byte-format
 preservation are part of the parser's behavior. Blank
@@ -149,6 +157,14 @@ included. `oldText` must be unique in the file; `endText` is searched only after
 `insert: "before"` or `"after"` preserves the anchor. No separator is inferred;
 include needed newlines/spaces in `newText`. Empty `newText` deletes replacements
 or ranges but is invalid for insertion.
+
+A replacement whose `oldText` and `newText` are identical changes nothing. When
+that text is in the file and another edit in the call changes a file, the pair is
+skipped and the other edits apply. The summary and the file's `warnings` name the
+skipped edit, its `matches` entry reports zero replacements at the lines where the
+text was found, and `editsApplied` excludes it. A file whose edits are all such
+pairs is `unchanged`. The call fails without writing when every edit is such a
+pair, or when the pair's text is not in the file after the preceding edits.
 
 Exact anchors are preferred. When absent, complete-line matching can correct
 Unicode typography, trailing whitespace, or a uniform indentation shift. Every
@@ -205,8 +221,10 @@ Every executed editing call returns:
   `status`: `applied`, `unchanged`, `failed`, `unattempted`, or `uncertain`. Planned
   preview changes are `unattempted` and marked read-only. Each file also reports
   `editsRequested`, `editsApplied`, `matches` (strategy, replacement count, and up to
-  32 start lines per edit or patch context), `bytesBefore`, `bytesAfter`, available
-  `addedLines`/`deletedLines`, `diff`, and `diffTruncated`. When `diffTruncated` is
+  32 start lines per edit or patch context; a skipped identical `replace_text` pair
+  has a replacement count of 0 and is not in `editsApplied`), `bytesBefore`,
+  `bytesAfter`, available `addedLines`/`deletedLines`, `diff`, and `diffTruncated`.
+  When `diffTruncated` is
   true, `diff` holds an omission marker because the change exceeded the diff budget.
   Unreached or failed planning entries can use zero placeholders for values not
   calculated. Planned byte counts and diffs do not by themselves prove publication.

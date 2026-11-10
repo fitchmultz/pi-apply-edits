@@ -775,6 +775,222 @@ nodeTest("empty, NUL, and no-op targeted edits fail", () => {
   );
 });
 
+nodeTest("an identical pair beside real edits is skipped and named in the receipt", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const path = join(directory, "a.txt");
+    await writeFile(path, "one\ntwo\nthree\ntwo\n“kept”\n");
+    const result = await replaceTextInFiles(
+      {
+        files: [
+          {
+            path: "a.txt",
+            edits: [
+              { oldText: "one", newText: "ONE" },
+              // Matches two places: with nothing to replace there is nothing to choose.
+              { oldText: "two", newText: "two" },
+              { oldText: "three", newText: "THREE" },
+              // Found only by typography correction, which must not rewrite the line.
+              { oldText: '"kept"', newText: '"kept"', all: true },
+            ],
+          },
+        ],
+      },
+      directory,
+    );
+    assert.equal(
+      result.summary,
+      "Updated 1 file (+2/-2): a.txt. Warning: edits[1], edits[3] in a.txt made no change: oldText and newText are identical.",
+    );
+    assert.deepEqual(
+      result.details.files.map((item) => [item.status, item.editsRequested, item.editsApplied]),
+      [["applied", 4, 2]],
+    );
+    const file = singleDetails(result.details);
+    assert.deepEqual(
+      file.matches.map((match) => [match.index, match.replacements, match.lines]),
+      [
+        [0, 1, [1]],
+        [1, 0, [2, 4]],
+        [2, 1, [3]],
+        [3, 0, [5]],
+      ],
+    );
+    assert.deepEqual(file.warnings, [
+      "edits[1], edits[3] in a.txt made no change: oldText and newText are identical.",
+    ]);
+    assert.equal(await readFile(path, "utf8"), "ONE\ntwo\nTHREE\ntwo\n“kept”\n");
+  });
+});
+
+for (const fixture of [
+  {
+    preview: false,
+    summary:
+      "Updated 1 file (+1/-1): a.txt. Warning: edits[0] in b.txt made no change: oldText and newText are identical.",
+    outcomes: [
+      ["edit", "applied", 1],
+      ["no_change", "unchanged", 0],
+    ],
+    modified: ["a.txt"],
+    content: "new\n",
+  },
+  {
+    preview: true,
+    summary:
+      "Would update 1 file (+1/-1): a.txt. No files written. Warning: edits[0] in b.txt made no change: oldText and newText are identical.",
+    outcomes: [
+      ["edit", "unattempted", 0],
+      ["no_change", "unchanged", 0],
+    ],
+    modified: [],
+    content: "old\n",
+  },
+]) {
+  nodeTest(
+    `a file of identical pairs is unchanged beside a file that changes (preview: ${fixture.preview})`,
+    async () => {
+      await inTemporaryDirectory(async (directory) => {
+        await writeFile(join(directory, "a.txt"), "old\n");
+        await writeFile(join(directory, "b.txt"), "keep\n");
+        const result = await replaceTextInFiles(
+          {
+            preview: fixture.preview,
+            files: [
+              { path: "a.txt", edits: [{ oldText: "old", newText: "new" }] },
+              { path: "b.txt", edits: [{ oldText: "keep", newText: "keep" }] },
+            ],
+          },
+          directory,
+        );
+        assert.equal(result.details.error, undefined);
+        assert.equal(result.summary, fixture.summary);
+        assert.deepEqual(
+          result.details.files.map((file) => [file.operation, file.status, file.editsApplied]),
+          fixture.outcomes,
+        );
+        const root = await realpath(directory);
+        assert.deepEqual(
+          result.details.modifiedFiles,
+          fixture.modified.map((name) => join(root, name)),
+        );
+        assert.equal(await readFile(join(directory, "a.txt"), "utf8"), fixture.content);
+        assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "keep\n");
+      });
+    },
+  );
+}
+
+// Calls that were refused before identical pairs could be skipped. `refusal` is the text they
+// were refused with then, and `expected` adds what else is wrong.
+const identicalPairRefusals = [
+  {
+    name: "the only edit",
+    preview: false,
+    files: [{ path: "a.txt", edits: [{ oldText: "old", newText: "old" }] }],
+    refusal:
+      /^files\[0\]: edits\[0\] would make no change because oldText and newText are identical/,
+    expected:
+      "files[0]: edits[0] would make no change because oldText and newText are identical, and no other edit in this call changes a file. No changes were written.",
+  },
+  {
+    name: "every edit of every file, in preview",
+    preview: true,
+    files: [
+      { path: "a.txt", edits: [{ oldText: "old", newText: "old", all: true }] },
+      { path: "b.txt", edits: [{ oldText: "keep", newText: "keep" }] },
+    ],
+    refusal:
+      /^files\[0\]: edits\[0\] would make no change because oldText and newText are identical/,
+    expected:
+      "files[0]: edits[0] would make no change because oldText and newText are identical, and no other edit in this call changes a file. No changes were written.",
+  },
+  {
+    name: "text that is not in the file",
+    preview: false,
+    files: [
+      { path: "b.txt", edits: [{ oldText: "keep", newText: "kept" }] },
+      { path: "a.txt", edits: [{ oldText: "absent", newText: "absent" }] },
+    ],
+    refusal:
+      /^files\[1\]: edits\[0\] would make no change because oldText and newText are identical/,
+    expected:
+      "files[1]: edits[0] would make no change because oldText and newText are identical, and its oldText was not found in a.txt. No changes were written.",
+  },
+  {
+    name: "text that an earlier edit of the call changed",
+    preview: false,
+    files: [
+      {
+        path: "a.txt",
+        edits: [
+          { oldText: "old", newText: "new" },
+          { oldText: "old\n", newText: "old\n" },
+        ],
+      },
+    ],
+    refusal:
+      /^files\[0\]: edits\[1\] would make no change because oldText and newText are identical/,
+    expected:
+      "files[0]: edits[1] would make no change because oldText and newText are identical, and its oldText was not found in a.txt after the preceding edits. No changes were written.",
+  },
+];
+async function refusedIdenticalPairs(
+  fixture: (typeof identicalPairRefusals)[number],
+  directory: string,
+): Promise<EditingExecution> {
+  await writeFile(join(directory, "a.txt"), "old\n");
+  await writeFile(join(directory, "b.txt"), "keep\n");
+  const result = await replaceTextInFiles(
+    { preview: fixture.preview, files: fixture.files },
+    directory,
+  );
+  assert.deepEqual(result.details.modifiedFiles, []);
+  assert.ok(result.details.files.every((file) => file.editsApplied === 0));
+  assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "old\n");
+  assert.equal(await readFile(join(directory, "b.txt"), "utf8"), "keep\n");
+  return result;
+}
+for (const fixture of identicalPairRefusals) {
+  nodeTest(`identical pairs stay refused: ${fixture.name}`, async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const result = await refusedIdenticalPairs(fixture, directory);
+      assert.match(result.details.error ?? "", fixture.refusal);
+    });
+  });
+  nodeTest(`a refused identical pair says what else is wrong: ${fixture.name}`, async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const result = await refusedIdenticalPairs(fixture, directory);
+      assert.equal(result.details.error, fixture.expected);
+    });
+  });
+}
+
+nodeTest("real edits that cancel out are refused beside an identical pair", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "a.txt"), "old\n");
+    const result = await replaceTextInFiles(
+      {
+        files: [
+          {
+            path: "a.txt",
+            edits: [
+              { oldText: "old", newText: "new" },
+              { oldText: "new", newText: "old" },
+              { oldText: "old", newText: "old" },
+            ],
+          },
+        ],
+      },
+      directory,
+    );
+    assert.equal(
+      result.details.error,
+      "files[0]: The ordered edits cancel each other out in a.txt; no changes were written.",
+    );
+    assert.equal(await readFile(join(directory, "a.txt"), "utf8"), "old\n");
+  });
+});
+
 nodeTest("request size limits bound files and ordered edits", async () => {
   assert.throws(
     () =>
