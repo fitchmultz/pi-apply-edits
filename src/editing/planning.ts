@@ -29,7 +29,7 @@ import {
   detectLineEnding,
   convertLineEndings,
 } from "./text.ts";
-import { applyTargetedEdits } from "./targeted.ts";
+import { editTargetedText } from "./targeted.ts";
 import {
   required,
   type MutationInput,
@@ -167,7 +167,7 @@ function targetedContent(
   original: ReturnType<typeof decodeText>,
   path: string,
 ): ContentUpdate {
-  const result = applyTargetedEdits(original.body, required(input.edits), path);
+  const result = editTargetedText(original.body, required(input.edits), path);
   if (countLeadingBomCharacters(result.text) > countLeadingBomCharacters(original.body)) {
     throw new Error(
       `Targeted edits would move or add U+FEFF to the start of ${path}. Use write_files with preserveFormatting: false for an exact encoding change. No changes were written.`,

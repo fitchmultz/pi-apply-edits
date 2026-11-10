@@ -55,8 +55,24 @@ function serializeReceipt(file: FileProgress): FileReceipt {
   return {
     ...file.evidence,
     status,
-    editsApplied: status === "applied" ? file.evidence.editsRequested : 0,
+    editsApplied:
+      status === "applied"
+        ? file.evidence.editsRequested - unchangedEdits(file.evidence.matches).length
+        : 0,
   };
+}
+/** An edit whose oldText and newText are identical is matched and replaces nothing. */
+function unchangedEdits(matches: ApplyEditsDetails["matches"]): ApplyEditsDetails["matches"] {
+  return matches.filter((match) => match.replacements === 0);
+}
+/** Names edits that changed nothing, so one written by mistake is not missed. */
+function unchangedEditWarnings(plan: PlannedMutation): string[] {
+  const unchanged = unchangedEdits(plan.matches);
+  if (unchanged.length === 0) {
+    return [];
+  }
+  const names = unchanged.map((match) => `edits[${match.index}]`).join(", ");
+  return [`${names} in ${plan.displayPath} made no change: oldText and newText are identical.`];
 }
 /** Pi's read tool expands `~` and `~/`, so a literal cwd-relative `~` must not read as home. */
 function literalTilde(display: string): string {
@@ -145,7 +161,7 @@ function receiptForPlan(plan: PlannedMutation, preview: boolean): ReceiptEvidenc
     ...receiptContent(plan, counts),
     diff: patch ?? "[Diff omitted: input size or diff work exceeded the bounded budget.]",
     diffTruncated: patch === undefined,
-    warnings: [],
+    warnings: unchangedEditWarnings(plan),
     ...(preview ? { preview: true } : {}),
     ...(plan.operation === "move" ? { moveTo: plan.movePlan.destination.inputPath } : {}),
   };
@@ -242,7 +258,7 @@ function committedPaths(plan: PlannedMutation): string[] {
 function correctionSummary(files: readonly ApplyEditsDetails[]): string {
   const notes = files.flatMap((file) =>
     file.matches
-      .filter((match) => match.strategy !== "exact")
+      .filter((match) => match.strategy !== "exact" && match.replacements > 0)
       .map((match) => {
         const prefix = files.length > 1 ? `${file.path}: ` : "";
         const noun = file.operation === "patch" || file.operation === "move" ? "matches" : "edits";

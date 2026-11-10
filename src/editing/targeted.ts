@@ -60,12 +60,12 @@ function validateEditChange(edit: ReadonlyTargetedEdit, index: number): void {
   if (edit.insert !== undefined && edit.newText.length === 0) {
     throw new Error(`edits[${index}].newText must not be empty when insert is set`);
   }
-  if (edit.insert === undefined && edit.endText === undefined && edit.oldText === edit.newText) {
-    throw new Error(
-      `edits[${index}] would make no change because oldText and newText are identical`,
-    );
-  }
 }
+/** A plain replacement by the same text changes nothing wherever it matches. */
+function isIdenticalPair(edit: ReadonlyTargetedEdit): boolean {
+  return edit.insert === undefined && edit.endText === undefined && edit.oldText === edit.newText;
+}
+export const IDENTICAL_PAIR = "would make no change because oldText and newText are identical";
 type EditMode =
   | { readonly kind: "replace"; readonly applyAll: boolean }
   | { readonly kind: "range"; readonly endText: string; readonly applyAll: false }
@@ -237,7 +237,84 @@ function effectiveReplacements(
   }
   return effective;
 }
-export function applyTargetedEdits(
+function editDetail(
+  index: number,
+  strategy: MatchStrategy,
+  replaced: readonly Replacement[],
+): AppliedEditDetail {
+  return {
+    index,
+    strategy,
+    replacements: replaced.length,
+    lines: replaced.slice(0, 32).map((item) => item.line),
+    linesTruncated: replaced.length > 32 || undefined,
+  };
+}
+/**
+ * An identical pair replaces nothing, so its detail records where the text was found with
+ * zero replacements. Text that is not there is refused: the caller believes otherwise.
+ */
+function identicalPairDetail(
+  content: string,
+  edit: ReadonlyTargetedEdit,
+  location: EditLocation,
+): AppliedEditDetail {
+  const match = findMatch(content, {
+    oldText: edit.oldText,
+    newText: edit.newText,
+    applyAll: true,
+    maxResultLength: Number.MAX_SAFE_INTEGER,
+  });
+  if (match.strategy === "missing") {
+    const state = location.index > 0 ? " after the preceding edits" : "";
+    throw new Error(
+      `edits[${location.index}] ${IDENTICAL_PAIR}, and its oldText was not found in ${location.path}${state}. No changes were written.`,
+    );
+  }
+  return { ...editDetail(location.index, match.strategy, match.replacements), replacements: 0 };
+}
+interface AppliedEdit {
+  readonly text: string;
+  readonly detail: AppliedEditDetail;
+}
+function applyEdit(
+  current: string,
+  edit: ReadonlyTargetedEdit,
+  location: EditLocation,
+  maxResultLength: number,
+): AppliedEdit {
+  const mode = editMode(edit);
+  const match =
+    mode.kind === "range"
+      ? rangeMatch(current, edit, mode.endText, location)
+      : findMatch(current, {
+          oldText: edit.oldText,
+          newText: edit.newText,
+          insert: mode.kind === "insert" ? mode.direction : undefined,
+          applyAll: mode.applyAll,
+          maxResultLength,
+        });
+  if (match.strategy === "missing") {
+    throw new Error(
+      missingEditMessage(current, {
+        ...location,
+        oldText: edit.oldText,
+        newText: edit.newText,
+        correctionSkipped: match.correctionSkipped,
+      }),
+    );
+  }
+  const effective = effectiveReplacements(current, match, mode, location);
+  return {
+    text: applyReplacements(current, effective, maxResultLength),
+    detail: editDetail(location.index, match.strategy, effective),
+  };
+}
+/**
+ * Applies the ordered edits in memory. An identical pair found in the text is reported with
+ * zero replacements; when every edit is one, the text is returned as is.
+ */
+export function editTargetedText(
   original: string,
   edits: readonly ReadonlyTargetedEdit[],
   displayPath: string,
@@ -256,42 +333,31 @@ export function applyTargetedEdits(
   const matches: AppliedEditDetail[] = [];
   for (const [index, edit] of edits.entries()) {
     validateEdit(edit, index);
-    const mode = editMode(edit);
     const location = { path: displayPath, index };
-    const match =
-      mode.kind === "range"
-        ? rangeMatch(current, edit, mode.endText, location)
-        : findMatch(current, {
-            oldText: edit.oldText,
-            newText: edit.newText,
-            insert: mode.kind === "insert" ? mode.direction : undefined,
-            applyAll: mode.applyAll,
-            maxResultLength,
-          });
-    if (match.strategy === "missing") {
-      throw new Error(
-        missingEditMessage(current, {
-          ...location,
-          oldText: edit.oldText,
-          newText: edit.newText,
-          correctionSkipped: match.correctionSkipped,
-        }),
-      );
+    if (isIdenticalPair(edit)) {
+      matches.push(identicalPairDetail(current, edit, location));
+    } else {
+      const applied = applyEdit(current, edit, location, maxResultLength);
+      current = applied.text;
+      matches.push(applied.detail);
     }
-    const effective = effectiveReplacements(current, match, mode, location);
-    current = applyReplacements(current, effective, maxResultLength);
-    matches.push({
-      index,
-      strategy: match.strategy,
-      replacements: effective.length,
-      lines: effective.slice(0, 32).map((item) => item.line),
-      linesTruncated: effective.length > 32 || undefined,
-    });
   }
-  if (current === original) {
+  if (current === original && matches.some((match) => match.replacements > 0)) {
     throw new Error(
       `The ordered edits cancel each other out in ${displayPath}; no changes were written.`,
     );
   }
   return { text: current, matches };
+}
+/** Single-text API: refuses a list in which every edit is an identical pair. */
+export function applyTargetedEdits(
+  original: string,
+  edits: readonly ReadonlyTargetedEdit[],
+  displayPath: string,
+): TextEditResult {
+  const result = editTargetedText(original, edits, displayPath);
+  if (result.matches.every((match) => match.replacements === 0)) {
+    throw new Error(`edits[0] ${IDENTICAL_PAIR}`);
+  }
+  return result;
 }

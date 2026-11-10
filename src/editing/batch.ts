@@ -27,6 +27,7 @@ import {
   displayPathFor,
 } from "./receipts.ts";
 import { planFile, commitPlannedMutation, plannedCreate } from "./planning.ts";
+import { IDENTICAL_PAIR } from "./targeted.ts";
 import { validateBatch } from "./validation.ts";
 import {
   required,
@@ -178,6 +179,19 @@ class EditingBatch {
         this.receipts.fail([item.index]);
         throw this.receipts.failure(`files[${item.index}]: ${errorMessage(error)}`);
       }
+    }
+  }
+  /** Identical pairs are skipped beside an edit that changes a file, never on their own. */
+  private assertSomeEditChanges(): void {
+    const onlyIdenticalPairs = this.plans.every(
+      (plan) =>
+        plan.operation === "no_change" && plan.matches.some((match) => match.replacements === 0),
+    );
+    if (onlyIdenticalPairs) {
+      this.receipts.fail([0]);
+      throw this.receipts.failure(
+        `files[0]: edits[0] ${IDENTICAL_PAIR}, and no other edit in this call changes a file. No changes were written.`,
+      );
     }
   }
   private async assertLinksRetained(): Promise<void> {
@@ -347,6 +361,7 @@ class EditingBatch {
   }
   private async execute(): Promise<EditingExecution> {
     await this.planFiles();
+    this.assertSomeEditChanges();
     await this.assertLinksRetained();
     this.assertTraversalDisjoint();
     if (!this.options.preview) {
