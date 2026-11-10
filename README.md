@@ -40,7 +40,7 @@ Set `preserveFormatting: false` for a file in `write_files` to write its supplie
 
 Write failures can leave a partial batch. External file changes can require file recovery.
 Check each file result and reported recovery path before you retry.
-Expand the tool result in Pi to see diffs and file results.
+A collapsed tool result names the key that expands it. Expand the result to see diffs and file results.
 
 ## Configuration
 

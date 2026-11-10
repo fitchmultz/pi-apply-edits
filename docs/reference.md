@@ -208,6 +208,12 @@ and nested callers receive it in `structuredContent`. Applied calls return a com
 summary to the model; expanding a direct call's TUI result shows its evidence.
 Entry-only moves/deletes have operation evidence rather than a text diff.
 
+A collapsed TUI result shows the first line of the summary. When the expanded result has
+more (the rest of the message, file outcomes, or diffs), the next row shows Pi's hint
+with your expand key, `ctrl+o` by default. A call that never reaches the tool has no
+receipt: Pi refused its arguments, another extension blocked it, or it was aborted.
+Its result shows the reason as a failure.
+
 Expanded previews distinguish `planned preview`, `unchanged`, `failed preview`, and
 `unattempted preview` per file. Files unreached after a planning failure are not
 shown as planned. Preview is a read-only mode, not a replacement for each file's outcome.

@@ -327,11 +327,15 @@ function optionalType(
   }
 }
 
+/**
+ * Pi draws the header from the arguments as the model sent them, including a call that
+ * `prepareArguments` then refuses: `files` can be missing, incomplete, or the array as a JSON string.
+ */
 function structuredCallLabel(args: {
-  readonly files?: readonly { readonly path?: string }[];
+  readonly files?: { readonly path?: string }[] | string;
   readonly preview?: boolean;
 }): string {
-  const files = args.files ?? [];
+  const files = Array.isArray(args.files) ? args.files : [];
   return `${args.preview === true ? "preview; " : ""}${files
     .slice(0, 3)
     .map((file) => file.path ?? "…")

@@ -3,6 +3,16 @@ import { Text } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import type { ApplyEditsBatchDetails } from "./apply-edits.ts";
 
+/**
+ * `details` as Pi hands it to the result renderer. Only a result returned by `execute` carries a
+ * receipt. Pi builds every other result itself: `details: {}` when it refuses, blocks, or aborts
+ * a call, and no `details` when the model's response failed before the call ran.
+ */
+type RenderedDetails = ApplyEditsBatchDetails | { readonly files?: undefined } | undefined;
+
+/** What a card shows of a result. A result that Pi built has no file outcomes. */
+type CardReceipt = Readonly<Pick<ApplyEditsBatchDetails, "files" | "preview" | "error">>;
+
 type RenderedFile = Readonly<
   Pick<
     ApplyEditsBatchDetails["files"][number],
@@ -10,21 +20,24 @@ type RenderedFile = Readonly<
   >
 >;
 
+function cardReceipt(details: RenderedDetails): CardReceipt {
+  return details?.files === undefined ? { files: [] } : details;
+}
+
 function outcomeStyle(
-  failed: boolean,
-  warnings: boolean,
-  preview: boolean,
+  receipt: CardReceipt,
+  isError: boolean,
 ): {
   readonly color: "error" | "warning" | "accent" | "success";
   readonly symbol: string;
 } {
-  if (failed) {
+  if (isError || receipt.error !== undefined) {
     return { color: "error", symbol: "✗" };
   }
-  if (warnings) {
+  if (receipt.files.some((file) => file.warnings.length > 0)) {
     return { color: "warning", symbol: "⚠" };
   }
-  if (preview) {
+  if (receipt.preview === true) {
     return { color: "accent", symbol: "◇" };
   }
   return { color: "success", symbol: "✓" };
@@ -77,52 +90,34 @@ function renderFile(file: RenderedFile, preview: boolean, theme: Theme): string 
   return text + renderDiff(file.diff, theme);
 }
 
-function renderSummary(
-  message: string,
-  flags: {
-    readonly expanded: boolean;
-    readonly failed: boolean;
-    readonly warnings: boolean;
-    readonly preview: boolean;
-  },
-  theme: Theme,
-): string {
-  const style = outcomeStyle(flags.failed, flags.warnings, flags.preview);
-  const summary = flags.expanded ? message : (message.split("\n")[0] ?? "");
-  return theme.fg(style.color, `${style.symbol} ${summary}`);
-}
-
 export const editingResultRenderer: NonNullable<
-  ToolDefinition<TSchema, ApplyEditsBatchDetails | undefined, unknown>["renderResult"]
+  ToolDefinition<TSchema, RenderedDetails, unknown>["renderResult"]
 > = (result, options, theme, context) => {
   const message = result.content.find((item) => item.type === "text")?.text ?? "";
   if (options.isPartial) {
     return new Text(theme.fg("muted", message.length > 0 ? message : "Planning changes…"), 0, 0);
   }
-  const details = result.details;
-  if (details === undefined) {
+  const receipt = cardReceipt(result.details);
+  const style = outcomeStyle(receipt, context.isError);
+  const summary = (text: string): string => theme.fg(style.color, `${style.symbol} ${text}`);
+  if (options.expanded) {
+    const preview = receipt.preview === true;
     return new Text(
-      renderSummary(
-        message,
-        { expanded: options.expanded, failed: context.isError, warnings: false, preview: false },
-        theme,
-      ),
+      summary(message) + receipt.files.map((file) => renderFile(file, preview, theme)).join(""),
       0,
       0,
     );
   }
-  const failed = context.isError || details.error !== undefined;
-  const warnings = details.files.some((file) => file.warnings.length > 0);
-  const preview = details.preview === true;
-  let text = renderSummary(
-    message,
-    { expanded: options.expanded, failed, warnings, preview },
-    theme,
-  );
-  if (options.expanded) {
-    for (const file of details.files) {
-      text += renderFile(file, preview, theme);
-    }
+  const [firstLine = "", ...laterLines] = message.split("\n");
+  if (laterLines.length === 0 && receipt.files.length === 0) {
+    return new Text(summary(firstLine), 0, 0);
   }
-  return new Text(text, 0, 0);
+  // The expanded card adds the rest of the message and every file's outcome and diff. The hint
+  // has its own row, as in Pi's own cards: appended to a long summary, it breaks across rows.
+  const hint = context.keyHint("app.tools.expand", "to expand");
+  return new Text(
+    `${summary(firstLine)}\n${theme.fg("muted", "(")}${hint}${theme.fg("muted", ")")}`,
+    0,
+    0,
+  );
 };

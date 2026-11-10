@@ -5,8 +5,15 @@ import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
-import { initTheme, type BuildSystemPromptOptions } from "@earendil-works/pi-coding-agent";
+import {
+  initTheme,
+  type AgentToolResult,
+  type BuildSystemPromptOptions,
+  type Theme,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import type { TSchema } from "typebox";
 import { createEditingTools, EDITING_TOOL_NAMES } from "../src/tools.ts";
 import { supportsExistingFileReplacement } from "../src/file-system.ts";
 import { harness } from "./extension-harness.ts";
@@ -25,7 +32,7 @@ async function emitBeforeAgentStart(emit: TriggerStartEmitter, cwd: string) {
   await emit({ messageType: "user", prompt: "fixture" }, options);
 }
 
-function renderContext(cwd: string, isError = false) {
+function renderContext(cwd: string, isError = false, expanded = true) {
   return {
     args: { files: [], input: "" },
     toolCallId: "render-fixture",
@@ -35,18 +42,58 @@ function renderContext(cwd: string, isError = false) {
     executionStarted: true,
     argsComplete: true,
     isPartial: false,
-    expanded: true,
+    expanded,
     showImages: false,
     isError,
     durationMs: undefined,
     outputPad: 1,
     keyText: () => "",
-    keyHint: (_keybinding: string, description: string) => description,
+    keyHint: (keybinding: string, description: string) => `${keybinding} ${description}`,
     invalidate() {
       // There is no live TUI to invalidate in this rendered-output fixture.
     },
   };
 }
+
+const EXPAND_HINT = "(app.tools.expand to expand)";
+
+/** The result part of a tool card, drawn the way Pi calls the registered renderer. */
+function resultCard(
+  tool: ToolDefinition<TSchema, unknown, unknown>,
+  result: Readonly<{
+    content: readonly AgentToolResult<unknown>["content"][number][];
+    details: unknown;
+    isError?: boolean | undefined;
+  }>,
+  view: Readonly<{ expanded: boolean; theme: Theme; cwd: string }>,
+): string {
+  const render = tool.renderResult;
+  assert(render);
+  return render(
+    { content: [...result.content], details: result.details },
+    { expanded: view.expanded, isPartial: false },
+    view.theme,
+    renderContext(view.cwd, result.isError === true, view.expanded),
+  )
+    .render(200)
+    .map((line) => stripTerminalSequences(line).trimEnd())
+    .join("\n");
+}
+
+// Recorded on 2026-11-02. The model sent `files` as a JSON string of the array (1,075 characters;
+// shortened here), `prepareArguments` refused the call, and Pi built the result itself.
+const refusedCall = {
+  arguments: { files: '[{"path":"a.txt","edits":[{"oldText":"a","newText":"b"}]}]' },
+  result: {
+    role: "toolResult",
+    toolCallId: "chatcmpl-tool-af8c930205dcb6ab",
+    toolName: "replace_text",
+    content: [{ type: "text", text: "files must be an array" }],
+    details: {},
+    isError: true,
+    timestamp: 1_793_587_783_724,
+  },
+} as const;
 
 const patch = (path: string, before = "before", after = "after") =>
   `*** Begin Patch\n*** Update File: ${path}\n@@\n-${before}\n+${after}\n*** End Patch`;
@@ -543,3 +590,86 @@ nodeTest(
     }
   },
 );
+
+nodeTest(
+  "a call Pi refuses before execution shows the tool's header and failure line",
+  async (t) => {
+    const { tools, session } = await harness(t);
+    const replace = tools.get(refusedCall.result.toolName);
+    assert(replace);
+    const renderCall = replace.renderCall;
+    assert(renderCall);
+    initTheme("dark", false);
+    const { theme } = session.extensionRunner.getUIContext();
+    const cwd = session.extensionRunner.createContext().cwd;
+    assert.throws(() => replace.prepareArguments?.(refusedCall.arguments), {
+      message: refusedCall.result.content[0].text,
+    });
+    const header = renderCall(refusedCall.arguments, theme, renderContext(cwd, true, false))
+      .render(200)
+      .map((line) => stripTerminalSequences(line).trim())
+      .join("\n");
+    assert.equal(header, "replace_text");
+    for (const expanded of [false, true]) {
+      assert.match(
+        resultCard(replace, refusedCall.result, { expanded, theme, cwd }),
+        /^✗ files must be an array/,
+      );
+    }
+  },
+);
+
+nodeTest("a collapsed card names the expand key when expanding shows more", async (t) => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-edit-hint-")));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { tools, session } = await harness(t, EDITING_TOOL_NAMES, false, directory);
+  const write = tools.get("write_files");
+  const replace = tools.get("replace_text");
+  assert(write);
+  assert(replace);
+  const ctx = session.extensionRunner.createToolContext(
+    "hint",
+    session.extensionRunner.createContext().signal,
+  );
+  initTheme("dark", false);
+  const { theme } = session.extensionRunner.getUIContext();
+  const created = await write.execute(
+    "create",
+    { files: [{ path: "new.txt", content: "created line\n", mode: "create" }] },
+    undefined,
+    undefined,
+    ctx,
+  );
+  const failed = await replace.execute(
+    "absent",
+    { files: [{ path: "new.txt", edits: [{ oldText: "absent", newText: "b" }] }] },
+    undefined,
+    undefined,
+    ctx,
+  );
+  for (const { tool, result, symbol, hidden } of [
+    { tool: write, result: created, symbol: "✓", hidden: "+created line" },
+    { tool: replace, result: failed, symbol: "✗", hidden: "No changes were written." },
+  ]) {
+    const [message] = result.content;
+    assert(message?.type === "text");
+    const [firstLine = ""] = message.text.split("\n");
+    const collapsed = resultCard(tool, result, { expanded: false, theme, cwd: directory });
+    const expanded = resultCard(tool, result, { expanded: true, theme, cwd: directory });
+    assert.equal(collapsed, `${symbol} ${firstLine}\n${EXPAND_HINT}`);
+    assert(expanded.includes(hidden), expanded);
+    assert(!expanded.includes(EXPAND_HINT), expanded);
+  }
+});
+
+nodeTest("a collapsed card has no expand hint when expanding shows nothing more", async (t) => {
+  const { tools, session } = await harness(t);
+  const replace = tools.get(refusedCall.result.toolName);
+  assert(replace);
+  initTheme("dark", false);
+  const { theme } = session.extensionRunner.getUIContext();
+  const cwd = session.extensionRunner.createContext().cwd;
+  const collapsed = resultCard(replace, refusedCall.result, { expanded: false, theme, cwd });
+  assert.equal(collapsed, "✗ files must be an array");
+  assert.equal(resultCard(replace, refusedCall.result, { expanded: true, theme, cwd }), collapsed);
+});
