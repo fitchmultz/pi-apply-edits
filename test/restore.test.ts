@@ -95,13 +95,17 @@ nodeTest(
     });
     const file = session.sessionManager.getSessionFile();
     assert(file !== undefined && file.length > 0);
-    const before = session.sessionManager.getEntries();
+    // A host may journal its own records at a session start: fitchmultz/pi appends `pi.runtime`.
+    // Custom entries never enter model context, so the history is every other entry.
+    const history = (manager: SessionManager) =>
+      manager.getEntries().filter((entry) => entry.type !== "custom");
+    const before = history(session.sessionManager);
     await session.reload();
-    assert.deepEqual(session.sessionManager.getEntries(), before);
+    assert.deepEqual(history(session.sessionManager), before);
     assert.deepEqual(api.getActiveTools(), ["read", "apply_patch"]);
     session.dispose();
     session = await create(SessionManager.open(file));
-    assert.deepEqual(session.sessionManager.getEntries(), before);
+    assert.deepEqual(history(session.sessionManager), before);
     assert.deepEqual(api.getActiveTools(), ["read", "apply_patch"]);
   },
 );
