@@ -107,6 +107,14 @@ marked. Numeric unified-diff headers such as `@@ -1 +1 @@` are not line selector
 use bare `@@` or `@@ literal source line`. A numeric-looking literal source anchor
 can still match normally.
 
+Ambiguous-context errors list the first four matching lines and count the rest.
+For each listed match they print the fewest lines directly above it, up to three,
+that no other match shares. Adding those lines as context at the start of the
+chunk selects that match; more context below the match works too. A match gets no
+lines when its nearest three are shared with another match or lie above the
+preceding chunk or anchor. A named anchor only removes the matches above it:
+context repeated below the anchor is still ambiguous.
+
 Parser portions are covered by [Apache-2.0](../LICENSE-codex). Strict envelopes,
 ambiguity rejection, stacked anchors, anchored insertion, and byte-format
 preservation are part of the parser's behavior. Blank

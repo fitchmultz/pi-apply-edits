@@ -144,7 +144,7 @@ function createPatchTool(getCwd: (() => string) | undefined): PatchTool {
     name: "apply_patch",
     label: "apply patch",
     description:
-      "Apply a Codex-format patch: Add File, Update File, Delete File, and Move to. Plans all files before publishing. Add/move never overwrite an existing destination. Ambiguous context or missing named anchors fail. Preserves BOM, local line endings, and unchanged bytes; added indentation is literal. Partial publication is reported, never automatically retried.",
+      "Apply a Codex-format patch: Add File, Update File, Delete File, and Move to. Plans all files before publishing. Add/move never overwrite an existing destination. Ambiguous context or missing named anchors fail. Each chunk's context must match exactly one place in the rest of the file, not just the first; add context lines to short or repeated text. Preserves BOM, local line endings, and unchanged bytes; added indentation is literal. Partial publication is reported, never automatically retried.",
     promptSnippet: "Focused multi-file patches, creates, deletes, and moves.",
     promptGuidelines: [
       "Use apply_patch for focused edits, replace_text for repeated replacements or large anchored ranges, and write_files for complete files. Preview only when needed.",

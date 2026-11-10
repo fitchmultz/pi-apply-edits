@@ -372,6 +372,43 @@ for (const fixture of [
     forbidden: [/original source lines 2-1/],
   },
   {
+    // Line 12 shares its three lines above with the unlisted match at line 16.
+    name: "ambiguous context lists four matches with the fewest lines that select each",
+    original: "a\nx\nb\nc\nx\nd\nc\nx\np\nq\nr\nx\np\nq\nr\nx\ne\nx\n",
+    body: "@@\n-x\n+y",
+    preview: false,
+    expected: [
+      /^files\[0\]: Ambiguous context in chunk 1: matches at lines 2, 5, 8, 12 and 2 more\. /,
+      /\nAbove line 2 \(line 1\):\na\n/,
+      /\nAbove line 5 \(lines 3-4\):\nb\nc\n/,
+      /\nAbove line 8 \(lines 6-7\):\nd\nc\n/,
+      /\nLine 12: nothing unique directly above it\.\nAdd the lines shown/,
+    ],
+    forbidden: [/line 16/i, /line 18/i],
+  },
+  {
+    name: "ambiguous context after an earlier chunk offers no consumed line",
+    original: "head\nx\nmid\nx\n",
+    body: "@@\n head\n@@\n-x\n+y",
+    preview: true,
+    expected: [
+      /Ambiguous context in chunk 2: matches at lines 2, 4\. /,
+      /\nLine 2: nothing unique directly above it\.\nAbove line 4 \(line 3\):\nmid\n/,
+    ],
+    forbidden: [/head/],
+  },
+  {
+    // Lines 1 and 3 differ only in spacing, which the matching pass ignores.
+    name: "ambiguous corrected context compares the lines above as the match did",
+    original: "a\n old\n a \n old\n",
+    body: "@@\n-old\n+new",
+    preview: false,
+    expected: [
+      /\nLine 2: nothing unique directly above it\.\nAbove line 4 \(lines 2-3\):\n old\n a \n/,
+    ],
+    forbidden: [/Above line 2/],
+  },
+  {
     name: "long Unicode request and current context are explicitly clipped",
     original: `${"🙂".repeat(1000)}actual\n`,
     body: `@@\n-${"🙂".repeat(1000)}missing\n+new`,
@@ -409,6 +446,43 @@ for (const fixture of [
     assert.deepEqual(await readdir(cwd), ["file.txt"]);
   });
 }
+
+nodeTest("an ambiguity error names lines that select each match when added", async (t) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-recovery-")));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const path = join(cwd, "file.txt");
+  const original = "function load() {\n  check();\n}\nfunction save() {\n  check();\n}\n";
+  await writeFile(path, original);
+  const refused = await applyPatchToFiles(
+    wrap("*** Update File: file.txt\n@@\n   check();\n+  log();"),
+    cwd,
+  );
+  assert.equal(
+    refused.details.error,
+    "files[0]: Ambiguous context in chunk 1: matches at lines 2, 5. " +
+      "It must match exactly one place in the rest of the file. " +
+      "Lines above each match that make it unique:\n" +
+      "Above line 2 (line 1):\nfunction load() {\n" +
+      "Above line 5 (line 4):\nfunction save() {\n" +
+      "Add the lines shown for the place you mean as context at the start of the chunk, " +
+      "or add context below it. No changes were written.",
+  );
+  assert.deepEqual(refused.details.modifiedFiles, []);
+  assert.equal(await readFile(path, "utf8"), original);
+  // Following either instruction selects the first place, which no anchor can.
+  for (const body of [
+    "@@\n function load() {\n   check();\n+  log();",
+    "@@\n   check();\n+  log();\n }\n function save() {",
+  ]) {
+    await writeFile(path, original);
+    const retried = await applyPatchToFiles(wrap(`*** Update File: file.txt\n${body}`), cwd);
+    assert.equal(retried.details.error, undefined);
+    assert.equal(
+      await readFile(path, "utf8"),
+      "function load() {\n  check();\n  log();\n}\nfunction save() {\n  check();\n}\n",
+    );
+  }
+});
 
 nodeTest("patch recovery does not reject a numeric-looking literal source anchor", async (t) => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-recovery-")));
@@ -632,6 +706,10 @@ nodeTest("long repeated exact context is linear and does not use argument spread
   assert.equal(
     apply(original, `@@\n${context}-unique end\n+changed`).text,
     "repeat\n".repeat(150_000) + "changed\n",
+  );
+  assert.throws(
+    () => apply(original, "@@\n-repeat\n+changed"),
+    /Ambiguous context in chunk 1: matches at lines 1, 2, 3, 4 and 149996 more\./,
   );
 });
 
