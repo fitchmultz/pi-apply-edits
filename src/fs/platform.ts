@@ -382,13 +382,27 @@ export async function assertNoLinuxCapabilities(path: string, signal?: AbortSign
   }
 }
 
+/** One native publication step's outcome. Callers decide how to report each case. */
+export type PublicationEvidence =
+  | { readonly kind: "committed" }
+  | { readonly kind: "not-published"; readonly cause?: Error }
+  | { readonly kind: "uncertain"; readonly error: AtomicMoveUncertainError };
+
 export async function linkEntry(
   source: string,
   target: string,
   symbolicLink: boolean,
-): Promise<void> {
+): Promise<PublicationEvidence> {
   if (process.platform !== "darwin" || !symbolicLink) {
-    return link(source, target);
+    try {
+      await link(source, target);
+      return { kind: "committed" };
+    } catch (cause) {
+      return {
+        kind: "not-published",
+        cause: cause instanceof Error ? cause : new Error(errorMessage(cause)),
+      };
+    }
   }
   // macOS link(2) follows symlinks; linkat(2) flags=0 links the entry itself.
   let result: string;
@@ -409,15 +423,22 @@ export async function linkEntry(
       source,
       target,
     ]);
-  } catch (error) {
-    throw new AtomicMoveUncertainError(
-      `Entry link publication could not be verified: ${errorMessage(error)}`,
-      { cause: error },
-    );
+  } catch (cause) {
+    return {
+      kind: "uncertain",
+      error: new AtomicMoveUncertainError(
+        `Entry link publication could not be verified: ${errorMessage(cause)}`,
+        { cause },
+      ),
+    };
   }
   if (result.trim() !== "linked") {
-    throw new Error(`Could not link entry ${source} to ${target}: ${result.trim()}`);
+    return {
+      kind: "not-published",
+      cause: new Error(`Could not link entry ${source} to ${target}: ${result.trim()}`),
+    };
   }
+  return { kind: "committed" };
 }
 
 function pairMatches(
@@ -451,7 +472,7 @@ export async function exchangePreparedFiles(
   target: string,
   expectedSource: BigIntStats,
   expectedTarget: BigIntStats,
-): Promise<void> {
+): Promise<PublicationEvidence> {
   const support = await replacementSupportInfo();
   if (!support.supported || support.strategy !== "exchange") {
     throw new Error("Atomic file exchange is unavailable");
@@ -468,22 +489,25 @@ export async function exchangePreparedFiles(
     lstatIfExists(target),
   ]);
   if (pairMatches(currentSource, currentTarget, expectedTarget, expectedSource)) {
-    return;
+    return { kind: "committed" };
   }
   if (commandError && pairMatches(currentSource, currentTarget, expectedSource, expectedTarget)) {
-    throw commandError;
+    return { kind: "not-published", cause: commandError };
   }
-  throw new AtomicMoveUncertainError(
-    `Atomic exchange could not be verified. Commit status is uncertain; inspect ${source} and ${target}`,
-    { cause: commandError },
-  );
+  return {
+    kind: "uncertain",
+    error: new AtomicMoveUncertainError(
+      `Atomic exchange could not be verified. Commit status is uncertain; inspect ${source} and ${target}`,
+      { cause: commandError },
+    ),
+  };
 }
 
 export async function movePreparedFileNoReplace(
   source: string,
   target: string,
   expectedSource: BigIntStats,
-): Promise<boolean> {
+): Promise<PublicationEvidence> {
   const support = await replacementSupportInfo();
   if (!support.supported || support.strategy !== "exchange") {
     throw new Error("Atomic no-clobber publication is unavailable");
@@ -500,18 +524,21 @@ export async function movePreparedFileNoReplace(
     lstatIfExists(target),
   ]);
   if (moveComplete(currentSource, currentTarget, expectedSource)) {
-    return true;
+    return { kind: "committed" };
   }
   if (sourceUnchanged(currentSource, expectedSource)) {
     if (currentTarget) {
-      return false;
+      return { kind: "not-published" };
     }
     if (commandError) {
-      throw commandError;
+      return { kind: "not-published", cause: commandError };
     }
   }
-  throw new AtomicMoveUncertainError(
-    `Atomic no-clobber publication changed during publication or could not be verified. Commit status is uncertain; inspect ${source} and ${target}`,
-    { cause: commandError },
-  );
+  return {
+    kind: "uncertain",
+    error: new AtomicMoveUncertainError(
+      `Atomic no-clobber publication changed during publication or could not be verified. Commit status is uncertain; inspect ${source} and ${target}`,
+      { cause: commandError },
+    ),
+  };
 }

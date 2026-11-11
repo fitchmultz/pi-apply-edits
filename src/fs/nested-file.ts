@@ -5,9 +5,12 @@ import type {
   ReadonlyPlannedNewFile,
   ReplacementSupport,
 } from "./contracts.ts";
-import { assertPublishedDirectoriesCurrent, unlinkOwnedPath } from "./cleanup.ts";
 import {
-  AtomicMoveUncertainError,
+  assertPublishedDirectoriesCurrent,
+  discardAtomicCreateCandidate,
+  unlinkOwnedPath,
+} from "./cleanup.ts";
+import {
   errorMessage,
   fallbackAllowed,
   isCode,
@@ -21,7 +24,7 @@ import {
   sameIdentity,
   samePublishedState,
 } from "./observation.ts";
-import { movePreparedFileNoReplace } from "./platform.ts";
+import { movePreparedFileNoReplace, type PublicationEvidence } from "./platform.ts";
 import { preparePrivatePublicationFile } from "./preparation.ts";
 
 export interface NestedFileDestination {
@@ -124,31 +127,26 @@ class NestedFilePublication {
     this.strategy = { kind: "move", identity };
     await assertPublishedDirectoriesCurrent(this.destination.directories);
     throwIfAborted(this.signal);
-    let moved: boolean;
+    let evidence: PublicationEvidence;
     try {
-      moved = await movePreparedFileNoReplace(
+      evidence = await movePreparedFileNoReplace(
         this.destination.candidate,
         this.destination.target,
         identity,
       );
     } catch (error) {
-      if (error instanceof AtomicMoveUncertainError) {
-        this.evidence = "unverified";
-        throw error;
-      }
-      try {
-        await unlinkOwnedPath(this.destination.candidate, identity, "Atomic create candidate");
-      } catch (cleanupError) {
-        throw new Error(
-          `${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
-          { cause: cleanupError },
-        );
-      }
-      throw error;
+      return discardAtomicCreateCandidate(this.destination.candidate, identity, error);
     }
-    if (!moved) {
-      await unlinkOwnedPath(this.destination.candidate, identity, "Atomic create candidate");
-      throw new Error(`File appeared before create: ${this.destination.target}.`);
+    if (evidence.kind === "uncertain") {
+      this.evidence = "unverified";
+      throw evidence.error;
+    }
+    if (evidence.kind === "not-published") {
+      return discardAtomicCreateCandidate(
+        this.destination.candidate,
+        identity,
+        evidence.cause ?? new Error(`File appeared before create: ${this.destination.target}.`),
+      );
     }
     this.evidence = "unverified";
   }

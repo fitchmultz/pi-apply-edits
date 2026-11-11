@@ -18,12 +18,7 @@ import {
   temporaryPath,
   unlinkOwnedPath,
 } from "./cleanup.ts";
-import {
-  AtomicMoveUncertainError,
-  errorMessage,
-  PublicationError,
-  throwIfAborted,
-} from "./errors.ts";
+import { errorMessage, PublicationError, throwIfAborted } from "./errors.ts";
 import {
   assertPreparedFileCurrent,
   lstatIfExists,
@@ -136,7 +131,13 @@ async function probeEntryLink(
   }
   const probeStats = await lstat(probe, { bigint: true });
   try {
-    await linkEntry(probe, target, entry.symbolicLink);
+    const linked = await linkEntry(probe, target, entry.symbolicLink);
+    if (linked.kind === "uncertain") {
+      throw linked.error;
+    }
+    if (linked.kind === "not-published") {
+      throw linked.cause ?? new Error("The filesystem did not link the probe entry");
+    }
     const [before, after] = await Promise.all([
       lstat(probe, { bigint: true }),
       lstat(target, { bigint: true }),
@@ -239,33 +240,27 @@ class DestinationMove {
   }
 
   private async publish(): Promise<void> {
-    try {
-      if (this.atomicMove) {
-        if (
-          !(await movePreparedFileNoReplace(
-            this.candidate.path,
-            this.plan.destination.targetPath,
-            this.candidate.stats,
-          ))
-        ) {
-          throw new Error(
-            `Move destination appeared before commit: ${this.plan.destination.inputPath}`,
-          );
-        }
-      } else {
-        await linkEntry(
+    const evidence = this.atomicMove
+      ? await movePreparedFileNoReplace(
+          this.candidate.path,
+          this.plan.destination.targetPath,
+          this.candidate.stats,
+        )
+      : await linkEntry(
           this.candidate.path,
           this.plan.destination.targetPath,
           this.plan.entry.symbolicLink,
         );
-      }
-    } catch (error) {
-      if (error instanceof AtomicMoveUncertainError) {
-        this.stage = { kind: "destination-unverified" };
-      }
-      throw error;
+    if (evidence.kind === "not-published") {
+      throw (
+        evidence.cause ??
+        new Error(`Move destination appeared before commit: ${this.plan.destination.inputPath}`)
+      );
     }
     this.stage = { kind: "destination-unverified" };
+    if (evidence.kind === "uncertain") {
+      throw evidence.error;
+    }
   }
 
   private async verifyDestination(): Promise<void> {
