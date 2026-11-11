@@ -370,13 +370,13 @@ class ReplacementPublication {
       );
     }
     try {
-      const removed = await unlinkOwnedPath(
+      const outcome = await unlinkOwnedPath(
         this.recovery,
         retained.stats,
         "Recovery link",
         retained,
       );
-      if (!removed) {
+      if (outcome.kind !== "unlinked") {
         this.warnings.push(
           `The edit was committed, but the pre-edit recovery link is no longer at ${this.recovery}; its location is uncertain and the previous content may remain elsewhere.`,
         );
@@ -429,12 +429,12 @@ class ReplacementPublication {
 
   private async removeTemporary(): Promise<string | undefined> {
     try {
-      const removed = await unlinkOwnedPath(
+      const outcome = await unlinkOwnedPath(
         this.temporary,
         this.temporaryIdentity,
         "Temporary replacement",
       );
-      if (!removed && this.temporaryIdentity) {
+      if (outcome.kind !== "unlinked" && this.temporaryIdentity) {
         return `the temporary replacement is no longer at ${this.temporary}; its location is uncertain and its content may remain elsewhere`;
       }
     } catch (error) {
@@ -446,8 +446,8 @@ class ReplacementPublication {
 
   private async removeUncommittedRecovery(identity: BigIntStats): Promise<string | undefined> {
     try {
-      const removed = await unlinkOwnedPath(this.recovery, identity, "Recovery link");
-      if (!removed) {
+      const outcome = await unlinkOwnedPath(this.recovery, identity, "Recovery link");
+      if (outcome.kind !== "unlinked") {
         return `the pre-edit recovery link is no longer at ${this.recovery}; its location is uncertain and the target may remain hard-linked to it`;
       }
     } catch (error) {

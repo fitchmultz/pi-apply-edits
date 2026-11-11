@@ -93,7 +93,7 @@ class EntryDeletion {
     }
     this.stage = { kind: "deletion-verified" };
     await this.hooks?.afterCommit?.();
-    if (!(await unlinkOwnedPath(this.retained, moved, "Deleted entry"))) {
+    if ((await unlinkOwnedPath(this.retained, moved, "Deleted entry")).kind !== "unlinked") {
       throw new Error(
         `Deleted entry is no longer at ${this.retained}; cleanup could not be verified.`,
       );

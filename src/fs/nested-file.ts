@@ -185,12 +185,12 @@ class NestedFilePublication {
       throwIfAborted(this.signal);
     } catch (error) {
       try {
-        const removed = await unlinkOwnedPath(
+        const outcome = await unlinkOwnedPath(
           this.destination.target,
           opened,
           "Escaped fallback create file",
         );
-        if (!removed) {
+        if (outcome.kind !== "unlinked") {
           throw new Error(
             `Fallback create file location changed before cleanup: ${this.destination.target}.`,
             { cause: error },
@@ -250,8 +250,8 @@ class NestedFilePublication {
 
   private async rollback(stats: BigIntStats, failure: unknown): Promise<void> {
     try {
-      const removed = await unlinkOwnedPath(this.destination.target, stats, "Escaped create file");
-      if (!removed) {
+      const outcome = await unlinkOwnedPath(this.destination.target, stats, "Escaped create file");
+      if (outcome.kind !== "unlinked") {
         throw new Error(
           `Created file location changed before cleanup: ${this.destination.target}.`,
         );

@@ -230,7 +230,12 @@ abstract class NestedStaging {
     const target = join(directory, basename(entry.plan.targetPath));
     if (entry.move?.snapshot) {
       try {
-        await prepareMoveReplacement({ path: target }, entry.move.snapshot, entry.bytes, signal);
+        await prepareMoveReplacement(
+          { path: target, ownsPrivateTree: true },
+          entry.move.snapshot,
+          entry.bytes,
+          signal,
+        );
       } catch (error) {
         if (error instanceof PrivateEntryChangedError) {
           // Recursive discard does not verify entries; keep the whole tree when a check detects one.
