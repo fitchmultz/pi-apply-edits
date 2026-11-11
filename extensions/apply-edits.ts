@@ -153,15 +153,23 @@ function isReplaceableWriter(tool: Readonly<ToolInfo>): boolean {
 /** Edit calls in one agent run reuse a macOS ACL helper, which exits once the run settles. */
 function reuseAclHelperPerRun(pi: ExtensionAPI): void {
   const owner = {};
+  let retained = false;
   pi.on("agent_start", () => {
-    retainMacosAclHelper(owner);
+    // One run can start its loop more than once (retry/compaction continuations).
+    if (!retained) {
+      retained = true;
+      retainMacosAclHelper(owner);
+    }
   });
-  pi.on("agent_settled", async () => {
+  const release = async () => {
+    if (!retained) {
+      return;
+    }
+    retained = false;
     await releaseMacosAclHelper(owner);
-  });
-  pi.on("session_shutdown", async () => {
-    await releaseMacosAclHelper(owner);
-  });
+  };
+  pi.on("agent_settled", release);
+  pi.on("session_shutdown", release);
 }
 
 function resolveExecutionCwd(pi: ExtensionAPI, ctx: ExtensionContext): string {

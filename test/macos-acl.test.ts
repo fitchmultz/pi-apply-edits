@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback, spawnSync } from "node:child_process";
+import nodeChildProcess, {
+  execFile as execFileCallback,
+  spawnSync,
+  type ChildProcess,
+} from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
 import { fileURLToPath } from "node:url";
+import { syncBuiltinESMExports } from "node:module";
 import { promisify } from "node:util";
+import {
+  MacosAclSession,
+  releaseMacosAclHelper,
+  retainMacosAclHelper,
+} from "../src/fs/macos-acl.ts";
 
 const execFile = promisify(execFileCallback);
 const script = fileURLToPath(new URL("../src/macos-acl.js", import.meta.url));
@@ -77,5 +87,55 @@ nodeTest(
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  },
+);
+
+nodeTest(
+  "duplicate retains for one owner still end the idle helper on release",
+  { skip: process.platform !== "darwin", timeout: 20_000 },
+  async (t) => {
+    const helpers: ChildProcess[] = [];
+    const originalSpawn = nodeChildProcess.spawn;
+    const spawn = t.mock.method(
+      nodeChildProcess,
+      "spawn",
+      (...args: Readonly<[string, readonly string[]]>) => {
+        const child = originalSpawn(...args);
+        if (args[0] === "/usr/bin/osascript") {
+          helpers.push(child);
+        }
+        return child;
+      },
+    );
+    syncBuiltinESMExports();
+    t.after(() => {
+      spawn.mock.restore();
+      syncBuiltinESMExports();
+    });
+    const directory = await mkdtemp(join(tmpdir(), "pi-acl-retain-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const source = join(directory, "source");
+    const target = join(directory, "target");
+    await writeFile(source, "source");
+    await writeFile(target, "target");
+    await execFile("/bin/chmod", ["+a", "user:_www allow read", source]);
+    const owner = {};
+    // Pi can start one run's loop more than once; retains for the same owner are idempotent.
+    retainMacosAclHelper(owner);
+    retainMacosAclHelper(owner);
+    const session = new MacosAclSession();
+    await session.run(() => session.transfer("copy", source, target));
+    await session.close();
+    assert.equal(helpers.length, 1);
+    const helper = helpers[0];
+    assert(helper !== undefined);
+    await releaseMacosAclHelper(owner);
+    const deadline = Date.now() + 5_000;
+    while (helper.exitCode === null && Date.now() < deadline) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 25);
+      });
+    }
+    assert.equal(helper.exitCode, 0);
   },
 );

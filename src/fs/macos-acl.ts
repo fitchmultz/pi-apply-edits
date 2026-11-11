@@ -23,8 +23,9 @@ type AclProcessState =
 
 export const macosAclScript = fileURLToPath(new URL("../macos-acl.js", import.meta.url));
 const sessions = new AsyncLocalStorage<MacosAclSession>();
-// One lease per retain call, so overlapping runs from one owner cannot end each other's helper.
-const retainers = new Map<object, number>();
+// Owners that keep a finished batch's helper for the next batch. Membership is idempotent:
+// Pi can start one run's loop more than once, and only one release follows.
+const retainers = new Set<object>();
 
 export function currentMacosAclSession(): MacosAclSession | undefined {
   return sessions.getStore();
@@ -32,16 +33,11 @@ export function currentMacosAclSession(): MacosAclSession | undefined {
 
 /** Keeps one finished batch's helper for the next batch until `owner` releases it. */
 export function retainMacosAclHelper(owner: object): void {
-  retainers.set(owner, (retainers.get(owner) ?? 0) + 1);
+  retainers.add(owner);
 }
 
-/** Ends the idle helper once no owner retains a lease. */
+/** Ends the idle helper once no owner retains it. */
 export async function releaseMacosAclHelper(owner: object): Promise<void> {
-  const leases = retainers.get(owner) ?? 0;
-  if (leases > 1) {
-    retainers.set(owner, leases - 1);
-    return;
-  }
   retainers.delete(owner);
   if (retainers.size > 0) {
     return;
