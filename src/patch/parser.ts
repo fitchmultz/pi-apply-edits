@@ -35,6 +35,8 @@ interface PathSpan {
   start: number;
   end: number;
   path: string;
+  /** Exact input text covered by the offsets, re-checked before binding splices it. */
+  text: string;
 }
 /** Each parse allocates fresh operations and spans; ownership transfers to the caller. */
 export interface ParsedPatch {
@@ -61,7 +63,7 @@ class PatchParser {
 
   parse(): ParsedPatch {
     const operations: PatchOperation[] = [];
-    while (this.#index < this.#lines.length - 1) {
+    while (!this.atEndPatchLine()) {
       if (operations.length >= MAX_FILES) {
         this.fail(`patch cannot contain more than ${MAX_FILES} file operations`);
       }
@@ -85,8 +87,20 @@ class PatchParser {
     return line;
   }
 
-  private readPath(prefix: string): string {
+  /** Returns the current line and advances; the only cursor write besides a chunk scope. */
+  private take(): SourceLine {
     const line = this.current();
+    this.#index++;
+    return line;
+  }
+
+  /** True at the final End Patch line, which no reader may consume as a body line. */
+  private atEndPatchLine(): boolean {
+    return this.#index >= this.#lines.length - 1;
+  }
+
+  private readPath(prefix: string): string {
+    const line = this.take();
     const path = line.text.slice(prefix.length);
     if (path.length === 0) {
       this.fail("path must be non-empty");
@@ -95,18 +109,17 @@ class PatchParser {
       start: line.start + prefix.length,
       end: line.end - line.ending.length,
       path,
+      text: path,
     });
-    this.#index++;
     return path;
   }
 
   private hasBody(): boolean {
-    const text = this.#lines.at(this.#index)?.text;
-    return (
-      this.#index < this.#lines.length - 1 &&
-      text !== undefined &&
-      (!text.startsWith("*** ") || text === "*** End of File")
-    );
+    if (this.atEndPatchLine()) {
+      return false;
+    }
+    const text = this.current().text;
+    return !text.startsWith("*** ") || text === "*** End of File";
   }
 
   private readOperation(): PatchOperation {
@@ -127,12 +140,11 @@ class PatchParser {
     const path = this.readPath("*** Add File: ");
     const content: string[] = [];
     while (this.hasBody()) {
-      const line = this.current();
+      const line = this.take();
       if (!line.text.startsWith("+")) {
         this.fail("Add File lines must start with '+'");
       }
       content.push(line.text.slice(1), line.ending);
-      this.#index++;
     }
     return { kind: "add", path, content: content.join("") };
   }
@@ -170,12 +182,12 @@ class PatchParser {
       if (anchor && lines.length > 0) {
         break;
       }
+      this.take();
       if (text === "*** End of File") {
         if (lines.length === 0) {
           this.fail("End of File requires a non-empty chunk");
         }
         endOfFile = true;
-        this.#index++;
         break;
       }
       if (anchor) {
@@ -186,7 +198,6 @@ class PatchParser {
       } else {
         lines.push(this.readChangeLine(text));
       }
-      this.#index++;
     }
     if (lines.length === 0) {
       this.fail("update chunk must contain lines after its anchors");
@@ -232,6 +243,11 @@ export function bindPatchPaths(input: string, cwd: string): string {
   }
   let result = input;
   for (const span of paths.toReversed()) {
+    if (result.slice(span.start, span.end) !== span.text) {
+      throw new Error(
+        "Patch path offsets changed after parsing; refusing to bind a different path",
+      );
+    }
     if (!isAbsolute(span.path)) {
       const bound = operationPath(span.path, cwd);
       if (/[\r\n]/.test(bound)) {

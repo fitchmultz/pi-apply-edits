@@ -57,17 +57,24 @@ function occurrences(
   return found;
 }
 
+export type MatchScopeKind = "anchor" | "context";
+
 export interface MatchScope {
   readonly start: number;
   readonly eof: boolean;
   readonly scopedChars: number;
-  readonly label: string;
+  readonly kind: MatchScopeKind;
+  /** One-based chunk number, used only to render diagnostics. */
+  readonly chunk: number;
 }
 interface NormalizationPass {
   readonly normalize: (text: string) => string;
   readonly strategy: MatchStrategy;
 }
-export interface ContextMatch extends Readonly<PatchMatch> {
+export interface ContextMatch {
+  /** Zero-based index of the first matched line; receipts add one when they report it. */
+  readonly index: number;
+  readonly strategy: PatchMatch["strategy"];
   readonly includesBom: boolean;
 }
 const passes: readonly NormalizationPass[] = [
@@ -80,11 +87,11 @@ const passes: readonly NormalizationPass[] = [
 /** Immutable source and explicit suffix scope keep anchors and chunk context consistent. */
 export class PatchMatcher {
   readonly #source: readonly string[];
-  readonly #hasBom: boolean;
+  readonly #bom: string;
 
-  constructor(source: readonly string[], hasBom: boolean) {
+  constructor(source: readonly string[], bom: string) {
     this.#source = source;
-    this.#hasBom = hasBom;
+    this.#bom = bom;
   }
 
   find(pattern: readonly string[], scope: MatchScope): ContextMatch {
@@ -112,7 +119,7 @@ export class PatchMatcher {
       }
       const line = candidates[0];
       if (line !== undefined) {
-        return { line: line + 1, strategy: pass.strategy, includesBom };
+        return { index: line, strategy: pass.strategy, includesBom };
       }
     }
     return undefined;
@@ -157,7 +164,7 @@ export class PatchMatcher {
   ): boolean {
     // Count a verbatim first-line BOM boundary match alongside literal interior matches.
     return (
-      this.#hasBom &&
+      this.#bom.length > 0 &&
       scope.start === 0 &&
       pattern[0]?.startsWith("\uFEFF") === true &&
       pattern.length <= this.#source.length &&

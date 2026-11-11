@@ -152,7 +152,7 @@ nodeTest("parse and update results are fresh values that callers may revise", ()
         ],
       },
     ],
-    paths: [{ start, end: start + "draft.txt".length, path: "draft.txt" }],
+    paths: [{ start, end: start + "draft.txt".length, path: "draft.txt", text: "draft.txt" }],
   });
 });
 

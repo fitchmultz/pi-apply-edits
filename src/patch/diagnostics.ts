@@ -3,8 +3,11 @@ import { truncateUtf8 } from "../editing/text.ts";
 interface DiagnosticScope {
   readonly start: number;
   readonly eof: boolean;
-  readonly label: string;
+  readonly kind: "anchor" | "context";
+  readonly chunk: number;
 }
+
+const scopeLabel = (scope: DiagnosticScope): string => `${scope.kind} in chunk ${scope.chunk}`;
 
 function boundedExcerpt(lines: readonly string[], start: number, end: number): string {
   const selected = lines.slice(start, Math.min(end, start + 8));
@@ -34,7 +37,7 @@ function currentScope(
 function numericHeaderHint(pattern: readonly string[], scope: DiagnosticScope): string {
   const anchor = pattern[0] ?? "";
   if (
-    !scope.label.startsWith("anchor") ||
+    scope.kind !== "anchor" ||
     pattern.length !== 1 ||
     anchor.length > 1_200 ||
     !/^-\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?: .*)?$/.test(anchor)
@@ -107,8 +110,8 @@ export function ambiguousPatchMessage(
 ): string {
   const listed = candidates.slice(0, LISTED_MATCHES);
   const more = candidates.length - listed.length;
-  const header = `Ambiguous ${scope.label}: matches at lines ${listed.map((line) => line + 1).join(", ")}${more > 0 ? ` and ${more} more` : ""}.`;
-  if (scope.label.startsWith("anchor")) {
+  const header = `Ambiguous ${scopeLabel(scope)}: matches at lines ${listed.map((line) => line + 1).join(", ")}${more > 0 ? ` and ${more} more` : ""}.`;
+  if (scope.kind === "anchor") {
     return `${header} Add unique anchors or surrounding context.`;
   }
   const matches = { source, candidates, start: scope.start, normalize };
@@ -133,7 +136,7 @@ export function missingPatchMessage(
     ? ""
     : " Corrected matching exceeded its work budget; use exact context.";
   return (
-    `Could not find ${scope.label}${location}.${budget}` +
+    `Could not find ${scopeLabel(scope)}${location}.${budget}` +
     `\nRequested text:\n${boundedExcerpt(pattern, 0, pattern.length)}` +
     currentScope(source, pattern, scope) +
     numericHeaderHint(pattern, scope) +
