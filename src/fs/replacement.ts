@@ -224,21 +224,7 @@ class ReplacementPublication {
     await assertSnapshotCurrent(this.snapshot);
     throwIfAborted(this.signal);
     try {
-      await exchangePreparedFiles(
-        this.temporary,
-        this.snapshot.actualPath,
-        prepared,
-        this.snapshot.stats,
-      );
-      this.commitEvidence = { kind: "issued-unverified" };
-      const retained = await movePreparedFileNoReplace(
-        this.temporary,
-        this.recovery,
-        this.snapshot.stats,
-      );
-      if (!retained) {
-        throw new Error(`Recovery path appeared during atomic replacement: ${this.recovery}`);
-      }
+      await this.exchangeAndRetain(prepared);
     } catch (error) {
       if (
         this.commitEvidence.kind === "issued-unverified" ||
@@ -251,6 +237,36 @@ class ReplacementPublication {
         );
       }
       throw error;
+    }
+  }
+
+  private async exchangeAndRetain(prepared: BigIntStats): Promise<void> {
+    const exchanged = await exchangePreparedFiles(
+      this.temporary,
+      this.snapshot.actualPath,
+      prepared,
+      this.snapshot.stats,
+    );
+    if (exchanged.kind === "uncertain") {
+      throw exchanged.error;
+    }
+    if (exchanged.kind === "not-published") {
+      throw exchanged.cause ?? new Error("Atomic exchange was not published");
+    }
+    this.commitEvidence = { kind: "issued-unverified" };
+    const retained = await movePreparedFileNoReplace(
+      this.temporary,
+      this.recovery,
+      this.snapshot.stats,
+    );
+    if (retained.kind === "uncertain") {
+      throw retained.error;
+    }
+    if (retained.kind === "not-published") {
+      throw (
+        retained.cause ??
+        new Error(`Recovery path appeared during atomic replacement: ${this.recovery}`)
+      );
     }
   }
 

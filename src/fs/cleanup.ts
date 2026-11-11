@@ -3,7 +3,7 @@ import { constants, type BigIntStats } from "node:fs";
 import { lstat, mkdir, open, rename, rmdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { FileState } from "./contracts.ts";
-import { isCode } from "./errors.ts";
+import { errorMessage, isCode } from "./errors.ts";
 import {
   readStableFile,
   sameIdentity,
@@ -17,6 +17,23 @@ export function temporaryPath(targetPath: string): string {
 
 export function temporaryDirectoryPath(targetPath: string): string {
   return `${temporaryPath(targetPath)}dir`;
+}
+
+/** Removes an unpublished atomic create candidate, then reports the chosen failure. */
+export async function discardAtomicCreateCandidate(
+  candidate: string,
+  stats: BigIntStats,
+  error: unknown,
+): Promise<never> {
+  try {
+    await unlinkOwnedPath(candidate, stats, "Atomic create candidate");
+  } catch (cleanupError) {
+    throw new Error(
+      `${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
+      { cause: cleanupError },
+    );
+  }
+  throw error instanceof Error ? error : new Error(errorMessage(error));
 }
 
 export function assertCreatedDirectoryOwner(stats: BigIntStats, path: string): void {

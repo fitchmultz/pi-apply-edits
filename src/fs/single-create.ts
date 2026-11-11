@@ -8,12 +8,12 @@ import type {
 } from "./contracts.ts";
 import {
   assertCreatedDirectoryOwner,
+  discardAtomicCreateCandidate,
   rmdirOwnedPath,
   temporaryDirectoryPath,
   unlinkOwnedPath,
 } from "./cleanup.ts";
 import {
-  AtomicMoveUncertainError,
   errorMessage,
   fallbackAllowed,
   isCode,
@@ -30,7 +30,12 @@ import {
   syncDirectory,
 } from "./observation.ts";
 import { assertNewFilePlanCurrent, TraversalDirectories } from "./planning.ts";
-import { movePreparedFileNoReplace, replacementSupportInfo, transferMacosAcl } from "./platform.ts";
+import {
+  movePreparedFileNoReplace,
+  type PublicationEvidence,
+  replacementSupportInfo,
+  transferMacosAcl,
+} from "./platform.ts";
 import { preparePrivatePublicationFile } from "./preparation.ts";
 
 type CreatePublication =
@@ -212,29 +217,25 @@ class SingleCreation {
   private async publishMove(): Promise<void> {
     const candidate = join(this.temporaryDirectory, "publish");
     const stats = await preparePrivatePublicationFile(candidate, this.bytes, this.signal);
-    let moved: boolean;
+    let evidence: PublicationEvidence;
     try {
-      moved = await movePreparedFileNoReplace(candidate, this.plan.targetPath, stats);
+      evidence = await movePreparedFileNoReplace(candidate, this.plan.targetPath, stats);
     } catch (error) {
-      if (error instanceof AtomicMoveUncertainError) {
-        this.publication = { kind: "visible-unverified" };
-        this.sourceCleanup = "retained";
-        throw error;
-      }
-      try {
-        await unlinkOwnedPath(candidate, stats, "Atomic create candidate");
-      } catch (cleanupError) {
-        throw new Error(
-          `${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
-          { cause: cleanupError },
-        );
-      }
-      throw error;
+      return discardAtomicCreateCandidate(candidate, stats, error);
     }
-    if (!moved) {
-      await unlinkOwnedPath(candidate, stats, "Atomic create candidate");
-      throw new Error(
-        `File appeared before create: ${this.plan.targetPath}. No changes were written.`,
+    if (evidence.kind === "uncertain") {
+      this.publication = { kind: "visible-unverified" };
+      this.sourceCleanup = "retained";
+      throw evidence.error;
+    }
+    if (evidence.kind === "not-published") {
+      return discardAtomicCreateCandidate(
+        candidate,
+        stats,
+        evidence.cause ??
+          new Error(
+            `File appeared before create: ${this.plan.targetPath}. No changes were written.`,
+          ),
       );
     }
     this.publication = { kind: "visible-unverified" };
