@@ -82,7 +82,7 @@ class PatchUpdater {
     this.#lines = splitLines(this.#body);
     this.#matcher = new PatchMatcher(
       this.#lines.map((line) => line.text),
-      this.#bom.length > 0,
+      this.#bom,
     );
     this.#projectedLength = this.#body.length;
   }
@@ -105,24 +105,25 @@ class PatchUpdater {
     return index < 0 ? undefined : this.#lines.at(index);
   }
 
-  private scope(eof: boolean, label: string): MatchScope {
+  private scope(kind: MatchScope["kind"], eof: boolean, chunk: number): MatchScope {
     return {
       start: this.#cursor,
       eof,
       scopedChars: this.#body.length - this.offsetAt(this.#cursor),
-      label,
+      kind,
+      chunk,
     };
   }
 
   private applyChunk(chunk: ReadonlyPatchChunk, index: number): void {
     for (const anchor of chunk.anchors) {
-      const found = this.#matcher.find([anchor], this.scope(false, `anchor in chunk ${index + 1}`));
-      this.#matches.push({ line: found.line, strategy: found.strategy });
-      this.#cursor = found.line;
+      const found = this.#matcher.find([anchor], this.scope("anchor", false, index + 1));
+      this.#matches.push({ line: found.index + 1, strategy: found.strategy });
+      this.#cursor = found.index + 1;
     }
     const { lines, start } = this.locate(chunk, index);
-    this.#matches.push({ line: start.line, strategy: start.strategy });
-    let position = start.line - 1;
+    this.#matches.push({ line: start.index + 1, strategy: start.strategy });
+    let position = start.index;
     let runStart = position;
     let added: string[] = [];
     for (const line of lines) {
@@ -146,7 +147,7 @@ class PatchUpdater {
     if (context.length === 0) {
       return { lines: chunk.lines, start: this.additionStart(chunk) };
     }
-    const scope = this.scope(chunk.endOfFile, `context in chunk ${index + 1}`);
+    const scope = this.scope("context", chunk.endOfFile, index + 1);
     const found = this.#matcher.search(context, scope);
     if (found !== undefined) {
       return { lines: chunk.lines, start: found };
@@ -168,7 +169,7 @@ class PatchUpdater {
 
   private additionStart(chunk: ReadonlyPatchChunk): ContextMatch {
     const start = chunk.anchors.length > 0 && !chunk.endOfFile ? this.#cursor : this.#lines.length;
-    return { line: start + 1, strategy: "exact", includesBom: false };
+    return { index: start, strategy: "exact", includesBom: false };
   }
 
   private replacementEnding(start: number, end: number): string {
@@ -232,6 +233,9 @@ class PatchUpdater {
     const parts: string[] = [];
     let offset = 0;
     for (const replacement of this.#replacements) {
+      if (replacement.start < offset) {
+        throw new Error("Patch projection overlaps an earlier replacement");
+      }
       parts.push(this.#body.slice(offset, replacement.start), replacement.text);
       offset = replacement.end;
     }
