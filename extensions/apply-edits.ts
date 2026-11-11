@@ -84,16 +84,21 @@ export default function editingExtension(pi: ExtensionAPI): void {
  * Replace Pi's built-in writers while the editing tools are active. They return when a filesystem
  * cannot support verified publication, because they write files in place.
  */
+type WriterSuppression =
+  | { readonly kind: "none" }
+  | { readonly kind: "suppressed"; readonly names: readonly string[] };
+
 function builtinWriterReplacement(
   pi: ExtensionAPI,
   ownsTool: (name: string) => boolean,
 ): () => Promise<void> {
-  const replaced = new Set<string>();
+  let suppression: WriterSuppression = { kind: "none" };
   let stopWatching: (() => void) | undefined;
   const restore = () => {
-    if (replaced.size === 0) {
+    if (suppression.kind === "none") {
       return;
     }
+    const { names } = suppression;
     const active = pi.getActiveTools();
     const eligible = new Set(
       pi
@@ -101,16 +106,17 @@ function builtinWriterReplacement(
         .filter(isReplaceableWriter)
         .map((tool) => tool.name),
     );
-    const restored = [...replaced].filter((name) => !active.includes(name) && eligible.has(name));
-    replaced.clear();
+    const restored = names.filter((name) => !active.includes(name) && eligible.has(name));
     if (restored.length > 0) {
       pi.setActiveTools([...active, ...restored]);
     }
+    // Forget the names only after the restore is published; a rejected restore stays retryable.
+    suppression = { kind: "none" };
   };
   pi.on("session_shutdown", () => {
     stopWatching?.();
     stopWatching = undefined;
-    replaced.clear();
+    suppression = { kind: "none" };
   });
   return async () => {
     stopWatching ??= onUnsupportedFilesystem(restore);
@@ -127,10 +133,13 @@ function builtinWriterReplacement(
         .filter(isReplaceableWriter)
         .map((tool) => tool.name),
     );
-    for (const name of active.filter((item) => replaceable.has(item))) {
-      replaced.add(name);
+    const names = active.filter((name) => replaceable.has(name));
+    if (names.length === 0) {
+      return;
     }
     pi.setActiveTools(active.filter((name) => !replaceable.has(name)));
+    const retained = suppression.kind === "suppressed" ? suppression.names : [];
+    suppression = { kind: "suppressed", names: [...new Set([...retained, ...names])] };
   };
 }
 
