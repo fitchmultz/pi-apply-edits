@@ -46,8 +46,7 @@ function serializeReceipt(file: FileProgress, preview: boolean): FileReceipt {
       status = "unattempted";
       break;
     case "planned":
-      status =
-        preview && file.evidence.operation === "no_change" ? "unchanged" : "unattempted";
+      status = preview && file.evidence.operation === "no_change" ? "unchanged" : "unattempted";
       break;
     case "completed":
     case "failed":
