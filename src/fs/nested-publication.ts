@@ -60,29 +60,38 @@ export async function publishPreparedNestedFiles(
   return new NestedPublication(prepared, signal).run();
 }
 
-/** Counts published targets separately from ordered evidence, which can also include move sources. */
+type TargetState = "verified" | "unverified";
+
+/** Records one state per published or possibly modified path, plus ordered target visibility. */
 class NestedPublicationEvidence {
   private readonly targets: string[] = [];
-  private readonly verified = new Set<string>();
-  private readonly uncertain = new Set<string>();
+  private readonly states = new Map<string, TargetState>();
 
   get targetCount(): number {
     return this.targets.length;
   }
 
+  /** True once a target path may exist publicly, which decides partial versus uncommitted cleanup. */
+  get anyTargetVisible(): boolean {
+    return this.targets.length > 0;
+  }
+
   recordPublished(target: string, modifiedFiles: readonly string[] = [target]): void {
     this.targets.push(target);
     for (const path of modifiedFiles) {
-      this.verified.add(path);
+      this.states.set(path, "verified");
     }
   }
 
   recordFailure(target: string, error: PublicationError): void {
     for (const path of error.modifiedFiles) {
-      this.verified.add(path);
+      this.states.set(path, "verified");
     }
     for (const path of error.uncertainFiles) {
-      this.uncertain.add(path);
+      // A path reported as both keeps its verified state so the receipt cannot list it twice.
+      if (!this.states.has(path)) {
+        this.states.set(path, "unverified");
+      }
     }
     if (error.modifiedFiles.includes(target) || error.uncertainFiles.includes(target)) {
       this.targets.push(target);
@@ -90,11 +99,21 @@ class NestedPublicationEvidence {
   }
 
   partialFailure(error: unknown, location: string): PartialCreatePublishError {
+    const verified: string[] = [];
+    const uncertain: string[] = [];
+    for (const [path, state] of this.states) {
+      (state === "verified" ? verified : uncertain).push(path);
+    }
+    for (const target of this.targets) {
+      if (!this.states.has(target)) {
+        uncertain.push(target);
+      }
+    }
     return new PartialCreatePublishError(
       `${errorMessage(error)} Partial create publication retained ${this.targetCount} file${this.targetCount === 1 ? "" : "s"} at ${this.targets.join(", ")}; ${location}`,
       this.targetCount,
-      [...this.verified],
-      [...new Set([...this.uncertain, ...this.targets.filter((path) => !this.verified.has(path))])],
+      verified,
+      uncertain,
     );
   }
 }
@@ -129,7 +148,7 @@ class NestedPublication {
       await this.cleanupCommittedStaging();
       return this.stagingOwner.warnings;
     } catch (error) {
-      if (this.evidence.targetCount > 0) {
+      if (this.evidence.anyTargetVisible) {
         throw await this.partialFailure(error);
       }
       await this.cleanupUncommitted(error);
@@ -394,7 +413,7 @@ class NestedPublication {
   }
 
   private async cleanupCommittedStaging(): Promise<void> {
-    this.stagingOwner.published = true;
+    this.stagingOwner.markPublished();
     try {
       await this.stagingOwner.removeStaging(this.stagedAfterPublish);
     } catch (error) {

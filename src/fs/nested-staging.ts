@@ -91,8 +91,17 @@ abstract class NestedStaging {
     }
   }
 
+  /** Marks the tree as published so automatic discard cannot remove live links. */
+  markPublished(): void {
+    this.published = true;
+  }
+
   /** Retain staging without granting later automatic discard another destructive attempt. */
   retain(reason: unknown): void {
+    if (this.#discardState.kind === "discarded") {
+      // Cleanup already finished; a later reason does not make the tree present again.
+      return;
+    }
     this.#discardState = { kind: "retained", reason };
   }
 
