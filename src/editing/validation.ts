@@ -11,6 +11,16 @@ function optionalBoolean(value: unknown, field: string): void {
     throw new Error(`${field} must be a boolean`);
   }
 }
+/** One write-mode decision from the request flags, shared by validation and planning. */
+export type WriteMode = "replace" | "create" | "require-missing";
+
+export function writeMode(input: ReadonlyApplyEditsInput): WriteMode {
+  if (input.requireMissing === true) {
+    return "require-missing";
+  }
+  return input.onMissing === "create" ? "create" : "replace";
+}
+
 function validateRewriteMode(input: ReadonlyApplyEditsInput): void {
   optionalBoolean(input.preserveFormatting, "preserveFormatting");
   optionalBoolean(input.requireMissing, "requireMissing");

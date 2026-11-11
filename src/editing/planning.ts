@@ -23,6 +23,7 @@ import {
 import { applyPatchUpdate } from "../patch.ts";
 import { resolveInputPath } from "./queue.ts";
 import { displayPathFor } from "./receipts.ts";
+import { writeMode } from "./validation.ts";
 import {
   decodeText,
   countLeadingBomCharacters,
@@ -131,15 +132,18 @@ function assertSourceMode(
   snapshot: ReadonlyFileSnapshot | undefined,
   displayPath: string,
 ): void {
-  if (snapshot !== undefined && input.requireMissing === true) {
-    throw new Error(
-      `File now exists: ${displayPath}. Create mode refuses to overwrite an existing target. No changes were written.`,
-    );
+  if (snapshot !== undefined) {
+    if (writeMode(input) === "require-missing") {
+      throw new Error(
+        `File now exists: ${displayPath}. Create mode refuses to overwrite an existing target. No changes were written.`,
+      );
+    }
+    return;
   }
-  if (snapshot === undefined && (input.edits !== undefined || input.patch !== undefined)) {
+  if (input.edits !== undefined || input.patch !== undefined) {
     throw new Error(`Cannot edit missing file ${displayPath}. ${missingFileHint(displayPath)}`);
   }
-  if (snapshot === undefined && input.onMissing !== "create") {
+  if (writeMode(input) === "replace") {
     throw new Error(
       `File does not exist: ${displayPath}. Use write_files with mode: "create" to create it. No changes were written.`,
     );
