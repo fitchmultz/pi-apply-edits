@@ -53,15 +53,10 @@ export async function publishReplacement(
 }
 
 type CommitEvidence =
-  | { readonly kind: "not-issued" }
+  | { readonly kind: "not-issued"; readonly recovery: BigIntStats | undefined }
   | { readonly kind: "issued-unverified" }
   | { readonly kind: "target-verified-recovery-conflict" }
   | { readonly kind: "versions-verified"; readonly recovery: FileState };
-
-type RecoveryDisposition =
-  | { readonly kind: "no-cleanup" }
-  | { readonly kind: "linked"; readonly identity: BigIntStats }
-  | { readonly kind: "retain-uncertain" };
 
 /** Owns the private replacement, recovery link, and truthful commit/cleanup receipt. */
 class ReplacementPublication {
@@ -77,8 +72,7 @@ class ReplacementPublication {
   private temporaryStats: BigIntStats | undefined;
   private temporaryIdentity: BigIntStats | undefined;
   private temporaryDirectoryStats: BigIntStats | undefined;
-  private recoveryDisposition: RecoveryDisposition = { kind: "no-cleanup" };
-  private commitEvidence: CommitEvidence = { kind: "not-issued" };
+  private commitEvidence: CommitEvidence = { kind: "not-issued", recovery: undefined };
   private temporaryCleanupFailed = false;
   private readonly warnings: string[] = [];
 
@@ -245,13 +239,11 @@ class ReplacementPublication {
       if (!retained) {
         throw new Error(`Recovery path appeared during atomic replacement: ${this.recovery}`);
       }
-      this.recoveryDisposition = { kind: "linked", identity: this.snapshot.stats };
     } catch (error) {
       if (
         this.commitEvidence.kind === "issued-unverified" ||
         error instanceof AtomicMoveUncertainError
       ) {
-        this.recoveryDisposition = { kind: "retain-uncertain" };
         this.commitEvidence = { kind: "issued-unverified" };
         throw new AtomicMoveUncertainError(
           `Atomic replacement or recovery retention could not be verified. Commit status is uncertain; inspect ${this.snapshot.actualPath}, ${this.temporary}, and ${this.recovery}. Cause: ${errorMessage(error)}`,
@@ -266,7 +258,7 @@ class ReplacementPublication {
     // ponytail: Node has no portable compare-and-swap rename. Recovery protects in-place
     // external writes; upgrade to platform exchange if atomic-replacement races are observed.
     await link(this.snapshot.actualPath, this.recovery);
-    this.recoveryDisposition = { kind: "linked", identity: this.snapshot.stats };
+    this.commitEvidence = { kind: "not-issued", recovery: this.snapshot.stats };
     const baseline = await assertLinkedTargetCurrent(this.snapshot);
     await this.hooks?.beforeRename?.({
       target: this.snapshot.actualPath,
@@ -368,7 +360,6 @@ class ReplacementPublication {
         "Recovery link",
         retained,
       );
-      this.recoveryDisposition = { kind: "no-cleanup" };
       if (!removed) {
         this.warnings.push(
           `The edit was committed, but the pre-edit recovery link is no longer at ${this.recovery}; its location is uncertain and the previous content may remain elsewhere.`,
@@ -409,11 +400,12 @@ class ReplacementPublication {
       if (message !== undefined) {
         failures.push(message);
       }
-    }
-    if (this.recoveryDisposition.kind === "linked" && this.commitEvidence.kind === "not-issued") {
-      const message = await this.removeUncommittedRecovery(this.recoveryDisposition.identity);
-      if (message !== undefined) {
-        failures.push(message);
+      const recovery = this.commitEvidence.recovery;
+      if (recovery !== undefined) {
+        const recoveryMessage = await this.removeUncommittedRecovery(recovery);
+        if (recoveryMessage !== undefined) {
+          failures.push(recoveryMessage);
+        }
       }
     }
     return failures;
