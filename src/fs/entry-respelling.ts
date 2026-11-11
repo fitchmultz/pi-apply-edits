@@ -143,9 +143,12 @@ async function verifyRespelling(
 
 function verificationFailure(
   error: unknown,
-  replaced: readonly string[],
+  evidence: RenameEvidence,
+  entryPath: string,
   both: readonly string[],
 ): PublicationError {
+  // The verified-replacement evidence is the content-published fact; no separate list can disagree.
+  const replaced = evidence.kind === "verifiedReplacement" ? [entryPath] : [];
   if (error instanceof SpellingKeptError) {
     const outcome =
       replaced.length > 0
@@ -181,16 +184,16 @@ export async function publishRespelling(
     await renameInPlace(plan, evidence, signal, hooks);
   } catch (error) {
     const outcome =
-      replacement === undefined
-        ? ""
-        : " The content change was already published under the original name.";
+      replaced.length > 0
+        ? " The content change was already published under the original name."
+        : "";
     throw new PublicationError(`${errorMessage(error)}${outcome}`, replaced, [], error);
   }
   const both = [entry.actualPath, destination.targetPath];
   try {
     await verifyRespelling(plan, evidence);
   } catch (error) {
-    throw verificationFailure(error, replaced, both);
+    throw verificationFailure(error, evidence, entry.actualPath, both);
   }
   try {
     await hooks?.afterCommit?.();
