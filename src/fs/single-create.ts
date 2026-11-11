@@ -285,8 +285,8 @@ class SingleCreation {
       await assertNewFilePlanCurrent(this.plan);
     } catch (parentError) {
       try {
-        const removed = await unlinkOwnedPath(this.plan.targetPath, stats, "Escaped create file");
-        if (!removed) {
+        const outcome = await unlinkOwnedPath(this.plan.targetPath, stats, "Escaped create file");
+        if (outcome.kind !== "unlinked") {
           throw new Error(
             `Created file location changed before cleanup: ${this.plan.targetPath}.`,
             { cause: parentError },
@@ -306,12 +306,12 @@ class SingleCreation {
   private async cleanupCommittedSource(): Promise<void> {
     this.sourceCleanup = "handled";
     try {
-      const removed = await unlinkOwnedPath(
+      const outcome = await unlinkOwnedPath(
         this.temporary,
         this.temporaryIdentity,
         "Temporary create file",
       );
-      if (!removed) {
+      if (outcome.kind !== "unlinked") {
         this.warnings.push(
           `The file was created, but its temporary link is no longer at ${this.temporary}; its location is uncertain and the created file may remain hard-linked to it.`,
         );
@@ -375,12 +375,12 @@ class SingleCreation {
 
   private async removeTemporary(): Promise<string | undefined> {
     try {
-      const removed = await unlinkOwnedPath(
+      const outcome = await unlinkOwnedPath(
         this.temporary,
         this.temporaryIdentity,
         "Temporary create file",
       );
-      if (!removed && this.temporaryIdentity) {
+      if (outcome.kind !== "unlinked" && this.temporaryIdentity) {
         return `the temporary create file is no longer at ${this.temporary}; its location is uncertain and its content may remain elsewhere`;
       }
     } catch (error) {

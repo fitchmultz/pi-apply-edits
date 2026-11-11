@@ -1,7 +1,7 @@
 import type { BigIntStats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import type { ReadonlyNewFilePlan } from "./contracts.ts";
-import { unlinkOwnedPath } from "./cleanup.ts";
+import { unlinkOwnedPath, type CleanupOutcome } from "./cleanup.ts";
 import { errorMessage, isCode, throwIfAborted } from "./errors.ts";
 import { readStableRegularEntry, sameIdentity, samePublishedState } from "./observation.ts";
 import { assertNewFilePlanCurrent } from "./planning.ts";
@@ -17,8 +17,11 @@ export type ExclusiveCreateOutcome =
 
 type ExclusiveTarget =
   | { readonly kind: "not-visible" }
-  | { readonly kind: "visible-unidentified" }
-  | { readonly kind: "incomplete"; readonly stats: BigIntStats; readonly path: string }
+  | {
+      readonly kind: "visible";
+      /** The created inode once known; "unknown" when the post-open stat failed. */
+      readonly removal: { readonly identity: BigIntStats } | "unknown";
+    }
   | { readonly kind: "content-verified"; readonly path: string }
   | { readonly kind: "location-unknown" };
 
@@ -70,8 +73,7 @@ class ExclusiveCreation {
     switch (this.target.kind) {
       case "not-visible":
         return { kind: "before-visible-failure", error };
-      case "visible-unidentified":
-      case "incomplete":
+      case "visible":
         return { kind: "visible-unverified-failure", sourceCleanup: "eligible", error };
       case "content-verified":
       case "location-unknown":
@@ -84,9 +86,9 @@ class ExclusiveCreation {
     await assertNewFilePlanCurrent(this.plan);
     throwIfAborted(this.signal);
     this.handle = await open(target, "wx", 0o666);
-    this.target = { kind: "visible-unidentified" };
+    this.target = { kind: "visible", removal: "unknown" };
     const targetStats = await this.handle.stat({ bigint: true });
-    this.target = { kind: "incomplete", stats: targetStats, path: target };
+    this.target = { kind: "visible", removal: { identity: targetStats } };
     const pathStats = await lstat(target, { bigint: true });
     if (
       !pathStats.isFile() ||
@@ -118,12 +120,12 @@ class ExclusiveCreation {
   }
 
   private async recoverFailure(error: unknown): Promise<void> {
-    if (this.target.kind === "incomplete") {
-      await this.removeIncompleteTarget(this.target, error);
+    if (this.target.kind === "visible" && this.target.removal !== "unknown") {
+      await this.removeIncompleteTarget(this.target.removal.identity, error);
     }
     if (this.target.kind === "content-verified") {
       throw new Error(
-        `Create failed after ${this.target.path} became visible. It may be partial and was left untouched: ${errorMessage(error)}`,
+        `Create failed after ${this.target.path} was written and verified. The created file was left untouched: ${errorMessage(error)}`,
         { cause: error },
       );
     }
@@ -135,21 +137,21 @@ class ExclusiveCreation {
     }
   }
 
-  private async removeIncompleteTarget(
-    target: Extract<ExclusiveTarget, { kind: "incomplete" }>,
-    error: unknown,
-  ): Promise<void> {
-    const { stats, path } = target;
-    let removed: boolean;
+  private async removeIncompleteTarget(identity: BigIntStats, error: unknown): Promise<void> {
+    let outcome: CleanupOutcome;
     try {
-      removed = await unlinkOwnedPath(path, stats, "Incomplete fallback create file");
+      outcome = await unlinkOwnedPath(
+        this.plan.targetPath,
+        identity,
+        "Incomplete fallback create file",
+      );
     } catch (cleanupError) {
       throw new Error(
         `${errorMessage(error)} Cleanup was incomplete: ${errorMessage(cleanupError)}`,
         { cause: cleanupError },
       );
     }
-    if (!removed) {
+    if (outcome.kind !== "unlinked") {
       this.target = { kind: "location-unknown" };
       throw new Error(
         "Create publication location changed after exclusive open. Commit status is uncertain; inspect the moved parent.",

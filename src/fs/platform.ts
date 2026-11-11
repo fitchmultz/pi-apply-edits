@@ -320,15 +320,13 @@ async function preserveCopiedMetadata(
   }
 }
 
-export interface PrivateCopyTarget {
-  readonly path: string;
-  /**
-   * Receives the created file's identity before any native copy step can fail, so cleanup after a
-   * rejected copy can still match it; success may use the returned identity instead. Omit it only
-   * when the caller's cleanup owns the entire private tree that contains the copy.
-   */
-  readonly own?: (identity: BigIntStats) => void;
-}
+/**
+ * `own` records the created identity before any native copy step can fail, so cleanup can match it.
+ * `ownsPrivateTree` declares that the caller retains and cleans the whole private tree instead.
+ */
+export type PrivateCopyTarget =
+  | { readonly path: string; readonly own: (identity: BigIntStats) => void }
+  | { readonly path: string; readonly ownsPrivateTree: true };
 
 /**
  * Copies into a private file this call creates exclusively. Native cp overwrites that existing
@@ -349,7 +347,9 @@ export async function clonePrivateFile(
   );
   try {
     const created = await handle.stat({ bigint: true });
-    target.own?.(created);
+    if ("own" in target) {
+      target.own(created);
+    }
     await execText(support.cp, nativeCopyArguments(source, target.path), signal);
     const copied = await lstatIfExists(target.path);
     if (!copied || !sameIdentity(created, copied)) {

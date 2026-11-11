@@ -76,14 +76,25 @@ interface QuarantinedPath {
   readonly stats: BigIntStats;
 }
 
+/** What identity-checked cleanup observed, without collapsing "never there" into "not removed". */
+export type CleanupOutcome =
+  | { readonly kind: "absent" }
+  | { readonly kind: "unlinked" }
+  | { readonly kind: "moved-elsewhere" };
+
+type QuarantineOutcome =
+  | { readonly kind: "absent" }
+  | { readonly kind: "moved-elsewhere" }
+  | { readonly kind: "quarantined"; readonly entry: QuarantinedPath };
+
 async function quarantineOwnedPath(
   path: string,
   expected: BigIntStats | undefined,
   label: string,
-): Promise<QuarantinedPath | undefined> {
+): Promise<QuarantineOutcome> {
   const beforeStats = await currentOwnedPath(path, expected, label);
   if (!beforeStats) {
-    return;
+    return { kind: "absent" };
   }
   const directory = temporaryDirectoryPath(path);
   await mkdir(directory, { mode: 0o700 });
@@ -95,7 +106,7 @@ async function quarantineOwnedPath(
   } catch (error) {
     await removeEmptyOwnedDirectory(directory, directoryStats, "Cleanup quarantine");
     if (isCode(error, "ENOENT")) {
-      return;
+      return { kind: "moved-elsewhere" };
     }
     throw error;
   }
@@ -104,14 +115,17 @@ async function quarantineOwnedPath(
     stats = await lstat(quarantined, { bigint: true });
   } catch (error) {
     if (isCode(error, "ENOENT")) {
-      return;
+      return { kind: "moved-elsewhere" };
     }
     throw error;
   }
   if (!expected || !sameIdentity(expected, stats)) {
     throw new Error(`${label} changed after validation and was preserved at ${quarantined}`);
   }
-  return { path: quarantined, directory, directoryStats, beforeStats, stats };
+  return {
+    kind: "quarantined",
+    entry: { path: quarantined, directory, directoryStats, beforeStats, stats },
+  };
 }
 
 export async function removeEmptyOwnedDirectory(
@@ -129,31 +143,26 @@ export async function unlinkOwnedPath(
   expected: BigIntStats | undefined,
   label: string,
   expectedFile?: FileState,
-): Promise<boolean> {
-  const quarantined = await quarantineOwnedPath(path, expected, label);
-  if (!quarantined) {
-    return false;
+): Promise<CleanupOutcome> {
+  const quarantine = await quarantineOwnedPath(path, expected, label);
+  if (quarantine.kind !== "quarantined") {
+    return quarantine;
   }
+  const { entry } = quarantine;
   if (expectedFile) {
-    const current = await readStableFile(quarantined.path);
+    const current = await readStableFile(entry.path);
     if (
-      !sameSnapshotStats(expectedFile.stats, quarantined.beforeStats) ||
+      !sameSnapshotStats(expectedFile.stats, entry.beforeStats) ||
       !samePublishedState(expectedFile.stats, current.stats) ||
-      !sameSnapshotStats(quarantined.stats, current.stats) ||
+      !sameSnapshotStats(entry.stats, current.stats) ||
       !expectedFile.bytes.equals(current.bytes)
     ) {
-      throw new Error(
-        `${label} changed after verification and was preserved at ${quarantined.path}`,
-      );
+      throw new Error(`${label} changed after verification and was preserved at ${entry.path}`);
     }
   }
-  await unlink(quarantined.path);
-  await removeEmptyOwnedDirectory(
-    quarantined.directory,
-    quarantined.directoryStats,
-    "Cleanup quarantine",
-  );
-  return true;
+  await unlink(entry.path);
+  await removeEmptyOwnedDirectory(entry.directory, entry.directoryStats, "Cleanup quarantine");
+  return { kind: "unlinked" };
 }
 
 export async function rmdirOwnedPath(
