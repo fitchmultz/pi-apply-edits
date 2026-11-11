@@ -192,6 +192,22 @@ nodeTest("requires a strict envelope and rejects malformed or duplicate structur
   }
 });
 
+nodeTest("body parse failures name the offending line", () => {
+  // Advancing before validation used to report the following line.
+  assert.throws(
+    () => parsePatch(wrap("*** Add File: f\nbad")),
+    /Invalid patch at line 3: Add File lines must start with '\+'/,
+  );
+  assert.throws(
+    () => parsePatch(wrap("*** Update File: \n-old\n+new")),
+    /Invalid patch at line 2: path must be non-empty/,
+  );
+  assert.throws(
+    () => parsePatch(wrap("*** Update File: f\n@@\nold\n+new")),
+    /Invalid patch at line 4: update lines must start with/,
+  );
+});
+
 nodeTest("validates Unicode and NUL in paths, patch bodies and original text", () => {
   for (const invalid of ["\0", "\ud800", "\udc00"]) {
     assert.throws(() => parsePatch(wrap(`*** Add File: ${invalid}\n+x`)), /NUL|Unicode/);

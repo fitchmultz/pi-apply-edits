@@ -87,11 +87,9 @@ class PatchParser {
     return line;
   }
 
-  /** Returns the current line and advances; the only cursor write besides a chunk scope. */
-  private take(): SourceLine {
-    const line = this.current();
+  /** Advances past the current line after its reader accepted it; the only cursor write. */
+  private consume(): void {
     this.#index++;
-    return line;
   }
 
   /** True at the final End Patch line, which no reader may consume as a body line. */
@@ -100,11 +98,12 @@ class PatchParser {
   }
 
   private readPath(prefix: string): string {
-    const line = this.take();
+    const line = this.current();
     const path = line.text.slice(prefix.length);
     if (path.length === 0) {
       this.fail("path must be non-empty");
     }
+    this.consume();
     this.#paths.push({
       start: line.start + prefix.length,
       end: line.end - line.ending.length,
@@ -140,10 +139,11 @@ class PatchParser {
     const path = this.readPath("*** Add File: ");
     const content: string[] = [];
     while (this.hasBody()) {
-      const line = this.take();
+      const line = this.current();
       if (!line.text.startsWith("+")) {
         this.fail("Add File lines must start with '+'");
       }
+      this.consume();
       content.push(line.text.slice(1), line.ending);
     }
     return { kind: "add", path, content: content.join("") };
@@ -182,11 +182,11 @@ class PatchParser {
       if (anchor && lines.length > 0) {
         break;
       }
-      this.take();
       if (text === "*** End of File") {
         if (lines.length === 0) {
           this.fail("End of File requires a non-empty chunk");
         }
+        this.consume();
         endOfFile = true;
         break;
       }
@@ -198,6 +198,7 @@ class PatchParser {
       } else {
         lines.push(this.readChangeLine(text));
       }
+      this.consume();
     }
     if (lines.length === 0) {
       this.fail("update chunk must contain lines after its anchors");
