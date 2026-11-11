@@ -268,8 +268,7 @@ class EditingBatch {
     for (const group of groups.values()) {
       const spellings = new Set(
         group.map(
-          (index) =>
-            required(plannedCreate(required(plans[index]).plan)).missingDirectories[0],
+          (index) => required(plannedCreate(required(plans[index]).plan)).missingDirectories[0],
         ),
       );
       if (spellings.size > 1) {
