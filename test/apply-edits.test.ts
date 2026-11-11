@@ -3294,12 +3294,16 @@ nodeTest("large rewrites skip expensive diff computation", async () => {
 nodeTest("snapshot validation detects stale no-change plans", async () => {
   await inTemporaryDirectory(async (directory) => {
     const path = join(directory, "file.txt");
+    const latePath = join(directory, "late.txt");
     await writeFile(path, "same\n");
+    await writeFile(latePath, "steady\n");
     const result = await writeFiles(
       {
         files: [
           { path: "file.txt", content: "same\n", mode: "replace" },
           { path: "last.txt", content: "new\n", mode: "create" },
+          // Reached only if the first file publishes; its own freshness check never runs here.
+          { path: "late.txt", content: "steady\n", mode: "replace" },
         ],
       },
       directory,
@@ -3317,12 +3321,14 @@ nodeTest("snapshot validation detects stale no-change plans", async () => {
       [
         ["failed", 0],
         ["unattempted", 0],
+        ["unattempted", 0],
       ],
     );
     assert.match(result.summary, /Completed: none\n/);
     assert.match(result.summary, /Failed or uncertain: file\.txt\n/);
-    assert.match(result.summary, /Unattempted: last\.txt\n/);
+    assert.match(result.summary, /Unattempted: last\.txt, late\.txt\n/);
     assert.equal(await readFile(path, "utf8"), "changed\n");
+    assert.equal(await readFile(latePath, "utf8"), "steady\n");
     await assert.rejects(lstat(join(directory, "last.txt")), /ENOENT/);
   });
 });

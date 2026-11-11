@@ -34,14 +34,20 @@ type FileProgress = { readonly evidence: ReceiptEvidence } & (
     }
   | { readonly stage: "failed"; readonly outcome: "failed" | "uncertain" }
 );
-function serializeReceipt(file: FileProgress): FileReceipt {
+/**
+ * A planned no-change is only "unchanged" in a preview, which never commits. In an apply run the
+ * commit-time freshness check decides, so serializing a planned record as unchanged would claim a
+ * check that never ran.
+ */
+function serializeReceipt(file: FileProgress, preview: boolean): FileReceipt {
   let status: FileStatus;
   switch (file.stage) {
     case "unreached":
       status = "unattempted";
       break;
     case "planned":
-      status = file.evidence.operation === "no_change" ? "unchanged" : "unattempted";
+      status =
+        preview && file.evidence.operation === "no_change" ? "unchanged" : "unattempted";
       break;
     case "completed":
     case "failed":
@@ -231,7 +237,10 @@ export function failedExecution(
               ? files
                   .filter(hasStringPath)
                   .map((file) =>
-                    serializeReceipt({ stage: "unreached", evidence: emptyReceipt(file, cwd) }),
+                    serializeReceipt(
+                      { stage: "unreached", evidence: emptyReceipt(file, cwd) },
+                      preview,
+                    ),
                   )
               : [],
           modifiedFiles: [],
@@ -344,7 +353,8 @@ export function describeBatch(details: ApplyEditsBatchDetails, cwd: string): Edi
 /** Owns mutable progress; published receipts are replaced, never mutated through input aliases. */
 export class BatchReceipts {
   private readonly files: FileProgress[];
-  private readonly modifiedFiles: string[] = [];
+  /** One evidence owner per committed path; an uncertain report overrides an earlier verified one. */
+  private readonly paths = new Map<string, "verified" | "uncertain">();
   private readonly preview: boolean;
   constructor(inputs: readonly MutationInput[], cwd: string, preview: boolean) {
     this.files = inputs.map((input) => ({
@@ -355,8 +365,8 @@ export class BatchReceipts {
   }
   snapshot(): ApplyEditsBatchDetails {
     return {
-      files: this.files.map(serializeReceipt),
-      modifiedFiles: [...new Set(this.modifiedFiles)],
+      files: this.files.map((file) => serializeReceipt(file, this.preview)),
+      modifiedFiles: this.verifiedPaths(),
       ...(this.preview ? { preview: true } : {}),
     };
   }
@@ -365,10 +375,15 @@ export class BatchReceipts {
   }
   fail(indices: readonly number[]): void {
     for (const index of indices) {
+      const file = this.files[index];
+      // Failure triage may name a group that already completed a verified commit; never relabel it.
+      if (file === undefined || file.stage === "completed") {
+        continue;
+      }
       this.files[index] = {
         stage: "failed",
         outcome: "failed",
-        evidence: required(this.files[index]).evidence,
+        evidence: file.evidence,
       };
     }
   }
@@ -399,7 +414,7 @@ export class BatchReceipts {
   complete(index: number, plan: PlannedMutation): void {
     this.recordCompleted(index, plan.operation === "no_change" ? "unchanged" : "applied");
     if (plan.operation !== "no_change") {
-      this.modifiedFiles.push(...committedPaths(plan));
+      this.recordEvidence(committedPaths(plan), []);
     }
   }
   private recordCompleted(index: number, outcome: "applied" | "unchanged"): void {
@@ -416,29 +431,40 @@ export class BatchReceipts {
     group: readonly number[],
     plans: readonly PlannedMutation[],
   ): readonly string[] {
+    const verified = error instanceof PublicationError ? error.modifiedFiles : [];
     const uncertain = error instanceof PublicationError ? error.uncertainFiles : [];
-    if (error instanceof PublicationError) {
-      this.modifiedFiles.push(...error.modifiedFiles);
-    }
-    const verified = new Set(this.modifiedFiles);
+    this.recordEvidence(verified, uncertain);
     for (const index of group) {
       if (this.hasCompleted(index)) {
         continue;
       }
       const paths = committedPaths(required(plans[index]));
-      if (paths.some((path) => uncertain.includes(path))) {
+      if (paths.some((path) => this.paths.get(path) === "uncertain")) {
         this.files[index] = {
           stage: "failed",
           outcome: "uncertain",
           evidence: required(this.files[index]).evidence,
         };
-      } else if (paths.every((path) => verified.has(path))) {
+      } else if (paths.every((path) => this.paths.get(path) === "verified")) {
         this.recordCompleted(index, "applied");
       } else {
         this.fail([index]);
       }
     }
     return uncertain;
+  }
+  private recordEvidence(verified: readonly string[], uncertain: readonly string[]): void {
+    for (const path of verified) {
+      if (this.paths.get(path) !== "uncertain") {
+        this.paths.set(path, "verified");
+      }
+    }
+    for (const path of uncertain) {
+      this.paths.set(path, "uncertain");
+    }
+  }
+  private verifiedPaths(): string[] {
+    return [...this.paths].flatMap(([path, state]) => (state === "verified" ? [path] : []));
   }
   publicationFailure(
     error: unknown,
@@ -453,7 +479,7 @@ export class BatchReceipts {
       indices.length > 0
         ? indices.map((item) => required(plans[item]).displayPath).join(", ")
         : "none";
-    const verified = [...new Set(this.modifiedFiles)];
+    const verified = this.verifiedPaths();
     const earlierWarnings = [
       ...new Set(completed.flatMap((item) => required(this.files[item]).evidence.warnings)),
     ];
