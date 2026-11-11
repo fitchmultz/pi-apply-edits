@@ -67,7 +67,8 @@ class SingleCreation {
   private temporaryIdentity: BigIntStats | undefined;
   private temporaryDirectoryStats: BigIntStats | undefined;
   private publication: CreatePublication = { kind: "not-visible" };
-  private sourceCleanup: "eligible" | "retained" | "handled" = "eligible";
+  /** `pending` means uncommitted cleanup still owns the private source; nothing else may touch it. */
+  private sourceCleanup: "pending" | "finished" = "pending";
   private temporaryCleanupFailed = false;
   private readonly warnings: string[] = [];
 
@@ -203,7 +204,7 @@ class SingleCreation {
         case "visible-unverified-failure":
           this.publication = { kind: "visible-unverified" };
           if (outcome.sourceCleanup === "retain") {
-            this.sourceCleanup = "retained";
+            this.sourceCleanup = "finished";
           }
           break;
       }
@@ -225,7 +226,7 @@ class SingleCreation {
     }
     if (evidence.kind === "uncertain") {
       this.publication = { kind: "visible-unverified" };
-      this.sourceCleanup = "retained";
+      this.sourceCleanup = "finished";
       throw evidence.error;
     }
     if (evidence.kind === "not-published") {
@@ -272,7 +273,7 @@ class SingleCreation {
     try {
       return await readStableRegularEntry(this.plan.targetPath);
     } catch (error) {
-      this.sourceCleanup = "retained";
+      this.sourceCleanup = "finished";
       throw new Error(
         `Create publication could not be verified at ${this.plan.targetPath}. Commit status is uncertain; nothing was rolled back. Inspect ${this.plan.targetPath} and the temporary source ${this.temporary}, and their new locations if a parent directory moved. Cause: ${errorMessage(error)}`,
         { cause: error },
@@ -304,7 +305,7 @@ class SingleCreation {
   }
 
   private async cleanupCommittedSource(): Promise<void> {
-    this.sourceCleanup = "handled";
+    this.sourceCleanup = "finished";
     try {
       const outcome = await unlinkOwnedPath(
         this.temporary,
@@ -341,7 +342,7 @@ class SingleCreation {
     await this.handle?.close().catch(() => {
       // Descriptor-close failure must not replace the publication and identity-cleanup outcome.
     });
-    if (this.sourceCleanup !== "eligible") {
+    if (this.sourceCleanup !== "pending") {
       return;
     }
     const failures: string[] = [];

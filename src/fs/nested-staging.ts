@@ -22,17 +22,13 @@ import { assertNewFilePlanCurrent, stagedTraversalDirectories } from "./planning
 import { transferMacosAcl } from "./platform.ts";
 import { assertMoveSnapshot, prepareMoveReplacement } from "./preparation.ts";
 import { assertEntryCurrent } from "./snapshot.ts";
-import { inspectPreparedTree } from "./staged-tree.ts";
+import { inspectPreparedTree, type TreeInspection } from "./staged-tree.ts";
 
 type DiscardState =
   | { readonly kind: "unattempted" }
   | { readonly kind: "discarding" }
   | { readonly kind: "discarded" }
   | { readonly kind: "retained"; readonly reason: unknown };
-
-type TreeInspection =
-  | { readonly kind: "initial" }
-  | { readonly kind: "revalidate"; readonly identities: ReadonlyMap<string, BigIntStats> };
 
 export function preparedOwner(prepared: ReadonlyPreparedNestedFiles): NestedStaging {
   if (!(prepared instanceof NestedStaging)) {
@@ -324,17 +320,7 @@ abstract class NestedStaging {
     inspection: TreeInspection,
     staging = this.staging,
   ): Promise<Map<string, BigIntStats>> {
-    const tree = { entries: this.entries, staging };
-    switch (inspection.kind) {
-      case "initial":
-        return inspectPreparedTree(tree);
-      case "revalidate":
-        return inspectPreparedTree(tree, inspection.identities);
-      default: {
-        const exhaustive: never = inspection;
-        return exhaustive;
-      }
-    }
+    return inspectPreparedTree({ entries: this.entries, staging }, inspection);
   }
 
   private async quarantineStaging(): Promise<

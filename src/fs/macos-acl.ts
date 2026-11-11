@@ -23,9 +23,8 @@ type AclProcessState =
 
 export const macosAclScript = fileURLToPath(new URL("../macos-acl.js", import.meta.url));
 const sessions = new AsyncLocalStorage<MacosAclSession>();
-// Owners that keep a finished batch's helper for the next batch, and that idle helper.
-const retainers = new Set<object>();
-let idleHelper: AclProcess | undefined;
+// One lease per retain call, so overlapping runs from one owner cannot end each other's helper.
+const retainers = new Map<object, number>();
 
 export function currentMacosAclSession(): MacosAclSession | undefined {
   return sessions.getStore();
@@ -33,18 +32,21 @@ export function currentMacosAclSession(): MacosAclSession | undefined {
 
 /** Keeps one finished batch's helper for the next batch until `owner` releases it. */
 export function retainMacosAclHelper(owner: object): void {
-  retainers.add(owner);
+  retainers.set(owner, (retainers.get(owner) ?? 0) + 1);
 }
 
-/** Ends the idle helper once no owner retains it. */
+/** Ends the idle helper once no owner retains a lease. */
 export async function releaseMacosAclHelper(owner: object): Promise<void> {
+  const leases = retainers.get(owner) ?? 0;
+  if (leases > 1) {
+    retainers.set(owner, leases - 1);
+    return;
+  }
   retainers.delete(owner);
   if (retainers.size > 0) {
     return;
   }
-  const helper = idleHelper;
-  idleHelper = undefined;
-  await helper?.end();
+  await helpers.releaseIdle();
 }
 
 function ignoreSettlement(): void {
@@ -106,6 +108,9 @@ class AclProcess {
   }
 
   request(request: AclRequest): Promise<void> {
+    if (this.#state.kind !== "ready") {
+      return Promise.reject(new Error("macOS ACL helper is not ready for another request"));
+    }
     const reply: PromiseWithResolvers<void> = Promise.withResolvers();
     this.#state = { kind: "awaiting", pending: { request, reply } };
     this.#child.stdin.write(`${JSON.stringify(request)}\n`);
@@ -228,17 +233,40 @@ class AclProcess {
   }
 }
 
-/** Takes the idle helper unless it exited while idle, or starts one. */
-async function takeHelper(): Promise<AclProcess> {
-  const helper = idleHelper;
-  idleHelper = undefined;
-  if (helper?.usable === true) {
-    helper.reference(true);
-    return helper;
+/** Owns the one process that may serve later batches: absent, idle (unref'd), or held by a session. */
+class HelperPool {
+  #idle: AclProcess | undefined;
+
+  /** Takes the idle helper unless it exited while idle, or starts one. The caller then holds it. */
+  async take(): Promise<AclProcess> {
+    const helper = this.#idle;
+    this.#idle = undefined;
+    if (helper?.usable === true) {
+      helper.reference(true);
+      return helper;
+    }
+    await helper?.closed;
+    return AclProcess.start();
   }
-  await helper?.closed;
-  return AclProcess.start();
+
+  /** Parks a usable helper for the next batch while an owner retains a lease. */
+  async release(helper: AclProcess): Promise<void> {
+    if (retainers.size > 0 && this.#idle === undefined) {
+      helper.reference(false);
+      this.#idle = helper;
+      return;
+    }
+    await helper.end();
+  }
+
+  async releaseIdle(): Promise<void> {
+    const helper = this.#idle;
+    this.#idle = undefined;
+    await helper?.end();
+  }
 }
+
+const helpers = new HelperPool();
 
 /** Serves one editing batch's ACL transfers through at most one helper, held exclusively. */
 export class MacosAclSession {
@@ -263,12 +291,14 @@ export class MacosAclSession {
     await this.#tail;
     const helper = this.#process;
     this.#process = undefined;
-    if (helper?.usable === true && retainers.size > 0 && idleHelper === undefined) {
-      helper.reference(false);
-      idleHelper = helper;
+    if (helper === undefined) {
       return;
     }
-    await helper?.end();
+    if (helper.usable) {
+      await helpers.release(helper);
+      return;
+    }
+    await helper.end();
   }
 
   async #send(request: AclRequest, signal?: AbortSignal): Promise<void> {
@@ -296,7 +326,7 @@ export class MacosAclSession {
       await this.#process.closed;
       this.#process = undefined;
     }
-    this.#process ??= await takeHelper();
+    this.#process ??= await helpers.take();
     return this.#process;
   }
 }

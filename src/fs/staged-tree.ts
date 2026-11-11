@@ -10,25 +10,29 @@ interface StagedTreeView {
 import { readStableFile, sameSnapshotStats } from "./observation.ts";
 import { stagedTraversalDirectories } from "./planning.ts";
 
+export type TreeInspection =
+  | { readonly kind: "initial" }
+  | { readonly kind: "revalidate"; readonly identities: ReadonlyMap<string, BigIntStats> };
+
 export async function inspectPreparedTree(
   prepared: StagedTreeView,
-  expectedIdentities?: ReadonlyMap<string, BigIntStats>,
+  inspection: TreeInspection,
 ): Promise<Map<string, BigIntStats>> {
-  return new StagedTreeInspection(prepared, expectedIdentities).run();
+  return new StagedTreeInspection(prepared, inspection).run();
 }
 
 /** Owns one fail-closed inspection; no observations are shared with later publication phases. */
 class StagedTreeInspection {
   private readonly prepared: StagedTreeView;
-  private readonly expectedIdentities: ReadonlyMap<string, BigIntStats> | undefined;
+  private readonly inspection: TreeInspection;
   private readonly expected = new Map<string, Buffer>();
   private readonly expectedDirectories = new Set([""]);
   private readonly seen = new Set<string>();
   private readonly identities = new Map<string, BigIntStats>();
 
-  constructor(prepared: StagedTreeView, expectedIdentities?: ReadonlyMap<string, BigIntStats>) {
+  constructor(prepared: StagedTreeView, inspection: TreeInspection) {
     this.prepared = prepared;
-    this.expectedIdentities = expectedIdentities;
+    this.inspection = inspection;
     this.planExpectedEntries();
   }
 
@@ -59,7 +63,8 @@ class StagedTreeInspection {
     await this.walk(this.prepared.staging, "");
     if (
       this.seen.size !== this.expected.size ||
-      (this.expectedIdentities && this.identities.size !== this.expectedIdentities.size)
+      (this.inspection.kind === "revalidate" &&
+        this.identities.size !== this.inspection.identities.size)
     ) {
       throw new Error("Staged create tree is incomplete. No changes were written.");
     }
@@ -67,11 +72,13 @@ class StagedTreeInspection {
   }
 
   private rememberIdentity(relativePath: string, stats: BigIntStats): void {
-    const expected = this.expectedIdentities?.get(relativePath);
-    if (this.expectedIdentities && (!expected || !sameSnapshotStats(expected, stats))) {
-      throw new Error(
-        `Staged create entry changed before publish: ${join(this.prepared.staging, relativePath)}. No changes were written.`,
-      );
+    if (this.inspection.kind === "revalidate") {
+      const expected = this.inspection.identities.get(relativePath);
+      if (!expected || !sameSnapshotStats(expected, stats)) {
+        throw new Error(
+          `Staged create entry changed before publish: ${join(this.prepared.staging, relativePath)}. No changes were written.`,
+        );
+      }
     }
     this.identities.set(relativePath, stats);
   }
@@ -109,7 +116,8 @@ class StagedTreeInspection {
       return;
     }
     const bytes = this.expected.get(relative);
-    if (!stats.isFile() || (!this.expectedIdentities && stats.nlink !== 1n) || !bytes) {
+    // Only the initial tree owns unlinked files; revalidation runs after publish linked them.
+    if (!stats.isFile() || (this.inspection.kind === "initial" && stats.nlink !== 1n) || !bytes) {
       throw new Error(
         `Staged create tree contains an unexpected entry: ${path}. No changes were written.`,
       );
