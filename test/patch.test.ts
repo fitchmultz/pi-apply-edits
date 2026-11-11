@@ -206,6 +206,18 @@ nodeTest("body parse failures name the offending line", () => {
     () => parsePatch(wrap("*** Update File: f\n@@\nold\n+new")),
     /Invalid patch at line 4: update lines must start with/,
   );
+  assert.throws(
+    () => parsePatch(wrap("*** Delete File: ")),
+    /Invalid patch at line 2: path must be non-empty/,
+  );
+  assert.throws(
+    () => parsePatch(wrap("*** Update File: f\n@@ \n-old\n+new")),
+    /Invalid patch at line 3: named @@ anchor must be non-empty/,
+  );
+  assert.throws(
+    () => parsePatch(wrap("*** Update File: f\n*** End of File")),
+    /Invalid patch at line 3: End of File requires a non-empty chunk/,
+  );
 });
 
 nodeTest("validates Unicode and NUL in paths, patch bodies and original text", () => {
