@@ -166,6 +166,32 @@ export interface MoveCandidate {
   readonly hooks?: ReadonlyEntryPublishHooks | undefined;
 }
 
+/** How one direct move publishes its destination; respelling renames the entry in place. */
+export type MovePublication =
+  | "respelling"
+  | "linked-entry"
+  | "atomic-entry"
+  | "linked-replacement"
+  | "atomic-replacement";
+
+function movePublication(
+  respelling: boolean | undefined,
+  replacement: MoveReplacement | undefined,
+): MovePublication {
+  if (respelling === true) {
+    return "respelling";
+  }
+  const atomic = process.platform === "android";
+  if (replacement === undefined) {
+    return atomic ? "atomic-entry" : "linked-entry";
+  }
+  return atomic ? "atomic-replacement" : "linked-replacement";
+}
+
+function usesAtomicMove(publication: Exclude<MovePublication, "respelling">): boolean {
+  return publication === "atomic-entry" || publication === "atomic-replacement";
+}
+
 export async function publishMoveDestination(
   plan: ReadonlyEntryMovePlan,
   candidate: MoveCandidate,
@@ -186,13 +212,18 @@ class DestinationMove {
   private readonly signal: AbortSignal | undefined;
   private readonly modified: string[] = [];
   private readonly traversal = new TraversalDirectories();
-  private readonly atomicMove = process.platform === "android";
+  private readonly publication: Exclude<MovePublication, "respelling">;
   private stage: MoveStage = { kind: "not-started" };
 
   constructor(plan: ReadonlyEntryMovePlan, candidate: MoveCandidate, signal?: AbortSignal) {
     this.plan = plan;
     this.candidate = candidate;
     this.signal = signal;
+    const publication = movePublication(plan.respelling, candidate.replacement);
+    if (publication === "respelling") {
+      throw new Error("A respelling does not publish through the move destination");
+    }
+    this.publication = publication;
   }
 
   async run(): Promise<string[]> {
@@ -240,7 +271,7 @@ class DestinationMove {
   }
 
   private async publish(): Promise<void> {
-    const evidence = this.atomicMove
+    const evidence = usesAtomicMove(this.publication)
       ? await movePreparedFileNoReplace(
           this.candidate.path,
           this.plan.destination.targetPath,
@@ -266,7 +297,7 @@ class DestinationMove {
   private async verifyDestination(): Promise<void> {
     const { entry, destination } = this.plan;
     const published = await lstat(destination.targetPath, { bigint: true });
-    const matches = this.atomicMove
+    const matches = usesAtomicMove(this.publication)
       ? samePublishedState(this.candidate.stats, published)
       : sameLinkedSnapshot(this.candidate.stats, published);
     if (!matches) {
@@ -294,7 +325,7 @@ class DestinationMove {
   private async finishSource(): Promise<string[]> {
     const { entry, destination } = this.plan;
     const warnings =
-      this.atomicMove && !this.candidate.replacement
+      usesAtomicMove(this.publication) && !this.candidate.replacement
         ? await this.finishAtomicSource()
         : await this.removeLinkedSource();
     for (const directory of new Set([entry.parentPath, dirname(destination.targetPath)])) {
@@ -352,7 +383,7 @@ class DestinationMove {
   }
 
   private unverifiedPublicationPaths(): string[] {
-    const atomicSource = this.atomicMove && !this.candidate.replacement;
+    const atomicSource = usesAtomicMove(this.publication) && !this.candidate.replacement;
     switch (this.stage.kind) {
       case "not-started":
       case "source-removal-verified":
@@ -377,17 +408,23 @@ export async function publishDirectEntryMove(
   signal?: AbortSignal,
   hooks?: ReadonlyEntryPublishHooks,
 ): Promise<string[]> {
-  if (plan.respelling === true) {
-    return publishRespelling(plan, replacement, signal, hooks);
+  switch (movePublication(plan.respelling, replacement)) {
+    case "respelling":
+      return publishRespelling(plan, replacement, signal, hooks);
+    case "linked-entry":
+    case "atomic-entry":
+      return publishMoveDestination(
+        plan,
+        { path: plan.entry.actualPath, stats: plan.entry.stats, hooks },
+        signal,
+      );
+    case "linked-replacement":
+    case "atomic-replacement":
+      if (!replacement) {
+        throw new Error("A replacement move requires its prepared content");
+      }
+      return new ReplacementMove(plan, replacement, signal, hooks).run();
   }
-  if (!replacement) {
-    return publishMoveDestination(
-      plan,
-      { path: plan.entry.actualPath, stats: plan.entry.stats, hooks },
-      signal,
-    );
-  }
-  return new ReplacementMove(plan, replacement, signal, hooks).run();
 }
 
 class ReplacementMove {
