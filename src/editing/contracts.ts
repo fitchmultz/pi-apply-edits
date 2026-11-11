@@ -134,7 +134,6 @@ interface PlannedContent {
   readonly nextText: string;
   readonly matches: readonly ReadonlyAppliedEditDetail[];
   readonly editsRequested: number;
-  readonly lockKey?: string | undefined;
 }
 export type PlannedMutation = PlannedContent &
   (

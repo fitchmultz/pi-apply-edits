@@ -50,16 +50,21 @@ interface PreparedGroup {
   readonly indices: readonly number[];
   readonly files: ReadonlyPreparedNestedFiles;
 }
-function rootKey(plan: PlannedMutation): string | undefined {
+/** One planned file plus the staged-create root it belongs to, if any. */
+interface PlannedEntry {
+  readonly plan: PlannedMutation;
+  readonly stagedRoot: string | undefined;
+}
+interface CreateGroup {
+  readonly root: string;
+  readonly indices: readonly number[];
+}
+function rootKey(plan: PlannedMutation, lockKey: string): string | undefined {
   const create = plannedCreate(plan);
-  if (
-    plan.lockKey === undefined ||
-    create === undefined ||
-    create.missingDirectories.length === 0
-  ) {
+  if (create === undefined || create.missingDirectories.length === 0) {
     return;
   }
-  let key = plan.lockKey;
+  let key = lockKey;
   for (let index = 0; index < create.missingDirectories.length; index++) {
     key = dirname(key);
   }
@@ -99,7 +104,6 @@ class EditingBatch {
   private readonly options: ExecutionOptions;
   private readonly receipts: BatchReceipts;
   private resolved: ResolvedBatch = { resolved: [], targets: [] };
-  private readonly plans: PlannedMutation[] = [];
   // Preparation and publication share one ACL helper; progress callbacks stay outside its scope.
   private readonly acl = new MacosAclSession();
   constructor(files: readonly MutationInput[], options: ExecutionOptions) {
@@ -164,27 +168,31 @@ class EditingBatch {
       ),
     };
   }
-  private async planFiles(): Promise<void> {
+  private async planFiles(): Promise<readonly PlannedEntry[]> {
+    const entries: PlannedEntry[] = [];
     for (const item of this.resolved.resolved) {
       try {
         // Preserve progress callback/cancellation order before planning the next file.
-        const contents = await planFile(item.file, item.inputPath, this.options);
-        const plan = { ...contents, lockKey: item.destination?.targetKey ?? item.targetKey };
-        this.plans.push(plan);
+        const plan = await planFile(item.file, item.inputPath, this.options);
+        entries.push({
+          plan,
+          stagedRoot: rootKey(plan, item.destination?.targetKey ?? item.targetKey),
+        });
         this.receipts.plan(item.index, plan);
         this.options.onProgress?.(
-          `${this.options.preview ? "Previewed" : "Planned"} ${this.plans.length}/${this.files.length}: ${plan.displayPath}. ${this.options.preview ? "No files written." : "No targets published."}`,
+          `${this.options.preview ? "Previewed" : "Planned"} ${entries.length}/${this.files.length}: ${plan.displayPath}. ${this.options.preview ? "No files written." : "No targets published."}`,
         );
       } catch (error) {
         this.receipts.fail([item.index]);
         throw this.receipts.failure(`files[${item.index}]: ${errorMessage(error)}`);
       }
     }
+    return entries;
   }
   /** Identical pairs are skipped beside an edit that changes a file, never on their own. */
-  private assertSomeEditChanges(): void {
-    const onlyIdenticalPairs = this.plans.every(
-      (plan) =>
+  private assertSomeEditChanges(plans: readonly PlannedEntry[]): void {
+    const onlyIdenticalPairs = plans.every(
+      ({ plan }) =>
         plan.operation === "no_change" && plan.matches.some((match) => match.replacements === 0),
     );
     if (onlyIdenticalPairs) {
@@ -194,9 +202,9 @@ class EditingBatch {
       );
     }
   }
-  private async assertLinksRetained(): Promise<void> {
+  private async assertLinksRetained(plans: readonly PlannedEntry[]): Promise<void> {
     const removedLinks = new Map(
-      this.plans.flatMap((plan, index) => {
+      plans.flatMap(({ plan }, index) => {
         if (plan.operation !== "delete" && plan.operation !== "move") {
           return [];
         }
@@ -222,21 +230,21 @@ class EditingBatch {
       }
       this.receipts.fail([target.index]);
       throw this.receipts.failure(
-        `files[${target.index}] (${target.inputPath}) traverses symbolic link ${required(this.plans[sourceIndex]).inputPath} that files[${sourceIndex}] removes. Split these operations into separate calls. No changes were written.`,
+        `files[${target.index}] (${target.inputPath}) traverses symbolic link ${required(plans[sourceIndex]).plan.inputPath} that files[${sourceIndex}] removes. Split these operations into separate calls. No changes were written.`,
       );
     }
   }
-  private assertTraversalDisjoint(): void {
-    for (const [index, plan] of this.plans.entries()) {
+  private assertTraversalDisjoint(plans: readonly PlannedEntry[]): void {
+    for (const [index, { plan, stagedRoot }] of plans.entries()) {
       for (const path of plannedCreate(plan)?.traversalDirectories ?? []) {
         const directory = normalizeLockKey(path);
-        const ownRoot = rootKey(plan);
+        const ownRoot = stagedRoot;
         const targetConflict = this.resolved.targets.some(
           (target) =>
             directory === target.targetKey || directory.startsWith(`${target.targetKey}${sep}`),
         );
-        const rootConflict = this.plans.some((other) =>
-          overlapsRoot(directory, rootKey(other), ownRoot),
+        const rootConflict = plans.some((other) =>
+          overlapsRoot(directory, other.stagedRoot, ownRoot),
         );
         if (targetConflict || rootConflict) {
           this.receipts.fail([index]);
@@ -247,21 +255,21 @@ class EditingBatch {
       }
     }
   }
-  private groupCreates(): readonly (readonly number[])[] {
+  private groupCreates(plans: readonly PlannedEntry[]): readonly CreateGroup[] {
     const groups = new Map<string, number[]>();
-    for (const [index, plan] of this.plans.entries()) {
-      const key = rootKey(plan);
-      if (key === undefined) {
+    for (const [index, entry] of plans.entries()) {
+      if (entry.stagedRoot === undefined) {
         continue;
       }
-      const group = groups.get(key) ?? [];
+      const group = groups.get(entry.stagedRoot) ?? [];
       group.push(index);
-      groups.set(key, group);
+      groups.set(entry.stagedRoot, group);
     }
     for (const group of groups.values()) {
       const spellings = new Set(
         group.map(
-          (index) => required(plannedCreate(required(this.plans[index]))).missingDirectories[0],
+          (index) =>
+            required(plannedCreate(required(plans[index]).plan)).missingDirectories[0],
         ),
       );
       if (spellings.size > 1) {
@@ -270,11 +278,14 @@ class EditingBatch {
         );
       }
     }
-    return [...groups.values()];
+    return [...groups].map(([root, indices]) => ({ root, indices }));
   }
-  private async prepareGroup(indices: readonly number[]): Promise<PreparedGroup> {
+  private async prepareGroup(
+    plans: readonly PlannedEntry[],
+    indices: readonly number[],
+  ): Promise<PreparedGroup> {
     try {
-      const entries = indices.map((index) => preparedEntry(required(this.plans[index])));
+      const entries = indices.map((index) => preparedEntry(required(plans[index]).plan));
       const files = await this.acl.run(() =>
         preparePlannedNestedFiles(entries, this.options.signal),
       );
@@ -287,42 +298,52 @@ class EditingBatch {
     }
   }
   private async publishGroup(
+    plans: readonly PlannedEntry[],
     index: number,
-    plan: PlannedMutation,
     prepared: PreparedGroup | undefined,
   ): Promise<void> {
     const group = prepared?.indices ?? [index];
-    const names = group.map((item) => required(this.plans[item]).displayPath).join(", ");
+    const names = group.map((item) => required(plans[item]).plan.displayPath).join(", ");
     try {
       this.options.onProgress?.(
-        `Publishing ${names} (${this.receipts.completedCount()}/${this.plans.length} files complete).`,
+        `Publishing ${names} (${this.receipts.completedCount()}/${plans.length} files complete).`,
       );
       const warnings = await this.acl.run(() =>
         prepared === undefined
-          ? commitPlannedMutation(plan, this.options.signal)
+          ? commitPlannedMutation(required(plans[index]).plan, this.options.signal)
           : publishPreparedNestedFiles(prepared.files, this.options.signal),
       );
       this.receipts.warnings(required(group[0]), warnings);
       for (const item of group) {
-        this.receipts.complete(item, required(this.plans[item]));
+        this.receipts.complete(item, required(plans[item]).plan);
       }
       this.options.onProgress?.(
-        `Completed ${this.receipts.completedCount()}/${this.plans.length}: ${names}.`,
+        `Completed ${this.receipts.completedCount()}/${plans.length}: ${names}.`,
       );
     } catch (error) {
-      throw this.receipts.publicationFailure(error, index, group, this.plans);
+      throw this.receipts.publicationFailure(
+        error,
+        index,
+        group,
+        plans.map((entry) => entry.plan),
+      );
     }
   }
-  private async publishFiles(prepared: ReadonlyMap<number, PreparedGroup>): Promise<void> {
-    for (const [index, plan] of this.plans.entries()) {
+  private async publishFiles(
+    plans: readonly PlannedEntry[],
+    prepared: ReadonlyMap<string, PreparedGroup>,
+  ): Promise<void> {
+    for (const [index, entry] of plans.entries()) {
       if (this.receipts.hasCompleted(index)) {
         continue;
       }
+      const staged =
+        entry.stagedRoot === undefined ? undefined : required(prepared.get(entry.stagedRoot));
       // Publication order determines partial receipts and the next cancellation boundary.
-      await this.publishGroup(index, plan, prepared.get(index));
+      await this.publishGroup(plans, index, staged);
     }
   }
-  private async cleanup(prepared: ReadonlyMap<number, PreparedGroup>): Promise<readonly string[]> {
+  private async cleanup(prepared: ReadonlyMap<string, PreparedGroup>): Promise<readonly string[]> {
     const failures: string[] = [];
     for (const group of prepared.values()) {
       try {
@@ -334,15 +355,15 @@ class EditingBatch {
     }
     return failures;
   }
-  private async publish(groups: readonly (readonly number[])[]): Promise<void> {
-    const prepared = new Map<number, PreparedGroup>();
+  private async publish(plans: readonly PlannedEntry[]): Promise<void> {
+    const prepared = new Map<string, PreparedGroup>();
     let failure: BatchPublicationError | undefined;
     try {
-      for (const group of groups) {
+      for (const group of this.groupCreates(plans)) {
         // Own each prepared subtree across throws; publish nothing until every group is ready.
-        prepared.set(required(group[0]), await this.prepareGroup(group));
+        prepared.set(group.root, await this.prepareGroup(plans, group.indices));
       }
-      await this.publishFiles(prepared);
+      await this.publishFiles(plans, prepared);
     } catch (error) {
       failure =
         error instanceof BatchPublicationError ? error : this.receipts.failure(errorMessage(error));
@@ -360,12 +381,12 @@ class EditingBatch {
     }
   }
   private async execute(): Promise<EditingExecution> {
-    await this.planFiles();
-    this.assertSomeEditChanges();
-    await this.assertLinksRetained();
-    this.assertTraversalDisjoint();
+    const plans = await this.planFiles();
+    this.assertSomeEditChanges(plans);
+    await this.assertLinksRetained(plans);
+    this.assertTraversalDisjoint(plans);
     if (!this.options.preview) {
-      await this.publish(this.groupCreates());
+      await this.publish(plans);
     }
     return describeBatch(this.receipts.snapshot(), this.options.cwd);
   }
