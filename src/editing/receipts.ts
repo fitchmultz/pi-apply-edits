@@ -3,6 +3,7 @@ import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import { PublicationError } from "../file-system.ts";
 import { countTextLines } from "./text.ts";
 import { resolveInputPath } from "./queue.ts";
+import { writeMode } from "./validation.ts";
 import {
   errorMessage,
   required,
@@ -172,16 +173,19 @@ function receiptForPlan(plan: PlannedMutation, preview: boolean): ReceiptEvidenc
   };
 }
 function inputOperation(input: MutationInput): ApplyEditsDetails["operation"] {
+  if (input.patch?.moveTo !== undefined) {
+    return "move";
+  }
   if (input.delete === true) {
     return "delete";
   }
   if (input.patch !== undefined) {
-    return input.patch.moveTo === undefined ? "patch" : "move";
+    return "patch";
   }
   if (input.edits !== undefined) {
     return "edit";
   }
-  return input.requireMissing === true ? "create" : "rewrite";
+  return writeMode(input) === "replace" ? "rewrite" : "create";
 }
 function emptyReceipt(input: MutationInput, cwd: string): ReceiptEvidence {
   return {

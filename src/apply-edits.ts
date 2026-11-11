@@ -40,6 +40,15 @@ export async function replaceTextInFiles(
     onProgress,
   });
 }
+/** Resolvable evidence for a request that never reached planning; the mode still names its intent. */
+function writeEvidence(file: ReadonlyWriteFilesRequest["files"][number]): MutationInput {
+  const create = file.mode === "create";
+  return {
+    path: file.path,
+    onMissing: create ? "create" : undefined,
+    requireMissing: create ? true : undefined,
+  };
+}
 function writeMutation(file: ReadonlyWriteFilesRequest["files"][number]): MutationInput {
   const mode: unknown = file.mode;
   if (mode !== "create" && mode !== "replace") {
@@ -62,15 +71,18 @@ export async function writeFiles(
   signal?: AbortSignal,
   onProgress?: (summary: string) => void,
 ): Promise<EditingExecution> {
+  const preview = input.preview === true;
+  let files: MutationInput[];
   try {
-    return await executeFileBatch(input.files.map(writeMutation), {
-      cwd,
-      preview: input.preview === true,
-      signal,
-      onProgress,
-    });
+    files = input.files.map(writeMutation);
   } catch (error) {
-    return failedExecution(error, input.preview === true);
+    // The request is invalid, but its paths are still resolvable evidence for the caller.
+    return failedExecution(error, preview, input.files.map(writeEvidence), cwd);
+  }
+  try {
+    return await executeFileBatch(files, { cwd, preview, signal, onProgress });
+  } catch (error) {
+    return failedExecution(error, preview);
   }
 }
 function patchMutation(operation: ReadonlyPatchOperation): MutationInput {

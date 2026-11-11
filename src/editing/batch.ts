@@ -191,15 +191,17 @@ class EditingBatch {
   }
   /** Identical pairs are skipped beside an edit that changes a file, never on their own. */
   private assertSomeEditChanges(plans: readonly PlannedEntry[]): void {
-    const onlyIdenticalPairs = plans.every(
-      ({ plan }) =>
-        plan.operation === "no_change" && plan.matches.some((match) => match.replacements === 0),
-    );
-    if (onlyIdenticalPairs) {
-      this.receipts.fail([0]);
-      throw this.receipts.failure(
-        `files[0]: edits[0] ${IDENTICAL_PAIR}, and no other edit in this call changes a file. No changes were written.`,
-      );
+    if (!plans.every(({ plan }) => plan.operation === "no_change")) {
+      return;
+    }
+    for (const [fileIndex, { plan }] of plans.entries()) {
+      const editIndex = plan.matches.findIndex((match) => match.replacements === 0);
+      if (editIndex !== -1) {
+        this.receipts.fail([fileIndex]);
+        throw this.receipts.failure(
+          `files[${fileIndex}]: edits[${editIndex}] ${IDENTICAL_PAIR}, and no other edit in this call changes a file. No changes were written.`,
+        );
+      }
     }
   }
   private async assertLinksRetained(plans: readonly PlannedEntry[]): Promise<void> {
