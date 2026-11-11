@@ -40,14 +40,42 @@ export async function replaceTextInFiles(
     onProgress,
   });
 }
-/** Resolvable evidence for a request that never reached planning; the mode still names its intent. */
-function writeEvidence(file: ReadonlyWriteFilesRequest["files"][number]): MutationInput {
-  const create = file.mode === "create";
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/** One resolvable input from a request that never reached planning; malformed entries add none. */
+function writeEvidence(file: unknown): MutationInput | undefined {
+  if (!isRecord(file)) {
+    return;
+  }
+  const path = file["path"];
+  if (typeof path !== "string" || path.length === 0) {
+    return;
+  }
+  const create = file["mode"] === "create";
   return {
-    path: file.path,
+    path,
     onMissing: create ? "create" : undefined,
     requireMissing: create ? true : undefined,
   };
+}
+
+/**
+ * Evidence for a malformed request. Total on purpose: it must still resolve to a receipt,
+ * so it cannot throw a second error from the catch that called it.
+ */
+function writeEvidenceList(files: unknown): MutationInput[] {
+  if (!Array.isArray(files)) {
+    return [];
+  }
+  const evidence: MutationInput[] = [];
+  for (const file of files) {
+    const item = writeEvidence(file);
+    if (item !== undefined) {
+      evidence.push(item);
+    }
+  }
+  return evidence;
 }
 function writeMutation(file: ReadonlyWriteFilesRequest["files"][number]): MutationInput {
   const mode: unknown = file.mode;
@@ -77,7 +105,7 @@ export async function writeFiles(
     files = input.files.map(writeMutation);
   } catch (error) {
     // The request is invalid, but its paths are still resolvable evidence for the caller.
-    return failedExecution(error, preview, input.files.map(writeEvidence), cwd);
+    return failedExecution(error, preview, writeEvidenceList(input.files), cwd);
   }
   try {
     return await executeFileBatch(files, { cwd, preview, signal, onProgress });

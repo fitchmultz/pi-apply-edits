@@ -1198,6 +1198,23 @@ nodeTest(
   },
 );
 
+async function assertMalformedWriteRequestsReceiveReceipts(directory: string): Promise<void> {
+  // Shape-invalid requests still resolve to a receipt instead of rejecting from writeFiles.
+  for (const request of [
+    {},
+    { files: "x" },
+    { files: [null] },
+    { files: [{ path: "", content: "x", mode: "invalid" }] },
+  ]) {
+    const result: unknown = await Reflect.apply(writeFiles, undefined, [request, directory]);
+    assert(typeof result === "object" && result !== null && "details" in result);
+    const receipt = result.details;
+    assert(typeof receipt === "object" && receipt !== null && "error" in receipt);
+    assert.equal(typeof receipt.error, "string");
+    assert.deepEqual("files" in receipt ? receipt.files : undefined, []);
+  }
+}
+
 nodeTest("write controls and preview reject invalid types without writing", async () => {
   await inTemporaryDirectory(async (directory) => {
     await writeFile(join(directory, "file"), "before\n");
@@ -1264,6 +1281,7 @@ nodeTest("write controls and preview reject invalid types without writing", asyn
       ["file", "unattempted", "create"],
       ["second", "unattempted", "rewrite"],
     ]);
+    await assertMalformedWriteRequestsReceiveReceipts(directory);
     assert.equal(await readFile(join(directory, "file"), "utf8"), "before\n");
     assert.deepEqual(await readdir(directory), ["file"]);
   });
