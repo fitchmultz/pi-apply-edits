@@ -33,39 +33,6 @@ async function fixture(t: nodeTest.TestContext) {
   return cwd;
 }
 
-nodeTest(
-  "Windows creates agree with native DOS traversal through a junction",
-  { skip: posix },
-  async (t) => {
-    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-native-windows-")));
-    t.after(() => rm(cwd, { recursive: true, force: true }));
-    await mkdir(join(cwd, "actual", "inner"), { recursive: true });
-    await symlink(join(cwd, "actual", "inner"), join(cwd, "link"), "junction");
-    async function verifyNativeTraversal(prefix: string): Promise<void> {
-      const native = `${cwd}/${prefix}native`;
-      await mkdir(`${cwd}/${prefix}`, { recursive: true });
-      await writeFile(native, "native");
-      const result = await writeFiles(
-        { files: [{ path: `${prefix}extension`, content: "extension", mode: "create" }] },
-        cwd,
-      );
-      assert.equal(result.details.error, undefined, result.summary);
-      assert.equal(await readFile(`${cwd}/${prefix}extension`, "utf8"), "extension");
-      assert.equal(
-        await realpath(native),
-        (await realpath(`${cwd}/${prefix}extension`)).replace(/extension$/, "native"),
-      );
-      await rm(native);
-      await rm(`${cwd}/${prefix}extension`);
-    }
-    for (const prefix of ["link/../", "missing/../link/../"]) {
-      // Clean each native traversal before reusing its junction and parent directories.
-      await verifyNativeTraversal(prefix);
-    }
-    await assert.rejects(lstat(join(cwd, "missing")), /ENOENT/);
-  },
-);
-
 nodeTest("write_files follows native symlink/.. traversal", { skip: !posix }, async (t) => {
   const cwd = await fixture(t);
   const result = await writeFiles(

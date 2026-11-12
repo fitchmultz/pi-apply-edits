@@ -277,7 +277,6 @@ The package name, extension entry path, and keep-builtins switches are unchanged
   are literal: `~`, `file://`, Unicode spaces, and leading `@` segments are never
   expanded or rewritten. POSIX traversal is native: `link/../file` follows the link
   before visiting its parent, and trailing separators still require directories.
-  Windows keeps native DOS/UNC normalization.
 - Receipts and errors show a working-directory path that starts with `~` as
   `./~/...`, so it is not mistaken for a home-directory path. Editing a missing
   `~/...` file reports the absolute home path, as well as how to create the
@@ -298,7 +297,7 @@ The package name, extension entry path, and keep-builtins switches are unchanged
 - Text edits follow symbolic links without replacing the link itself. Delete and
   pure Move operate on the link entry, including dangling links, leaving its target
   untouched. Combining content changes with a link-entry move is rejected; use
-  separate calls. Windows link-entry moves are rejected before publication.
+  separate calls.
 - Existing ownership, ordinary permissions, ACLs, and extended attributes are
   preserved using native copying on macOS and Linux. macOS also uses the system
   `osascript` command to retain inherited ACL entries exactly. One `osascript` process serves
@@ -319,8 +318,6 @@ The package name, extension entry path, and keep-builtins switches are unchanged
   extended attributes because Termux `cp` cannot preserve them. Startup probes
   GNU `mv --exchange` and `--no-clobber`; Pi's built-ins remain enabled if any
   required command or atomic operation is unavailable.
-- Existing-file replacement fails closed on other platforms. Explicit create
-  remains available.
 - Creates preserve native macOS ACL inheritance, including direct-child-only
   rules. The system `osascript` command calls the native ACL API for private
   staging; no compiler or additional package is required. Inherited rights that
@@ -344,9 +341,9 @@ The package name, extension entry path, and keep-builtins switches are unchanged
   relocated with its parent. Identity is rechecked after each file move, and detected swaps are
   preserved for inspection.
 - Planning rejects a mutation before staging or any batch write when its longest computed
-  temporary, staging, or cleanup path exceeds 991 UTF-8 bytes on macOS, 4063 on Linux or
-  Android, or 32702 UTF-16 code units on Windows. These explicit support boundaries retain a 32-unit
-  POSIX or 64-unit Windows safety margin below the platform path limit. The error reports the
+  temporary, staging, or cleanup path exceeds 991 UTF-8 bytes on Apple Silicon macOS, or 4063 on Linux or
+  Android. These explicit support boundaries retain a 32-byte
+  safety margin below the platform path limit. The error reports the
   planned length and limit; no filesystem mutation occurs.
 - A newly claimed directory is owner-checked before publication or cleanup, so a
   cross-user substitution in a shared-writable ancestor is rejected and left untouched.
