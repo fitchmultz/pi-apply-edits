@@ -59,12 +59,11 @@ Paths bind to its selected directory before approval. Without that extension, pa
 
 Existing-file replacement requires these native tools:
 
-- macOS: system `/bin/cp` and `osascript`.
+- Apple Silicon macOS: system `/bin/cp` and `osascript`.
 - Linux: GNU `/bin/cp` and `getcap`.
 - Android/Termux: `pkg install coreutils attr libacl`. GNU `mv` must support `--exchange` and `--no-clobber`.
 
 Android/Termux rejects extended ACLs and non-SELinux extended attributes.
-On other platforms, explicit file creation remains available.
 Pi's default write tools stay active when file replacement is unavailable.
 
 Paths are literal. The tools do not expand `~` or `file://`.
