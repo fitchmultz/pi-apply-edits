@@ -6,8 +6,8 @@ records this repository's mappings and decisions.
 
 ## Acceptance
 
-Use Node 24.15 or newer, Git, and the npm version in `package.json` for development.
-The extension's runtime floor is Node 24.0. The published Oxlint, oxlint-tsgolint,
+Use Node 24.22.3 (24.x) or 26.13.1 and later, Git, and the npm version in `package.json` for development.
+The same Node requirements apply to the extension runtime. The published Oxlint, oxlint-tsgolint,
 and Oxfmt packages run directly from the locked dependency tree.
 
 ```sh

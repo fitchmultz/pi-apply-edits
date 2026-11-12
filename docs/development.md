@@ -1,8 +1,7 @@
 # Development
 
-pi-apply-edits is distributed through Git and GitHub. Use Node 24.15 or newer,
-Git, and the npm version declared in `package.json`. The extension's runtime
-floor remains Node 24.0.
+pi-apply-edits is distributed through Git and GitHub. Use Node 24.22.3 (24.x) or 26.13.1 and later,
+Git, and the npm version declared in `package.json`.
 
 ## Install and check
 

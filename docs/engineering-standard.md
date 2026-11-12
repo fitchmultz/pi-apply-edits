@@ -972,8 +972,7 @@ source has SHA-256 `41b6d505b36007218ca56b7b3443fcbd96d994715da5a83aaca52b58af47
 This adopted copy has repository formatting and the records below.
 
 The starting revision is `e988520`, with no unrelated working-tree changes.
-Development uses Node 24.15 or newer and npm 12.2.0. The extension retains its
-Node 24.0 and Pi 1.0.0 runtime floors. The locked official development cohort is
+Development and runtime require Node 24.22.3 (24.x) or 26.13.1 and later; development uses npm 12.2.0. The Pi runtime floor is declared in `package.json`. The locked official development cohort is
 Pi 1.0.0 with TypeBox 1.3.34. Hosted qualification also resolves the latest
 official Pi release and current Fitch fork independently.
 
