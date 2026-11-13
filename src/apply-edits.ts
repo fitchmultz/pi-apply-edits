@@ -7,6 +7,7 @@ import type {
   ReadonlyReplaceTextRequest,
   EditingExecution,
   MutationInput,
+  UnreachedFile,
 } from "./editing/contracts.ts";
 
 export { applyTargetedEdits } from "./editing/targeted.ts";
@@ -27,105 +28,132 @@ export type {
   WriteFilesRequest,
 } from "./editing/contracts.ts";
 
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Extract resolvable file paths from a malformed request without risking a secondary throw. */
+function unreachedInputs(files: unknown, fallback: "edit" | "rewrite"): UnreachedFile[] {
+  if (!Array.isArray(files)) {
+    return [];
+  }
+  const evidence: UnreachedFile[] = [];
+  for (const file of files) {
+    if (!isRecord(file) || typeof file.path !== "string" || file.path.length === 0) {
+      continue;
+    }
+    evidence.push({
+      path: file.path,
+      operation: fallback === "rewrite" && file.mode === "create" ? "create" : fallback,
+    });
+  }
+  return evidence;
+}
+
+function replaceMutation(
+  file: ReadonlyReplaceTextRequest["files"][number],
+  index: number,
+): MutationInput {
+  if (!isRecord(file)) {
+    throw new Error(`files[${index}]: File mutation input must be an object`);
+  }
+  return { kind: "edit", path: file.path, edits: file.edits };
+}
+
+function parseBatchFiles<File>(
+  input: { readonly files: readonly File[]; readonly preview?: boolean | undefined },
+  fallback: "edit" | "rewrite",
+  toMutation: (file: File, index: number) => MutationInput,
+  cwd: string,
+): { readonly preview: boolean; readonly files: MutationInput[] } | EditingExecution {
+  const raw: unknown = input;
+  const preview = isRecord(raw) && raw.preview === true;
+  try {
+    if (!isRecord(raw) || !Array.isArray(raw.files)) {
+      throw new Error("files must be an array");
+    }
+    return { preview, files: input.files.map(toMutation) };
+  } catch (error) {
+    return failedExecution(
+      error,
+      preview,
+      unreachedInputs(isRecord(raw) ? raw.files : [], fallback),
+      cwd,
+    );
+  }
+}
+
 export async function replaceTextInFiles(
   input: ReadonlyReplaceTextRequest,
   cwd: string,
   signal?: AbortSignal,
   onProgress?: (summary: string) => void,
 ): Promise<EditingExecution> {
-  return executeFileBatch(input.files, {
+  const parsed = parseBatchFiles(input, "edit", replaceMutation, cwd);
+  if ("details" in parsed) {
+    return parsed;
+  }
+  return executeFileBatch(parsed.files, {
     cwd,
-    preview: input.preview === true,
+    preview: parsed.preview,
     signal,
     onProgress,
   });
 }
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
 
-/** One resolvable input from a request that never reached planning; malformed entries add none. */
-function writeEvidence(file: unknown): MutationInput | undefined {
+function writeMutation(
+  file: ReadonlyWriteFilesRequest["files"][number],
+  index: number,
+): MutationInput {
   if (!isRecord(file)) {
-    return;
+    throw new Error(`files[${index}]: File mutation input must be an object`);
   }
-  const path = file["path"];
-  if (typeof path !== "string" || path.length === 0) {
-    return;
-  }
-  const create = file["mode"] === "create";
-  return {
-    path,
-    onMissing: create ? "create" : undefined,
-    requireMissing: create ? true : undefined,
-  };
-}
-
-/**
- * Evidence for a malformed request. Total on purpose: it must still resolve to a receipt,
- * so it cannot throw a second error from the catch that called it.
- */
-function writeEvidenceList(files: unknown): MutationInput[] {
-  if (!Array.isArray(files)) {
-    return [];
-  }
-  const evidence: MutationInput[] = [];
-  for (const file of files) {
-    const item = writeEvidence(file);
-    if (item !== undefined) {
-      evidence.push(item);
-    }
-  }
-  return evidence;
-}
-function writeMutation(file: ReadonlyWriteFilesRequest["files"][number]): MutationInput {
   const mode: unknown = file.mode;
   if (mode !== "create" && mode !== "replace") {
-    throw new Error('mode must be "create" or "replace"');
+    throw new Error(`files[${index}]: mode must be "create" or "replace"`);
   }
   if (typeof file.content !== "string") {
-    throw new Error("content must be a string");
+    throw new Error(`files[${index}]: content must be a string`);
   }
   return {
+    kind: "write",
     path: file.path,
-    rewrite: file.content,
-    onMissing: mode === "create" ? "create" : "error",
-    requireMissing: mode === "create",
+    content: file.content,
+    mode,
     preserveFormatting: file.preserveFormatting,
   };
 }
+
 export async function writeFiles(
   input: ReadonlyWriteFilesRequest,
   cwd: string,
   signal?: AbortSignal,
   onProgress?: (summary: string) => void,
 ): Promise<EditingExecution> {
-  const preview = input.preview === true;
-  let files: MutationInput[];
-  try {
-    files = input.files.map(writeMutation);
-  } catch (error) {
-    // The request is invalid, but its paths are still resolvable evidence for the caller.
-    return failedExecution(error, preview, writeEvidenceList(input.files), cwd);
+  const parsed = parseBatchFiles(input, "rewrite", writeMutation, cwd);
+  if ("details" in parsed) {
+    return parsed;
   }
-  try {
-    return await executeFileBatch(files, { cwd, preview, signal, onProgress });
-  } catch (error) {
-    return failedExecution(error, preview);
-  }
+  return executeFileBatch(parsed.files, {
+    cwd,
+    preview: parsed.preview,
+    signal,
+    onProgress,
+  });
 }
+
 function patchMutation(operation: ReadonlyPatchOperation): MutationInput {
   switch (operation.kind) {
     case "add":
       return {
+        kind: "write",
         path: operation.path,
-        rewrite: operation.content,
-        onMissing: "create",
-        requireMissing: true,
+        content: operation.content,
+        mode: "create",
       };
     case "delete":
-      return { path: operation.path, delete: true };
+      return { kind: "delete", path: operation.path };
     case "update":
-      return { path: operation.path, patch: operation };
+      return { kind: "patch", path: operation.path, patch: operation };
   }
 }
 // oxlint-disable-next-line max-params -- QX-002: Preserve the public positional editing API.

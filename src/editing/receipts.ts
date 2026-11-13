@@ -3,7 +3,6 @@ import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import { PublicationError } from "../file-system.ts";
 import { countTextLines } from "./text.ts";
 import { resolveInputPath } from "./queue.ts";
-import { writeMode } from "./validation.ts";
 import {
   errorMessage,
   required,
@@ -15,6 +14,7 @@ import {
   type EditingExecution,
   type MutationInput,
   type PlannedMutation,
+  type UnreachedFile,
 } from "./contracts.ts";
 
 export class BatchPublicationError extends Error {
@@ -166,25 +166,32 @@ function receiptForPlan(plan: PlannedMutation, preview: boolean): ReceiptEvidenc
     ...(plan.operation === "move" ? { moveTo: plan.movePlan.destination.inputPath } : {}),
   };
 }
-function inputOperation(input: MutationInput): ApplyEditsDetails["operation"] {
-  if (input.patch?.moveTo !== undefined) {
-    return "move";
+export function unreachedMutation(input: MutationInput): UnreachedFile {
+  switch (input.kind) {
+    case "delete":
+      return { path: input.path, operation: "delete" };
+    case "edit":
+      return { path: input.path, operation: "edit" };
+    case "patch":
+      return input.patch.moveTo === undefined
+        ? { path: input.path, operation: "patch" }
+        : { path: input.path, operation: "move", moveTo: input.patch.moveTo };
+    case "write":
+      return {
+        path: input.path,
+        operation: input.mode === "replace" ? "rewrite" : "create",
+      };
   }
-  if (input.delete === true) {
-    return "delete";
-  }
-  if (input.patch !== undefined) {
-    return "patch";
-  }
-  if (input.edits !== undefined) {
-    return "edit";
-  }
-  return writeMode(input) === "replace" ? "rewrite" : "create";
 }
-function emptyReceipt(input: MutationInput, cwd: string): ReceiptEvidence {
+export function unreachedMutations(inputs: readonly MutationInput[]): UnreachedFile[] {
+  return inputs
+    .filter((input) => typeof input.path === "string" && input.path.length > 0)
+    .map(unreachedMutation);
+}
+function emptyReceipt(input: UnreachedFile, cwd: string): ReceiptEvidence {
   return {
     path: resolveInputPath(input.path, cwd),
-    operation: inputOperation(input),
+    operation: input.operation,
     editsRequested: 0,
     matches: [],
     bytesBefore: 0,
@@ -194,18 +201,8 @@ function emptyReceipt(input: MutationInput, cwd: string): ReceiptEvidence {
     diff: "",
     diffTruncated: false,
     warnings: [],
-    ...(input.patch?.moveTo === undefined
-      ? {}
-      : { moveTo: resolveInputPath(input.patch.moveTo, cwd) }),
+    ...(input.moveTo === undefined ? {} : { moveTo: resolveInputPath(input.moveTo, cwd) }),
   };
-}
-function isArrayInput(value: unknown): boolean {
-  return Array.isArray(value);
-}
-function hasStringPath(value: unknown): boolean {
-  return (
-    typeof value === "object" && value !== null && "path" in value && typeof value.path === "string"
-  );
 }
 export function mutableDetails(details: ApplyEditsBatchDetails): MutableBatchDetails {
   return {
@@ -221,7 +218,7 @@ export function mutableDetails(details: ApplyEditsBatchDetails): MutableBatchDet
 export function failedExecution(
   error: unknown,
   preview: boolean,
-  files: readonly MutationInput[] = [],
+  files: readonly UnreachedFile[] = [],
   cwd?: string,
 ): EditingExecution {
   const message = errorMessage(error);
@@ -230,15 +227,13 @@ export function failedExecution(
       ? error.details
       : {
           files:
-            isArrayInput(files) && cwd !== undefined
-              ? files
-                  .filter(hasStringPath)
-                  .map((file) =>
-                    serializeReceipt(
-                      { stage: "unreached", evidence: emptyReceipt(file, cwd) },
-                      preview,
-                    ),
-                  )
+            cwd !== undefined
+              ? files.map((file) =>
+                  serializeReceipt(
+                    { stage: "unreached", evidence: emptyReceipt(file, cwd) },
+                    preview,
+                  ),
+                )
               : [],
           modifiedFiles: [],
           ...(preview ? { preview: true } : {}),
@@ -356,7 +351,7 @@ export class BatchReceipts {
   constructor(inputs: readonly MutationInput[], cwd: string, preview: boolean) {
     this.files = inputs.map((input) => ({
       stage: "unreached",
-      evidence: emptyReceipt(input, cwd),
+      evidence: emptyReceipt(unreachedMutation(input), cwd),
     }));
     this.preview = preview;
   }

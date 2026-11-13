@@ -2,52 +2,12 @@ import {
   MAX_EDITS_PER_FILE,
   MAX_BATCH_FILES,
   errorMessage,
-  type ReadonlyApplyEditsInput,
   type MutationInput,
 } from "./contracts.ts";
 
 function optionalBoolean(value: unknown, field: string): void {
   if (value !== undefined && typeof value !== "boolean") {
     throw new Error(`${field} must be a boolean`);
-  }
-}
-/** One write-mode decision from the request flags, shared by validation and planning. */
-export type WriteMode = "replace" | "create" | "require-missing";
-
-export function writeMode(input: ReadonlyApplyEditsInput): WriteMode {
-  if (input.requireMissing === true) {
-    return "require-missing";
-  }
-  return input.onMissing === "create" ? "create" : "replace";
-}
-
-function validateRewriteMode(input: ReadonlyApplyEditsInput): void {
-  optionalBoolean(input.preserveFormatting, "preserveFormatting");
-  optionalBoolean(input.requireMissing, "requireMissing");
-  const mode: unknown = input.onMissing;
-  if (mode !== undefined && mode !== "error" && mode !== "create") {
-    throw new Error('onMissing must be either "error" or "create"');
-  }
-  if (input.requireMissing === true && mode !== "create") {
-    throw new Error('requireMissing requires onMissing: "create"');
-  }
-}
-function validateEditsMode(input: ReadonlyApplyEditsInput): void {
-  if (input.edits?.length === 0) {
-    throw new Error("edits must contain at least one replacement");
-  }
-  if (input.edits !== undefined && input.edits.length > MAX_EDITS_PER_FILE) {
-    throw new Error(`edits cannot contain more than ${MAX_EDITS_PER_FILE} entries`);
-  }
-  for (const key of ["onMissing", "requireMissing", "preserveFormatting"] as const) {
-    if (input[key] !== undefined) {
-      throw new Error(`${key} is valid only with rewrite`);
-    }
-  }
-}
-function assertInputObject(input: unknown): void {
-  if (typeof input !== "object" || input === null) {
-    throw new Error("File mutation input must be an object");
   }
 }
 function validatePath(path: unknown): void {
@@ -61,30 +21,47 @@ function validatePath(path: unknown): void {
     throw new Error("path must contain valid Unicode text");
   }
 }
-function validateRewrite(rewrite: unknown): void {
-  if (typeof rewrite !== "string") {
-    return;
+function validateEdits(edits: unknown): void {
+  if (!Array.isArray(edits)) {
+    throw new Error("edits must be an array");
   }
-  if (rewrite.includes("\0")) {
-    throw new Error("rewrite cannot contain NUL bytes");
+  if (edits.length === 0) {
+    throw new Error("edits must contain at least one replacement");
   }
-  if (!rewrite.isWellFormed()) {
-    throw new Error("rewrite must contain valid Unicode text");
+  if (edits.length > MAX_EDITS_PER_FILE) {
+    throw new Error(`edits cannot contain more than ${MAX_EDITS_PER_FILE} entries`);
   }
 }
-function validateInput(input: ReadonlyApplyEditsInput): void {
-  assertInputObject(input);
+function validateWrite(input: Extract<MutationInput, { readonly kind: "write" }>): void {
+  const mode: unknown = input.mode;
+  if (mode !== "create" && mode !== "replace") {
+    throw new Error('mode must be "create" or "replace"');
+  }
+  const content: unknown = input.content;
+  if (typeof content !== "string") {
+    throw new Error("content must be a string");
+  }
+  if (content.includes("\0")) {
+    throw new Error("content cannot contain NUL bytes");
+  }
+  if (!content.isWellFormed()) {
+    throw new Error("content must contain valid Unicode text");
+  }
+  optionalBoolean(input.preserveFormatting, "preserveFormatting");
+}
+function validateMutation(input: MutationInput): void {
   validatePath(input.path);
-  const hasEdits = Array.isArray(input.edits);
-  const hasRewrite = typeof input.rewrite === "string";
-  if (hasEdits === hasRewrite) {
-    throw new Error("Provide exactly one of edits or rewrite");
+  switch (input.kind) {
+    case "edit":
+      validateEdits(input.edits);
+      return;
+    case "write":
+      validateWrite(input);
+      return;
+    case "patch":
+    case "delete":
+      return;
   }
-  if (hasEdits) {
-    validateEditsMode(input);
-  }
-  validateRewrite(input.rewrite);
-  validateRewriteMode(input);
 }
 export function validateBatch(files: readonly MutationInput[]): void {
   if (files.length === 0 || files.length > MAX_BATCH_FILES) {
@@ -92,9 +69,7 @@ export function validateBatch(files: readonly MutationInput[]): void {
   }
   for (const [index, file] of files.entries()) {
     try {
-      if (file.patch === undefined && file.delete !== true) {
-        validateInput(file);
-      }
+      validateMutation(file);
     } catch (cause) {
       throw new Error(`files[${index}]: ${errorMessage(cause)}`, { cause });
     }

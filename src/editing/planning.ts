@@ -21,9 +21,9 @@ import {
   assertCreatePathBudget,
 } from "../path-budget.ts";
 import { applyPatchUpdate } from "../patch.ts";
+import type { ReadonlyPatchUpdate } from "../patch/source.ts";
 import { resolveInputPath } from "./queue.ts";
 import { displayPathFor } from "./receipts.ts";
-import { writeMode } from "./validation.ts";
 import {
   decodeText,
   countLeadingBomCharacters,
@@ -38,10 +38,18 @@ import {
   type ExecutionOptions,
   type TextEditResult,
   type ApplyEditsDetails,
+  type ReadonlyTargetedEdit,
 } from "./contracts.ts";
 
-function patchResult(original: string, input: MutationInput): TextEditResult {
-  const result = applyPatchUpdate(original, required(input.patch));
+type EntryMutationInput = Extract<MutationInput, { readonly kind: "delete" | "patch" }>;
+type ContentMutationInput = Exclude<MutationInput, { readonly kind: "delete" }>;
+
+export function isEntryMutation(input: MutationInput): input is EntryMutationInput {
+  return input.kind === "delete" || (input.kind === "patch" && input.patch.moveTo !== undefined);
+}
+
+function patchResult(original: string, patch: ReadonlyPatchUpdate): TextEditResult {
+  const result = applyPatchUpdate(original, patch);
   return {
     text: result.text,
     matches: result.matches.map((match, index) => ({
@@ -53,7 +61,7 @@ function patchResult(original: string, input: MutationInput): TextEditResult {
   };
 }
 async function planEntry(
-  input: MutationInput,
+  input: EntryMutationInput,
   inputPath: string,
   options: ExecutionOptions,
 ): Promise<PlannedMutation> {
@@ -69,14 +77,14 @@ async function planEntry(
     );
   }
   const movePlan =
-    input.patch?.moveTo === undefined
-      ? undefined
-      : await planEntryMove(
+    input.kind === "patch" && input.patch.moveTo !== undefined
+      ? await planEntryMove(
           entry,
           resolveInputPath(input.patch.moveTo, options.cwd),
           options.signal,
           options.preview,
-        );
+        )
+      : undefined;
   const content = await entryContent(input, inputPath, options);
   const planned = {
     inputPath,
@@ -91,11 +99,11 @@ async function planEntry(
     ? { ...planned, operation: "delete", entry }
     : { ...planned, operation: "move", movePlan, snapshot: content.snapshot };
 }
-function chunkCount(input: MutationInput): number {
-  return input.patch?.chunks.length ?? 0;
+function chunkCount(input: EntryMutationInput): number {
+  return input.kind === "patch" ? input.patch.chunks.length : 0;
 }
 async function entryContent(
-  input: MutationInput,
+  input: EntryMutationInput,
   path: string,
   options: ExecutionOptions,
 ): Promise<{
@@ -106,13 +114,17 @@ async function entryContent(
   readonly matches: TextEditResult["matches"];
 }> {
   const snapshot =
-    chunkCount(input) > 0 ? await captureSnapshot(path, !options.preview) : undefined;
+    input.kind === "patch" && input.patch.chunks.length > 0
+      ? await captureSnapshot(path, !options.preview)
+      : undefined;
   const originalText =
     snapshot === undefined
       ? ""
       : decodeText(snapshot.bytes, displayPathFor(path, options.cwd)).text;
   const result =
-    snapshot === undefined ? { text: "", matches: [] } : patchResult(originalText, input);
+    snapshot === undefined || input.kind !== "patch"
+      ? { text: "", matches: [] }
+      : patchResult(originalText, input.patch);
   return {
     snapshot,
     originalText,
@@ -128,22 +140,22 @@ function missingFileHint(displayPath: string): string {
   return `Paths are literal, so ~ is not expanded. To edit a file in the home directory, use its absolute path: ${join(homedir(), displayPath.slice(3))}. To create this path under the working directory instead, use write_files with mode: "create".`;
 }
 function assertSourceMode(
-  input: MutationInput,
+  input: ContentMutationInput,
   snapshot: ReadonlyFileSnapshot | undefined,
   displayPath: string,
 ): void {
   if (snapshot !== undefined) {
-    if (writeMode(input) === "require-missing") {
+    if (input.kind === "write" && input.mode === "create") {
       throw new Error(
         `File now exists: ${displayPath}. Create mode refuses to overwrite an existing target. No changes were written.`,
       );
     }
     return;
   }
-  if (input.edits !== undefined || input.patch !== undefined) {
+  if (input.kind !== "write") {
     throw new Error(`Cannot edit missing file ${displayPath}. ${missingFileHint(displayPath)}`);
   }
-  if (writeMode(input) === "replace") {
+  if (input.mode === "replace") {
     throw new Error(
       `File does not exist: ${displayPath}. Use write_files with mode: "create" to create it. No changes were written.`,
     );
@@ -153,25 +165,26 @@ interface ContentUpdate extends TextEditResult {
   readonly operation: Extract<ApplyEditsDetails["operation"], "edit" | "rewrite" | "patch">;
 }
 function updatedText(
-  input: MutationInput,
+  input: ContentMutationInput,
   original: ReturnType<typeof decodeText>,
   exists: boolean,
   path: string,
 ): ContentUpdate {
-  if (input.patch !== undefined) {
-    return { ...patchResult(original.text, input), operation: "patch" };
+  switch (input.kind) {
+    case "patch":
+      return { ...patchResult(original.text, input.patch), operation: "patch" };
+    case "edit":
+      return targetedContent(input.edits, original, path);
+    case "write":
+      return rewriteContent(input, original, exists);
   }
-  if (input.edits !== undefined) {
-    return targetedContent(input, original, path);
-  }
-  return rewriteContent(input, original, exists);
 }
 function targetedContent(
-  input: MutationInput,
+  edits: readonly ReadonlyTargetedEdit[],
   original: ReturnType<typeof decodeText>,
   path: string,
 ): ContentUpdate {
-  const result = editTargetedText(original.body, required(input.edits), path);
+  const result = editTargetedText(original.body, edits, path);
   if (countLeadingBomCharacters(result.text) > countLeadingBomCharacters(original.body)) {
     throw new Error(
       `Targeted edits would move or add U+FEFF to the start of ${path}. Use write_files with preserveFormatting: false for an exact encoding change. No changes were written.`,
@@ -184,13 +197,14 @@ function targetedContent(
   };
 }
 function rewriteContent(
-  input: MutationInput,
+  input: Extract<MutationInput, { readonly kind: "write" }>,
   original: ReturnType<typeof decodeText>,
   exists: boolean,
 ): ContentUpdate {
-  const rewrite = input.rewrite ?? "";
   const preserve = exists && input.preserveFormatting !== false;
-  const body = preserve ? convertLineEndings(rewrite, detectLineEnding(original.body)) : rewrite;
+  const body = preserve
+    ? convertLineEndings(input.content, detectLineEnding(original.body))
+    : input.content;
   const bom = preserve && original.hadBom && !body.startsWith("\uFEFF") ? "\uFEFF" : "";
   return { text: bom + body, matches: [], operation: "rewrite" };
 }
@@ -205,11 +219,18 @@ async function targetExists(path: string): Promise<boolean> {
     throw error;
   }
 }
-function requestedEditCount(input: MutationInput): number {
-  return input.patch?.chunks.length ?? input.edits?.length ?? 1;
+function requestedEditCount(input: ContentMutationInput): number {
+  switch (input.kind) {
+    case "patch":
+      return input.patch.chunks.length;
+    case "edit":
+      return input.edits.length;
+    case "write":
+      return 1;
+  }
 }
 async function planContent(
-  input: MutationInput,
+  input: ContentMutationInput,
   inputPath: string,
   options: ExecutionOptions,
 ): Promise<PlannedMutation> {
@@ -283,10 +304,9 @@ export async function planFile(
 ): Promise<PlannedMutation> {
   throwIfAborted(options.signal);
   assertPlannedPathBudget(displayPathFor(inputPath, options.cwd), [inputPath]);
-  const plan =
-    input.delete === true || input.patch?.moveTo !== undefined
-      ? await planEntry(input, inputPath, options)
-      : await planContent(input, inputPath, options);
+  const plan = isEntryMutation(input)
+    ? await planEntry(input, inputPath, options)
+    : await planContent(input, inputPath, options);
   // Previews avoid platform-support probes, which may create private files.
   if (!options.preview) {
     await assertPublicationSupported(plan, options.signal);
