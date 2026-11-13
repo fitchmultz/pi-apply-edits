@@ -23,6 +23,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { isRecord } from "../src/editing/contracts.ts";
 import { PATCH_GRAMMAR } from "../src/patch.ts";
 
 type Api = "openai-responses" | "openai-codex-responses";
@@ -34,10 +35,6 @@ type RequestBody = {
 interface SseEvent {
   readonly type: string;
   readonly [key: string]: unknown;
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function recordArray(value: unknown): Readonly<Record<string, unknown>>[] {

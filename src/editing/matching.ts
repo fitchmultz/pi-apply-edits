@@ -199,17 +199,8 @@ function lineBlockMatches(
   lines: SearchLines,
   ignoreBaseIndent: boolean,
 ): Replacement[] {
-  const block = prepareBlockSearch(content, search, ignoreBaseIndent, lines);
-  return collectBlockMatches(content, search, block);
-}
-function prepareBlockSearch(
-  content: string,
-  search: EditSearch,
-  ignoreBaseIndent: boolean,
-  lines: SearchLines,
-): BlockSearch {
   const bodies = lines.search.map((line) => line.body);
-  const block: BlockSearch = {
+  return collectBlockMatches(content, search, {
     lines: lines.content,
     size: lines.search.length,
     bodies,
@@ -221,8 +212,7 @@ function prepareBlockSearch(
     fallbackEnding: lazyLineEnding(content),
     search,
     replacement: convertedReplacements(search.newText),
-  };
-  return block;
+  });
 }
 function projectedSize(
   contentLength: number,

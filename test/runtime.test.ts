@@ -25,6 +25,7 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import applyEditsExtension from "../extensions/apply-edits.ts";
+import { isRecord } from "../src/editing/contracts.ts";
 import type { WriteFilesParameters } from "../src/tools.ts";
 
 async function offlineRuntime(root: string): Promise<ModelRuntime> {
@@ -72,10 +73,6 @@ const call = (
 ): ScriptedCall => ({ type: "toolCall", id, name, arguments: args });
 const patch = (path: string, before: string, after: string) =>
   `*** Begin Patch\n*** Update File: ${path}\n@@\n-${before}\n+${after}\n*** End Patch`;
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function scriptCalls(session: AgentSession, steps: readonly (readonly ScriptedCall[])[]): void {
   const model = session.model;

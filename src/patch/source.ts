@@ -37,7 +37,7 @@ export interface SourceLine {
 export const MAX_FILES = 64;
 export const MAX_CHUNKS = 100;
 
-export function validateText(text: string, label: string): void {
+export function validateText(text: unknown, label: string): asserts text is string {
   if (typeof text !== "string") {
     throw new Error(`${label} must be a string`);
   }

@@ -12,6 +12,7 @@ import {
   retainMacosAclHelper,
   supportsExistingFileReplacement,
 } from "../src/file-system.ts";
+import { isRecord } from "../src/editing/contracts.ts";
 import { createEditingTools } from "../src/tools.ts";
 
 export default function editingExtension(pi: ExtensionAPI): void {
@@ -244,8 +245,4 @@ function keepBuiltins(pi: ExtensionAPI): boolean {
       (process.env.PI_APPLY_EDITS_KEEP_BUILTINS ?? "").trim().toLowerCase(),
     )
   );
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

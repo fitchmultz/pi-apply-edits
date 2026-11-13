@@ -1,4 +1,3 @@
-import { inspect } from "node:util";
 import type {
   ReadonlyEntryMovePlan,
   ReadonlyEntrySnapshot,
@@ -6,6 +5,8 @@ import type {
   ReadonlyNewFilePlan,
 } from "../fs/contracts.ts";
 import type { ReadonlyPatchUpdate } from "../patch/source.ts";
+
+export { errorMessage } from "../fs/errors.ts";
 
 export type InsertPosition = "before" | "after";
 export type MatchStrategy =
@@ -207,12 +208,6 @@ export function required<T>(value: T | undefined): T {
   }
   return value;
 }
-export function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "string") {
-    return error;
-  }
-  return inspect(error);
+export function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
