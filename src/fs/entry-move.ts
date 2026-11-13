@@ -63,11 +63,6 @@ export async function planEntryMove<Entry extends ReadonlyEntrySnapshot>(
       `Cross-device moves are not supported: ${entry.inputPath} -> ${destination.inputPath}. No changes were written.`,
     );
   }
-  if (process.platform === "win32" && entry.symbolicLink) {
-    throw new Error(
-      "No-clobber symbolic-link moves are unavailable on Windows. No changes were written.",
-    );
-  }
   if (!preview) {
     assertEntryMovePathBudget(entry.actualPath, destination, entry.inputPath);
     await assertDirectoryWritableForPublish(entry.parentPath, entry.inputPath);

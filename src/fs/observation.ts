@@ -120,9 +120,6 @@ export async function assertPreparedFileCurrent(
 }
 
 export async function syncDirectory(directory: string): Promise<string | undefined> {
-  if (process.platform === "win32") {
-    return;
-  }
   try {
     const handle = await open(directory, "r");
     try {

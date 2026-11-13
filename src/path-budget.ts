@@ -21,14 +21,7 @@ function pathBudget(): { platform: string; limit: number; margin: number } {
       margin: 32,
     };
   }
-  if (process.platform === "win32") {
-    return { platform: "Windows", limit: 32767, margin: 64 };
-  }
   return { platform: process.platform, limit: 1024, margin: 32 };
-}
-
-function pathUnits(path: string): number {
-  return process.platform === "win32" ? path.length : Buffer.byteLength(path);
 }
 
 function shapedTemporaryPath(targetPath: string): string {
@@ -45,16 +38,15 @@ function shapedCleanupEntry(path: string): string {
 
 export function assertPlannedPathBudget(displayPath: string, candidates: readonly string[]): void {
   const budget = pathBudget();
-  const longest = Math.max(...candidates.map(pathUnits));
+  const longest = Math.max(...candidates.map((path) => Buffer.byteLength(path)));
   const supportedMaximum = budget.limit - budget.margin - 1;
   if (longest <= supportedMaximum) {
     return;
   }
   throw new Error(
-    `Cannot modify ${displayPath}: planned staging and cleanup require a ${longest}-` +
-      `${process.platform === "win32" ? "character" : "byte"} path, beyond the supported ` +
-      `${supportedMaximum} ${process.platform === "win32" ? "characters" : "bytes"} on ` +
-      `${budget.platform} (${budget.margin}-unit safety margin below PATH_MAX ${budget.limit}). ` +
+    `Cannot modify ${displayPath}: planned staging and cleanup require a ${longest}-byte path, ` +
+      `beyond the supported ${supportedMaximum} bytes on ${budget.platform} ` +
+      `(${budget.margin}-byte safety margin below PATH_MAX ${budget.limit}). ` +
       "No changes were written.",
   );
 }

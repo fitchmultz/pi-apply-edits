@@ -33,8 +33,6 @@ import {
   publishReplacement,
 } from "../src/file-system.ts";
 
-const replacementUnsupported = process.platform === "win32";
-
 function execText(
   executable: string,
   args: readonly string[],
@@ -87,9 +85,6 @@ function outcome(modifiedFiles: readonly string[], uncertainFiles: readonly stri
 
 nodeTest(
   "replacement errors distinguish no commit, unverified publication and verified cleanup failure",
-  {
-    skip: replacementUnsupported,
-  },
   async (t) => {
     for (const phase of ["beforeRename", "afterRename", "beforeRecoveryCleanup"] as const) {
       // Each fault phase finishes its private recovery lifecycle before starting the next case.
@@ -268,23 +263,19 @@ assert libc.fsetxattr(3, b"${attribute}", value, len(value), 0, 0) == 0, ctypes.
   );
 }
 
-nodeTest(
-  "post-commit cancellation keeps a verified replacement receipt",
-  { skip: replacementUnsupported },
-  async () => {
-    await fixture(async (directory) => {
-      const path = join(directory, "file");
-      await writeFile(path, "old");
-      const snapshot = await captureSnapshot(path);
-      assert.ok(snapshot);
-      const abort = new AbortController();
-      await publishReplacement(snapshot, Buffer.from("new"), abort.signal, {
-        afterRename: () => abort.abort(),
-      });
-      assert.equal(await readFile(path, "utf8"), "new");
+nodeTest("post-commit cancellation keeps a verified replacement receipt", async () => {
+  await fixture(async (directory) => {
+    const path = join(directory, "file");
+    await writeFile(path, "old");
+    const snapshot = await captureSnapshot(path);
+    assert.ok(snapshot);
+    const abort = new AbortController();
+    await publishReplacement(snapshot, Buffer.from("new"), abort.signal, {
+      afterRename: () => abort.abort(),
     });
-  },
-);
+    assert.equal(await readFile(path, "utf8"), "new");
+  });
+});
 
 nodeTest(
   "single create reports an unverified committed entry without inventing a verified path",
@@ -348,28 +339,24 @@ nodeTest("delete removes only a regular entry and never accepts a directory", as
   });
 });
 
-nodeTest(
-  "delete of dangling and directory symlinks preserves their targets",
-  { skip: process.platform === "win32" },
-  async () => {
-    await fixture(async (directory) => {
-      const target = join(directory, "target");
-      await mkdir(target);
-      await writeFile(join(target, "kept"), "keep");
-      await Promise.all(
-        ["target", "missing"].map(async (name) => {
-          const path = join(directory, `link-${name}`);
-          await symlink(name, path);
-          const entry = await captureEntrySnapshot(path);
-          assert.ok(entry?.symbolicLink === true);
-          await publishEntryDelete(entry);
-          await assert.rejects(lstat(path), { code: "ENOENT" });
-        }),
-      );
-      assert.equal(await readFile(join(target, "kept"), "utf8"), "keep");
-    });
-  },
-);
+nodeTest("delete of dangling and directory symlinks preserves their targets", async () => {
+  await fixture(async (directory) => {
+    const target = join(directory, "target");
+    await mkdir(target);
+    await writeFile(join(target, "kept"), "keep");
+    await Promise.all(
+      ["target", "missing"].map(async (name) => {
+        const path = join(directory, `link-${name}`);
+        await symlink(name, path);
+        const entry = await captureEntrySnapshot(path);
+        assert.ok(entry?.symbolicLink === true);
+        await publishEntryDelete(entry);
+        await assert.rejects(lstat(path), { code: "ENOENT" });
+      }),
+    );
+    assert.equal(await readFile(join(target, "kept"), "utf8"), "keep");
+  });
+});
 
 nodeTest(
   "delete cancellation before commit and failure after commit report different outcomes",
@@ -448,26 +435,22 @@ nodeTest("pure move preserves inode, exact bytes and source metadata", async () 
   });
 });
 
-nodeTest(
-  "entry paths canonicalize their parent without dereferencing a final link",
-  { skip: process.platform === "win32" },
-  async () => {
-    await fixture(async (directory) => {
-      const parent = join(directory, "parent");
-      await mkdir(parent);
-      await symlink("parent", join(directory, "alias"));
-      await symlink("missing", join(parent, "source"));
-      const entry = await captureEntrySnapshot(join(directory, "alias", "source"));
-      assert.ok(entry);
-      assert.equal(entry.actualPath, join(parent, "source"));
-      assert.ok(entry.symbolicLink);
-      await publishEntryMove(await planEntryMove(entry, join(directory, "target")));
-      assert.equal(await readlink(join(directory, "target")), "missing");
-      assert.equal((await lstat(join(directory, "target"), { bigint: true })).ino, entry.stats.ino);
-      await assert.rejects(lstat(join(parent, "source")), { code: "ENOENT" });
-    });
-  },
-);
+nodeTest("entry paths canonicalize their parent without dereferencing a final link", async () => {
+  await fixture(async (directory) => {
+    const parent = join(directory, "parent");
+    await mkdir(parent);
+    await symlink("parent", join(directory, "alias"));
+    await symlink("missing", join(parent, "source"));
+    const entry = await captureEntrySnapshot(join(directory, "alias", "source"));
+    assert.ok(entry);
+    assert.equal(entry.actualPath, join(parent, "source"));
+    assert.ok(entry.symbolicLink);
+    await publishEntryMove(await planEntryMove(entry, join(directory, "target")));
+    assert.equal(await readlink(join(directory, "target")), "missing");
+    assert.equal((await lstat(join(directory, "target"), { bigint: true })).ino, entry.stats.ino);
+    await assert.rejects(lstat(join(parent, "source")), { code: "ENOENT" });
+  });
+});
 
 nodeTest("move never overwrites a destination present at planning or publication", async () => {
   await fixture(async (directory) => {
@@ -485,27 +468,23 @@ nodeTest("move never overwrites a destination present at planning or publication
   });
 });
 
-nodeTest(
-  "move rejects cross-device plans before publication",
-  { skip: process.platform === "win32" },
-  async (t) => {
-    await fixture(async (directory) => {
-      const source = join(directory, "source");
-      await writeFile(source, "source");
-      const entry = await captureEntrySnapshot(source);
-      assert.ok(entry);
-      if ((await stat("/dev", { bigint: true })).dev === entry.stats.dev) {
-        t.skip("no second device available");
-        return;
-      }
-      await assert.rejects(
-        planEntryMove(entry, `/dev/pi-entry-test-${process.pid}`, undefined, true),
-        /Cross-device moves are not supported/,
-      );
-      assert.equal(await readFile(source, "utf8"), "source");
-    });
-  },
-);
+nodeTest("move rejects cross-device plans before publication", async (t) => {
+  await fixture(async (directory) => {
+    const source = join(directory, "source");
+    await writeFile(source, "source");
+    const entry = await captureEntrySnapshot(source);
+    assert.ok(entry);
+    if ((await stat("/dev", { bigint: true })).dev === entry.stats.dev) {
+      t.skip("no second device available");
+      return;
+    }
+    await assert.rejects(
+      planEntryMove(entry, `/dev/pi-entry-test-${process.pid}`, undefined, true),
+      /Cross-device moves are not supported/,
+    );
+    assert.equal(await readFile(source, "utf8"), "source");
+  });
+});
 
 nodeTest("move cancellation before publication leaves the source untouched", async () => {
   await fixture(async (directory) => {
@@ -547,32 +526,27 @@ nodeTest("pure respelling honours cancellation in beforeCommit", async (t) => {
   });
 });
 
-nodeTest(
-  "pure respelling preserves a symbolic-link entry",
-  { skip: process.platform === "win32" },
-  async (t) => {
-    await fixture(async (directory) => {
-      const source = join(directory, "link");
-      const target = join(directory, "LINK");
-      await symlink("missing", source);
-      const entry = await captureEntrySnapshot(source);
-      assert.ok(entry);
-      const plan = await planEntryMove(entry, target);
-      if (plan.respelling !== true) {
-        t.skip("requires a case-insensitive temporary directory");
-        return;
-      }
-      assert.deepEqual(await publishEntryMove(plan), []);
-      assert.deepEqual(await readdir(directory), ["LINK"]);
-      assert.equal(await readlink(target), "missing");
-      assert.equal((await lstat(target, { bigint: true })).ino, entry.stats.ino);
-    });
-  },
-);
+nodeTest("pure respelling preserves a symbolic-link entry", async (t) => {
+  await fixture(async (directory) => {
+    const source = join(directory, "link");
+    const target = join(directory, "LINK");
+    await symlink("missing", source);
+    const entry = await captureEntrySnapshot(source);
+    assert.ok(entry);
+    const plan = await planEntryMove(entry, target);
+    if (plan.respelling !== true) {
+      t.skip("requires a case-insensitive temporary directory");
+      return;
+    }
+    assert.deepEqual(await publishEntryMove(plan), []);
+    assert.deepEqual(await readdir(directory), ["LINK"]);
+    assert.equal(await readlink(target), "missing");
+    assert.equal((await lstat(target, { bigint: true })).ino, entry.stats.ino);
+  });
+});
 
 nodeTest(
   "content respelling rejects external writes in beforeCommit without renaming",
-  { skip: replacementUnsupported },
   async (t) => {
     await fixture(async (directory) => {
       const source = join(directory, "readme.md");
@@ -606,38 +580,34 @@ nodeTest(
   },
 );
 
-nodeTest(
-  "content respelling cancellation retains the earlier committed content",
-  { skip: replacementUnsupported },
-  async (t) => {
-    await fixture(async (directory) => {
-      const source = join(directory, "readme.md");
-      const target = join(directory, "README.md");
-      await writeFile(source, "old\n");
-      const entry = await captureEntrySnapshot(source);
-      const snapshot = await captureSnapshot(source);
-      assert.ok(entry && snapshot);
-      const plan = await planEntryMove(entry, target);
-      if (plan.respelling !== true) {
-        t.skip("requires a case-insensitive temporary directory");
-        return;
-      }
-      const abort = new AbortController();
-      await assert.rejects(
-        publishEntryMove(plan, { snapshot, bytes: Buffer.from("requested\n") }, abort.signal, {
-          beforeCommit: () => abort.abort(),
-        }),
-        (error: unknown) => {
-          assert(outcome([source], [])(error));
-          assert.match(error.message, /aborted.*content change was already published/i);
-          return true;
-        },
-      );
-      assert.deepEqual(await readdir(directory), ["readme.md"]);
-      assert.equal(await readFile(source, "utf8"), "requested\n");
-    });
-  },
-);
+nodeTest("content respelling cancellation retains the earlier committed content", async (t) => {
+  await fixture(async (directory) => {
+    const source = join(directory, "readme.md");
+    const target = join(directory, "README.md");
+    await writeFile(source, "old\n");
+    const entry = await captureEntrySnapshot(source);
+    const snapshot = await captureSnapshot(source);
+    assert.ok(entry && snapshot);
+    const plan = await planEntryMove(entry, target);
+    if (plan.respelling !== true) {
+      t.skip("requires a case-insensitive temporary directory");
+      return;
+    }
+    const abort = new AbortController();
+    await assert.rejects(
+      publishEntryMove(plan, { snapshot, bytes: Buffer.from("requested\n") }, abort.signal, {
+        beforeCommit: () => abort.abort(),
+      }),
+      (error: unknown) => {
+        assert(outcome([source], [])(error));
+        assert.match(error.message, /aborted.*content change was already published/i);
+        return true;
+      },
+    );
+    assert.deepEqual(await readdir(directory), ["readme.md"]);
+    assert.equal(await readFile(source, "utf8"), "requested\n");
+  });
+});
 
 nodeTest("move finishes source removal after a post-publication abort", async () => {
   await fixture(async (directory) => {
@@ -655,36 +625,31 @@ nodeTest("move finishes source removal after a post-publication abort", async ()
   });
 });
 
-nodeTest(
-  "content move preserves source metadata and uses provided bytes",
-  { skip: replacementUnsupported },
-  async () => {
-    await fixture(async (directory) => {
-      const source = join(directory, "source");
-      const target = join(directory, "new", "deeper", "target");
-      await writeFile(source, "old", { mode: 0o751 });
-      const entry = await captureEntrySnapshot(source);
-      assert.ok(entry);
-      const plan = await planEntryMove(entry, target);
-      const snapshot = await captureSnapshot(source);
-      assert.ok(snapshot);
-      const bytes = Buffer.from("\ufeffnew\r\nlast");
-      await publishEntryMove(plan, { snapshot, bytes });
-      await assert.rejects(lstat(source), { code: "ENOENT" });
-      assert.deepEqual(await readFile(target), bytes);
-      const after = await stat(target, { bigint: true });
-      for (const key of ["mode", "uid", "gid"] as const) {
-        assert.equal(after[key], snapshot.stats[key]);
-      }
-      assert.equal(after.nlink, 1n);
-      assert.deepEqual(await readdir(directory), ["new"]);
-    });
-  },
-);
+nodeTest("content move preserves source metadata and uses provided bytes", async () => {
+  await fixture(async (directory) => {
+    const source = join(directory, "source");
+    const target = join(directory, "new", "deeper", "target");
+    await writeFile(source, "old", { mode: 0o751 });
+    const entry = await captureEntrySnapshot(source);
+    assert.ok(entry);
+    const plan = await planEntryMove(entry, target);
+    const snapshot = await captureSnapshot(source);
+    assert.ok(snapshot);
+    const bytes = Buffer.from("\ufeffnew\r\nlast");
+    await publishEntryMove(plan, { snapshot, bytes });
+    await assert.rejects(lstat(source), { code: "ENOENT" });
+    assert.deepEqual(await readFile(target), bytes);
+    const after = await stat(target, { bigint: true });
+    for (const key of ["mode", "uid", "gid"] as const) {
+      assert.equal(after[key], snapshot.stats[key]);
+    }
+    assert.equal(after.nlink, 1n);
+    assert.deepEqual(await readdir(directory), ["new"]);
+  });
+});
 
 nodeTest(
   "content move failures leave original content intact and report only a published destination",
-  { skip: replacementUnsupported },
   async () => {
     await fixture(async (directory) => {
       const source = join(directory, "source");
@@ -773,49 +738,41 @@ nodeTest(
   },
 );
 
-nodeTest(
-  "grouped link moves preserve the link entry and target",
-  { skip: process.platform === "win32" },
-  async () => {
-    await fixture(async (directory) => {
-      const source = join(directory, "source");
-      const target = join(directory, "new", "link");
-      await writeFile(join(directory, "kept"), "kept");
-      await symlink("kept", source);
-      const entry = await captureEntrySnapshot(source);
-      assert.ok(entry);
-      await publishEntryMove(await planEntryMove(entry, target));
-      assert.equal(await readlink(target), "kept");
-      assert.equal(await readFile(join(directory, "kept"), "utf8"), "kept");
-    });
-  },
-);
+nodeTest("grouped link moves preserve the link entry and target", async () => {
+  await fixture(async (directory) => {
+    const source = join(directory, "source");
+    const target = join(directory, "new", "link");
+    await writeFile(join(directory, "kept"), "kept");
+    await symlink("kept", source);
+    const entry = await captureEntrySnapshot(source);
+    assert.ok(entry);
+    await publishEntryMove(await planEntryMove(entry, target));
+    assert.equal(await readlink(target), "kept");
+    assert.equal(await readFile(join(directory, "kept"), "utf8"), "kept");
+  });
+});
 
-nodeTest(
-  "symlink-content moves reject without altering either entry or target",
-  { skip: replacementUnsupported },
-  async () => {
-    await fixture(async (directory) => {
-      const file = join(directory, "file");
-      const source = join(directory, "source");
-      const target = join(directory, "target");
-      await writeFile(file, "old");
-      await symlink("file", source);
-      const entry = await captureEntrySnapshot(source);
-      const snapshot = await captureSnapshot(source);
-      assert.ok(entry && snapshot);
-      await assert.rejects(
-        publishEntryMove(await planEntryMove(entry, target), {
-          snapshot,
-          bytes: Buffer.from("new"),
-        }),
-        /Cannot edit symbolic-link content/,
-      );
-      assert.equal(await readlink(source), "file");
-      assert.equal(await readFile(file, "utf8"), "old");
-    });
-  },
-);
+nodeTest("symlink-content moves reject without altering either entry or target", async () => {
+  await fixture(async (directory) => {
+    const file = join(directory, "file");
+    const source = join(directory, "source");
+    const target = join(directory, "target");
+    await writeFile(file, "old");
+    await symlink("file", source);
+    const entry = await captureEntrySnapshot(source);
+    const snapshot = await captureSnapshot(source);
+    assert.ok(entry && snapshot);
+    await assert.rejects(
+      publishEntryMove(await planEntryMove(entry, target), {
+        snapshot,
+        bytes: Buffer.from("new"),
+      }),
+      /Cannot edit symbolic-link content/,
+    );
+    assert.equal(await readlink(source), "file");
+    assert.equal(await readFile(file, "utf8"), "old");
+  });
+});
 
 nodeTest(
   "entry source cleanup and content staging budgets fail before mutation",
@@ -924,7 +881,7 @@ nodeTest(
 nodeTest(
   "preview entry planning reads non-writable directories without staging or probes",
   {
-    skip: process.platform === "win32" || process.getuid?.() === 0,
+    skip: process.getuid?.() === 0,
   },
   async () => {
     await fixture(async (directory) => {
