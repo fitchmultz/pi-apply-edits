@@ -257,15 +257,7 @@ nodeTest("binds original UTF-16 header spans only, with literal path spelling", 
   const rebound = parsePatch(bound);
   assert.deepEqual(
     rebound.paths.map((span) => span.path),
-    parsed.paths.map((span) => {
-      if (isAbsolute(span.path)) {
-        return span.path;
-      }
-      if (process.platform === "win32") {
-        return resolve(cwd, span.path);
-      }
-      return `${cwd}/${span.path}`;
-    }),
+    parsed.paths.map((span) => (isAbsolute(span.path) ? span.path : `${cwd}/${span.path}`)),
   );
   const withoutPaths = (text: string) => {
     const spans = parsePatch(text).paths;

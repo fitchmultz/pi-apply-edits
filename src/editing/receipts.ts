@@ -1,4 +1,4 @@
-import { isAbsolute, relative, sep } from "node:path";
+import { sep } from "node:path";
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import { PublicationError } from "../file-system.ts";
 import { countTextLines } from "./text.ts";
@@ -85,18 +85,12 @@ function literalTilde(display: string): string {
   return display === "~" || display.startsWith("~/") ? `./${display}` : display;
 }
 export function displayPathFor(path: string, cwd: string): string {
-  if (process.platform !== "win32") {
-    const prefix = cwd.endsWith(sep) ? cwd : `${cwd}${sep}`;
-    if (!path.startsWith(prefix)) {
-      return path;
-    }
-    const display = path.slice(prefix.length);
-    return display.length > 0 ? literalTilde(display) : ".";
+  const prefix = cwd.endsWith(sep) ? cwd : `${cwd}${sep}`;
+  if (!path.startsWith(prefix)) {
+    return path;
   }
-  const candidate = relative(cwd, path);
-  const outside = candidate === ".." || candidate.startsWith(`..${sep}`) || isAbsolute(candidate);
-  const display = candidate.length > 0 ? candidate : ".";
-  return outside ? path.split(sep).join("/") : literalTilde(display.split(sep).join("/"));
+  const display = path.slice(prefix.length);
+  return display.length > 0 ? literalTilde(display) : ".";
 }
 function boundedPatch(path: string, oldText: string, newText: string): string | undefined {
   if (oldText === newText) {

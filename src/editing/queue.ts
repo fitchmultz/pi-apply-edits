@@ -40,7 +40,7 @@ export function isMissingPathError(
 }
 export function normalizeLockKey(path: string): string {
   const fullPath = join(path);
-  if (process.platform !== "darwin" && process.platform !== "win32") {
+  if (process.platform !== "darwin") {
     return fullPath;
   }
   // Fold the whole prospective target so spelling remains stable as ancestors appear.

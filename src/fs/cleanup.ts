@@ -39,8 +39,7 @@ export async function discardAtomicCreateCandidate(
 export function assertCreatedDirectoryOwner(stats: BigIntStats, path: string): void {
   // Node exposes no mkdirat/openat API. A same-user substitution remains possible before
   // lstat; this check closes cross-user adoption before recording cleanup ownership.
-  // Windows Stats does not expose ACL ownership, so identity guards remain the boundary.
-  if (process.platform === "win32" || typeof process.geteuid !== "function") {
+  if (typeof process.geteuid !== "function") {
     return;
   }
   if (stats.uid !== BigInt(process.geteuid())) {
@@ -200,9 +199,6 @@ export async function chmodOwnedDirectory(
   expected: BigIntStats | undefined,
   mode: number,
 ): Promise<void> {
-  if (process.platform === "win32") {
-    return;
-  }
   const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     const current = await handle.stat({ bigint: true });

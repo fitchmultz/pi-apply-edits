@@ -22,7 +22,6 @@ import { applyPatchToFiles, replaceTextInFiles, writeFiles } from "../src/apply-
 import { planNewFile, publishNewFile } from "../src/file-system.ts";
 import { createEditingTools } from "../src/tools.ts";
 
-const posix = process.platform !== "win32";
 async function fixture(t: nodeTest.TestContext) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-native-paths-")));
   t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -33,7 +32,7 @@ async function fixture(t: nodeTest.TestContext) {
   return cwd;
 }
 
-nodeTest("write_files follows native symlink/.. traversal", { skip: !posix }, async (t) => {
+nodeTest("write_files follows native symlink/.. traversal", async (t) => {
   const cwd = await fixture(t);
   const result = await writeFiles(
     { files: [{ path: "link/../target", content: "changed\n", mode: "replace" }] },
@@ -47,7 +46,6 @@ nodeTest("write_files follows native symlink/.. traversal", { skip: !posix }, as
 
 nodeTest(
   "patch admission preserves native header addresses through preview and execution",
-  { skip: !posix },
   async (t) => {
     const cwd = await fixture(t);
     const tools = createEditingTools(() => cwd);
@@ -77,7 +75,6 @@ nodeTest(
 for (const kind of ["replace", "patch"] as const) {
   nodeTest(
     `${kind} previews and edits native paths without changing Unicode or formatting`,
-    { skip: !posix },
     async (t) => {
       const cwd = await fixture(t);
       const name = "a\u00a0b";
@@ -113,7 +110,6 @@ for (const kind of ["replace", "patch"] as const) {
 
 nodeTest(
   "invalid traversal and missing/.. replacements never write a lexical neighbor",
-  { skip: !posix },
   async (t) => {
     const cwd = await fixture(t);
     await symlink("target/", join(cwd, "slash-link"));
@@ -144,7 +140,6 @@ nodeTest(
 for (const operation of ["delete", "move"] as const) {
   nodeTest(
     `${operation} traverses parents natively but preserves final symlink entry semantics`,
-    { skip: !posix },
     async (t) => {
       const cwd = await fixture(t);
       await symlink("target", join(cwd, "actual", "entry"));
@@ -174,7 +169,6 @@ for (const operation of ["delete", "move"] as const) {
 
 nodeTest(
   "public physical lock holds a native-addressed batch through callback completion",
-  { skip: !posix },
   async (t) => {
     const cwd = await fixture(t);
     let release!: () => void;
@@ -220,7 +214,7 @@ nodeTest(
 
 nodeTest(
   "prospective native aliases deduplicate before nested queue acquisition",
-  { skip: !posix, timeout: 3000 },
+  { timeout: 3000 },
   async (t) => {
     const cwd = await fixture(t);
     async function verifyProspectiveAlias(path: string): Promise<void> {
@@ -248,7 +242,6 @@ nodeTest(
 for (const destination of ["created", "new/created"]) {
   nodeTest(
     `create preserves missing/.. traversal before an existing symlink: ${destination}`,
-    { skip: !posix },
     async (t) => {
       const cwd = await fixture(t);
       const path = `missing/deeper/../../link/../${destination}`;
@@ -267,7 +260,6 @@ for (const destination of ["created", "new/created"]) {
 
 nodeTest(
   "prospective creates refuse existing referents without publishing traversal directories",
-  { skip: !posix },
   async (t) => {
     const cwd = await fixture(t);
     const result = await writeFiles(
@@ -283,7 +275,6 @@ nodeTest(
 
 nodeTest(
   "batch planning failure and cancellation leave prospective traversal directories untouched",
-  { skip: !posix },
   async (t) => {
     const cwd = await fixture(t);
     const first = { path: "missing/../link/../created", content: "new", mode: "create" as const };
@@ -309,7 +300,6 @@ nodeTest(
 
 nodeTest(
   "overlapping auxiliary traversal and staged roots fail before any batch write",
-  { skip: !posix },
   async (t) => {
     const cwd = await fixture(t);
     async function verifyRootOverlap(first: string): Promise<void> {
@@ -336,7 +326,6 @@ nodeTest(
 
 nodeTest(
   "independent traversal directories and ordinary shared-root batches stay supported",
-  { skip: !posix },
   async (t) => {
     const cwd = await fixture(t);
     const files = [
@@ -354,30 +343,26 @@ nodeTest(
   },
 );
 
-nodeTest(
-  "a replaced auxiliary directory parent fails before publication",
-  { skip: !posix },
-  async (t) => {
-    const cwd = await fixture(t);
-    const path = `${cwd}/link/missing/../../created`;
-    const plan = await planNewFile(path);
-    await assert.rejects(
-      publishNewFile(path, Buffer.from("created"), undefined, plan, {
-        beforeFilePublish: async () => {
-          await rename(join(cwd, "actual", "inner"), join(cwd, "actual", "saved"));
-          await mkdir(join(cwd, "actual", "inner"));
-        },
-      }),
-      /changed identity/,
-    );
-    await assert.rejects(lstat(join(cwd, "actual", "inner", "missing")), /ENOENT/);
-    await assert.rejects(lstat(join(cwd, "actual", "created")), /ENOENT/);
-  },
-);
+nodeTest("a replaced auxiliary directory parent fails before publication", async (t) => {
+  const cwd = await fixture(t);
+  const path = `${cwd}/link/missing/../../created`;
+  const plan = await planNewFile(path);
+  await assert.rejects(
+    publishNewFile(path, Buffer.from("created"), undefined, plan, {
+      beforeFilePublish: async () => {
+        await rename(join(cwd, "actual", "inner"), join(cwd, "actual", "saved"));
+        await mkdir(join(cwd, "actual", "inner"));
+      },
+    }),
+    /changed identity/,
+  );
+  await assert.rejects(lstat(join(cwd, "actual", "inner", "missing")), /ENOENT/);
+  await assert.rejects(lstat(join(cwd, "actual", "created")), /ENOENT/);
+});
 
 nodeTest(
   "auxiliary directory permissions fail during batch planning",
-  { skip: !posix || process.getuid?.() === 0 },
+  { skip: process.getuid?.() === 0 },
   async (t) => {
     const cwd = await fixture(t);
     const readonly = join(cwd, "readonly");
@@ -414,7 +399,7 @@ nodeTest(
 
 nodeTest(
   "late traversal permission failure cannot enter the hard-link fallback",
-  { skip: !posix || process.getuid?.() === 0 },
+  { skip: process.getuid?.() === 0 },
   async (t) => {
     const cwd = await fixture(t);
     const readonly = join(cwd, "readonly");
@@ -436,41 +421,37 @@ nodeTest(
   },
 );
 
-nodeTest(
-  "failed publication cleans only owned prospective traversal directories",
-  { skip: !posix },
-  async (t) => {
-    const cwd = await fixture(t);
-    const path = `${cwd}/missing/../link/../created`;
-    const plan = await planNewFile(path);
-    const controller = new AbortController();
-    const originalMkdir = nodeFs.promises.mkdir;
-    const mock = t.mock.method(
-      nodeFs.promises,
-      "mkdir",
-      async (...args: Readonly<Parameters<typeof originalMkdir>>) => {
-        const result = await originalMkdir(...args);
-        if (String(args[0]) === join(cwd, "missing")) {
-          controller.abort();
-        }
-        return result;
-      },
+nodeTest("failed publication cleans only owned prospective traversal directories", async (t) => {
+  const cwd = await fixture(t);
+  const path = `${cwd}/missing/../link/../created`;
+  const plan = await planNewFile(path);
+  const controller = new AbortController();
+  const originalMkdir = nodeFs.promises.mkdir;
+  const mock = t.mock.method(
+    nodeFs.promises,
+    "mkdir",
+    async (...args: Readonly<Parameters<typeof originalMkdir>>) => {
+      const result = await originalMkdir(...args);
+      if (String(args[0]) === join(cwd, "missing")) {
+        controller.abort();
+      }
+      return result;
+    },
+  );
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(
+      publishNewFile(path, Buffer.from("created"), controller.signal, plan),
+      /aborted/,
     );
+    assert(
+      controller.signal.aborted,
+      "cancellation followed actual traversal directory publication",
+    );
+  } finally {
+    mock.mock.restore();
     syncBuiltinESMExports();
-    try {
-      await assert.rejects(
-        publishNewFile(path, Buffer.from("created"), controller.signal, plan),
-        /aborted/,
-      );
-      assert(
-        controller.signal.aborted,
-        "cancellation followed actual traversal directory publication",
-      );
-    } finally {
-      mock.mock.restore();
-      syncBuiltinESMExports();
-    }
-    await assert.rejects(lstat(join(cwd, "missing")), /ENOENT/);
-    await assert.rejects(lstat(join(cwd, "actual", "created")), /ENOENT/);
-  },
-);
+  }
+  await assert.rejects(lstat(join(cwd, "missing")), /ENOENT/);
+  await assert.rejects(lstat(join(cwd, "actual", "created")), /ENOENT/);
+});

@@ -1,11 +1,7 @@
 import { lstat, realpath, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 
-/** Operation addresses retain POSIX traversal; Windows uses native DOS normalization. */
 export function operationPath(input: string, cwd = process.cwd()): string {
-  if (process.platform === "win32") {
-    return resolve(cwd, input);
-  }
   const directory = isAbsolute(cwd) ? cwd : operationPath(cwd);
   const prefix = directory.endsWith(sep) ? directory : `${directory}${sep}`;
   return isAbsolute(input) ? input : `${prefix}${input}`;

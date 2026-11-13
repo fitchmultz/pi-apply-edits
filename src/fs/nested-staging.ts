@@ -345,12 +345,6 @@ abstract class NestedStaging {
     if (quarantine?.isDirectory() !== true) {
       throw new Error(`Cleanup quarantine slot changed identity at ${this.quarantine}`);
     }
-    // Short quarantine paths avoid increasing deep path lengths. POSIX replaces an empty
-    // verified slot atomically; on Windows the private 0700 container bounds the remove gap.
-    if (process.platform === "win32") {
-      await removeEmptyOwnedDirectory(this.quarantine, quarantine, "Cleanup quarantine slot");
-      this.quarantineStats = undefined;
-    }
     try {
       await rename(this.staging, this.quarantine);
     } catch (error) {

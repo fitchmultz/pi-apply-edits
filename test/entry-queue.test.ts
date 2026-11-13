@@ -20,7 +20,6 @@ import { applyPatchToFiles, writeFiles } from "../src/apply-edits.ts";
 for (const operation of ["delete", "move"] as const) {
   nodeTest(
     `entry ${operation} queues a self-referential link without resolving its target`,
-    { skip: process.platform === "win32" },
     async (t) => {
       const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-queue-")));
       t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -44,29 +43,22 @@ for (const operation of ["delete", "move"] as const) {
   );
 }
 
-nodeTest(
-  "a later create waits for deletion of an unresolvable link entry",
-  { skip: process.platform === "win32" },
-  async (t) => {
-    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-order-")));
-    t.after(() => rm(cwd, { recursive: true, force: true }));
-    await symlink("loop", join(cwd, "loop"));
-    let deletion: ReturnType<typeof applyPatchToFiles> | undefined;
-    let creation: ReturnType<typeof writeFiles> | undefined;
-    await withFileMutationQueue(cwd, async () => {
-      deletion = applyPatchToFiles("*** Begin Patch\n*** Delete File: loop\n*** End Patch", cwd);
-      creation = writeFiles(
-        { files: [{ path: "loop", content: "created\n", mode: "create" }] },
-        cwd,
-      );
-    });
-    assert(deletion && creation);
-    for (const result of await Promise.all([deletion, creation])) {
-      assert.equal(result.details.error, undefined, result.summary);
-    }
-    assert.equal(await readFile(join(cwd, "loop"), "utf8"), "created\n");
-  },
-);
+nodeTest("a later create waits for deletion of an unresolvable link entry", async (t) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-entry-order-")));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await symlink("loop", join(cwd, "loop"));
+  let deletion: ReturnType<typeof applyPatchToFiles> | undefined;
+  let creation: ReturnType<typeof writeFiles> | undefined;
+  await withFileMutationQueue(cwd, async () => {
+    deletion = applyPatchToFiles("*** Begin Patch\n*** Delete File: loop\n*** End Patch", cwd);
+    creation = writeFiles({ files: [{ path: "loop", content: "created\n", mode: "create" }] }, cwd);
+  });
+  assert(deletion && creation);
+  for (const result of await Promise.all([deletion, creation])) {
+    assert.equal(result.details.error, undefined, result.summary);
+  }
+  assert.equal(await readFile(join(cwd, "loop"), "utf8"), "created\n");
+});
 
 for (const operation of ["delete", "move"] as const) {
   for (const path of ["created", "nested/created"]) {
@@ -285,7 +277,6 @@ nodeTest("success summaries distinguish create, delete, and move", async (t) => 
 nodeTest(
   "a batch rejects aliases introduced by a queued link move without holding the create queue",
   {
-    skip: process.platform === "win32",
     timeout: 10_000,
   },
   async (t) => {
