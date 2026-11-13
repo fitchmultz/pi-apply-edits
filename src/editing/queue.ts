@@ -146,10 +146,8 @@ export async function changedLinkInPath(
   const seen = new Set<string>();
   const walk = async (input: string): Promise<number | undefined> => {
     for (let current = input; current !== dirname(current); current = dirname(current)) {
-      // Parent resolution follows native traversal; each next component depends on it.
       const directory = await prospectiveDirectory(dirname(current));
       const entry = join(directory, basename(current));
-      // The native parent above determines the entry inspected in this iteration.
       const stats = await lstat(entry).catch((error: unknown) => {
         if (isMissingPathError(error)) {
           return;
@@ -168,7 +166,6 @@ export async function changedLinkInPath(
         continue;
       }
       seen.add(key);
-      // Resolve this link before traversing its dependent referent path.
       const linked = await walk(operationPath(await readlink(entry), directory));
       if (linked !== undefined) {
         return linked;

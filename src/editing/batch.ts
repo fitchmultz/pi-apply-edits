@@ -171,7 +171,6 @@ class EditingBatch {
     const entries: PlannedEntry[] = [];
     for (const item of this.resolved.resolved) {
       try {
-        // Preserve progress callback/cancellation order before planning the next file.
         const plan = await planFile(item.file, item.inputPath, this.options);
         entries.push({
           plan,
@@ -219,7 +218,6 @@ class EditingBatch {
     for (const target of this.resolved.targets) {
       const input = required(this.resolved.resolved[target.index]);
       const entrySource = target.inputPath === input.inputPath && isEntryMutation(input.file);
-      // Native traversal is checked in request order so failures identify the first target.
       const sourceIndex = await changedLinkInPath(
         entrySource ? dirname(target.inputPath) : target.inputPath,
         (key) => removedLinks.get(key),
@@ -337,7 +335,6 @@ class EditingBatch {
       }
       const staged =
         entry.stagedRoot === undefined ? undefined : required(prepared.get(entry.stagedRoot));
-      // Publication order determines partial receipts and the next cancellation boundary.
       await this.publishGroup(plans, index, staged);
     }
   }
@@ -345,7 +342,6 @@ class EditingBatch {
     const failures: string[] = [];
     for (const group of prepared.values()) {
       try {
-        // Discard each owned group completely before advancing to the next cleanup boundary.
         await discardPreparedNestedFiles(group.files);
       } catch (error) {
         failures.push(errorMessage(error));
@@ -358,7 +354,6 @@ class EditingBatch {
     let failure: BatchPublicationError | undefined;
     try {
       for (const group of this.groupCreates(plans)) {
-        // Own each prepared subtree across throws; publish nothing until every group is ready.
         prepared.set(group.root, await this.prepareGroup(plans, group.indices));
       }
       await this.publishFiles(plans, prepared);

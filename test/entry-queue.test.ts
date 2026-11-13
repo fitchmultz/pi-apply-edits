@@ -117,7 +117,6 @@ nodeTest(
         "*** Delete File: gone",
         "*** Update File: missing/gone\n*** Move to: moved",
       ]) {
-        // Each variant must settle before another attempt reuses the earlier planned file.
         await verifyMissingEntry(preview, entry);
       }
     }
@@ -327,7 +326,6 @@ nodeTest(
       assert.equal(created.details.error, undefined, created.summary);
     }
     for (const preview of [true, false]) {
-      // The shared mutation registration queue must release the previous alias scenario first.
       await verifyQueuedAlias(preview);
     }
   },

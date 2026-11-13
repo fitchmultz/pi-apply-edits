@@ -122,19 +122,16 @@ abstract class NestedStaging {
     try {
       throwIfAborted(signal);
       for (const entry of this.entries) {
-        // Validate every source and plan before exposing any private staging tree.
         await this.validateEntry(entry);
       }
       await this.createContainer(signal);
       for (const entry of this.entries) {
-        // Shared private paths and descriptor ownership require completing one staged entry at a time.
         await this.stageEntry(entry, signal);
       }
       for (const directory of [...this.#stagedDirectories].sort(
         (left, right) => right.length - left.length,
       )) {
         throwIfAborted(signal);
-        // Sync children before the containing directory so staged durability follows creation order.
         const warning = await syncDirectory(directory);
         if (warning !== undefined) {
           this.warnings.push(warning);
@@ -219,7 +216,6 @@ abstract class NestedStaging {
     this.rememberDirectory(directory);
     for (const relative of stagedTraversalDirectories(entry.plan)) {
       const traversed = join(this.staging, relative);
-      // Native traversal directories must be created and tracked in prerequisite order.
       await mkdir(traversed, { recursive: true });
       this.rememberDirectory(traversed);
     }

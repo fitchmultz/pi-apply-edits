@@ -362,7 +362,6 @@ nodeTest("patch BOM rejection leaves update and move sources untouched", async (
   }
   for (const preview of [false, true]) {
     for (const move of ["", "*** Move to: moved\n"]) {
-      // Both variants reuse the source and must verify its retained bytes before the next attempt.
       await verifyBomRejection(preview, move);
     }
   }
@@ -423,7 +422,6 @@ nodeTest("batch refuses to delete a link used by another requested path", async 
       [deletion, creation],
       [creation, deletion],
     ]) {
-      // Each order is attempted against the same link and must verify no publication first.
       await verifyTraversalRejection(operations);
     }
   }
