@@ -460,7 +460,6 @@ nodeTest(
                 { input: patch("same.txt", "missing", "bad") },
                 { input: patch("same.txt", "before", "nested"), preview: true },
               ]) {
-                // Each nested call's identifier and policy result depends on prior registration order.
                 const result = await ctx.executeTool("apply_patch", input);
                 nestedResults.push(result);
               }

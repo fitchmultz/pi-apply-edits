@@ -66,7 +66,6 @@ nodeTest(
       assert.equal(await readFile(join(cwd, "target"), "utf8"), "lexical\n");
     }
     for (const preview of [true, false]) {
-      // Preview must observe the original bytes before execution changes the same target.
       await verifyPatchAdmission(preview);
     }
   },
@@ -130,7 +129,6 @@ nodeTest(
       "slash-link",
       "dotdot-link",
     ]) {
-      // Verify every failed address leaves the shared lexical neighbor unchanged before the next attempt.
       await verifyInvalidTraversal(path);
     }
     await assert.rejects(lstat(join(cwd, "missing")), /ENOENT/);
@@ -233,7 +231,6 @@ nodeTest(
       await assert.rejects(lstat(join(cwd, "missing")), /ENOENT/);
     }
     for (const path of ["link/../new", "missing/../link/../new"]) {
-      // Both aliases address the same prospective target; each rejection must settle first.
       await verifyProspectiveAlias(path);
     }
   },
@@ -318,7 +315,6 @@ nodeTest(
       await assert.rejects(lstat(join(cwd, "actual", "created")), /ENOENT/);
     }
     for (const first of ["missing/file", "missing"]) {
-      // Rejection and cleanup must finish before the next batch reuses these create roots.
       await verifyRootOverlap(first);
     }
   },

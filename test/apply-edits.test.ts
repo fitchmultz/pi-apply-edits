@@ -587,7 +587,6 @@ nodeTest(
         ["\t\t@echo before\n", "    @echo before\n", "    @echo after\n", "\t\t@echo after\n"],
         ["\t@echo before\n", "        @echo before\n", "        @echo after\n", "\t@echo after\n"],
       ] as const) {
-        // The next case rewrites the same Makefile only after bytes and native make acceptance are checked.
         await verifyRecipe(actual, anchor, replacement, expected);
       }
       const original = "build:\n\t@echo before\n";
@@ -1517,7 +1516,6 @@ nodeTest("CRLF anchors preserve supplied newlines and literal deletion boundarie
         "first\r\nsecond\r\ninserted\r\n",
       ],
     ] satisfies Array<[TargetedEdit[], string]>) {
-      // Cases reuse one mixed-EOL file; finish verifying each exact byte transition first.
       await verifyCrlfReplacement(edits, expected);
     }
     await writeFile(path, "first\r\nsecond\r\nEND\r\n");
@@ -2331,8 +2329,6 @@ nodeTest(
       ["nested-staging", "cancel-during-copy"],
       ["nested-staging", "cancel-after-copy"],
     ] as const) {
-      // Each case replaces process-wide child-process and syscall implementations; finish
-      // restoring them before the next case.
       await t.test(`${flow}: ${scenario}`, async () => {
         await verifyPrivateCopy(flow, scenario);
       });
@@ -2345,7 +2341,6 @@ nodeTest(
   { skip: process.platform !== "android" },
   async (t) => {
     for (const scenario of ["cancel-during-copy", "cancel-after-copy"] as const) {
-      // Each case replaces process-wide child-process and syscall implementations.
       await t.test(scenario, async () => {
         await verifyPrivateCopy("nested-publication", scenario);
       });
@@ -2763,7 +2758,6 @@ nodeTest(
         [true, false],
         [true, true],
       ] as const) {
-        // Delayed discovery scenarios share paths and global syscall interception, so their teardown must finish first.
         await verifyInvocationOrder(firstBatch, secondBatch);
       }
     });
@@ -6429,7 +6423,6 @@ nodeTest(
       "entry-delete",
       "content-move",
     ] as const) {
-      // All flows replace process-wide syscall implementations; finish restoring each before the next flow.
       await t.test(flow, async () => {
         await verifyRejectedOwner(flow);
       });
@@ -6537,7 +6530,6 @@ nodeTest(
       });
     }
     for (const rejectedName of ["q", "publish"]) {
-      // Owner-rejection cases share process-wide syscall interception and must restore it before continuing.
       await verifyRejectedEntry(rejectedName);
     }
   },
@@ -7320,7 +7312,7 @@ nodeTest("create succeeds when realpath is unavailable for every ancestor", asyn
         assert.equal(singleDetails(result.details).operation, "create");
       },
     );
-    assert(walked); // the discovery walk really reached the filesystem root
+    assert(walked);
     assert.equal(await readFile(join(directory, "sub", "file.txt"), "utf8"), "rooted\n");
     assert.deepEqual(
       (await readdir(directory)).filter((name) => name.startsWith(".pi-apply-edits-")),
@@ -7368,8 +7360,8 @@ nodeTest("batch ancestor rejection survives realpath loss on every ancestor", as
         );
       },
     );
-    assert.equal(rootMisses, 2); // both discovery walks really reached the root terminator
-    await assert.rejects(lstat(join(directory, "a")), /ENOENT/); // nothing was written
+    assert.equal(rootMisses, 2);
+    await assert.rejects(lstat(join(directory, "a")), /ENOENT/);
   });
 });
 

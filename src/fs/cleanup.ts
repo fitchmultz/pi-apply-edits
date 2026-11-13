@@ -186,7 +186,6 @@ export async function assertPublishedDirectoriesCurrent(
   directories: ReadonlyMap<string, BigIntStats>,
 ): Promise<void> {
   for (const [path, expected] of directories) {
-    // Each identity check must finish before the next dependent publication phase.
     const current = await currentOwnedPath(path, expected, "Published create directory");
     if (!current || !current.isDirectory() || current.isSymbolicLink()) {
       throw new Error(`Published create directory changed identity at ${path}.`);

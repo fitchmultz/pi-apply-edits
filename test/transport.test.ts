@@ -278,7 +278,6 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
       let before = "before";
       for (const [index, native] of [true, false, true].entries()) {
         if (index > 0) {
-          // Model switches must complete before the next wire-format scenario begins.
           await f.session.setModel({
             ...f.model,
             id: `model-${index}`,
@@ -290,11 +289,8 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
         inputs.push(input);
         const deltaStart = f.deltas.length;
         f.replies.push({ native, input }, { text: "Edit complete." });
-        // Each patch depends on the bytes and transcript produced by the preceding patch.
         await f.session.prompt("Apply the fixture patch.");
-        // Settle this model generation before checking its output and changing the model.
         await f.session.waitForIdle();
-        // This file read observes the ordered commit before the next patch consumes it.
         assert.equal(await readFile(join(f.cwd, "fixture.txt"), "utf8"), `${after}\n`);
         const results = f.session.messages.filter((m) => m.role === "toolResult");
         assert.equal(results.length, index + 1);

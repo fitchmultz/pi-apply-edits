@@ -116,7 +116,6 @@ export async function captureSnapshot(
     throw new Error(`Target is not a regular file: ${inputPath}`);
   }
   for (let attempt = 0; attempt < 2; attempt++) {
-    // A failed stable read must finish and close its descriptor before retrying.
     const state = await tryReadSnapshot(actualPath, inputPath, requireWritable);
     if (state) {
       return {

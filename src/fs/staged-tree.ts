@@ -94,7 +94,6 @@ class StagedTreeInspection {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const relative =
         relativeDirectory.length > 0 ? join(relativeDirectory, entry.name) : entry.name;
-      // Complete each bounded tree inspection before following another directory entry.
       await this.inspectEntry(join(directory, entry.name), relative);
     }
   }

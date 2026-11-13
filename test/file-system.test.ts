@@ -87,7 +87,6 @@ nodeTest(
   "replacement errors distinguish no commit, unverified publication and verified cleanup failure",
   async (t) => {
     for (const phase of ["beforeRename", "afterRename", "beforeRecoveryCleanup"] as const) {
-      // Each fault phase finishes its private recovery lifecycle before starting the next case.
       await t.test(phase, async () => {
         await fixture(async (directory) => {
           const path = join(directory, phase);
@@ -848,7 +847,6 @@ nodeTest(
         assert.equal(parentAfter.ctimeNs, parentBefore.ctimeNs);
       };
       for (const nested of [false, true]) {
-        // Building each long path changes shared ancestors; inspect one budget case completely first.
         await verifyDestinationBudget(nested);
       }
       assert.equal(await readFile(source, "utf8"), "old");

@@ -141,7 +141,6 @@ class NestedPublication {
       await this.reserveRoot();
       await this.reserveDirectories();
       for (const entry of this.prepared.entries) {
-        // A shared reserved root and truthful partial receipts require ordered target publication.
         await this.publishEntry(entry, support);
       }
       await this.finalizeDirectories();
@@ -158,7 +157,6 @@ class NestedPublication {
 
   private async assertPlansCurrent(): Promise<void> {
     for (const { plan } of this.prepared.entries) {
-      // Keep phase order visible and complete validation before invoking later hooks.
       await assertNewFilePlanCurrent(plan);
     }
   }
@@ -224,7 +222,6 @@ class NestedPublication {
       .filter(([path, stats]) => path.length > 0 && stats.isDirectory())
       .sort(([left], [right]) => left.length - right.length);
     for (const [path] of relative) {
-      // Parents must be reserved before descendants, with identity revalidation after each claim.
       await this.reserveDirectory(join(this.prepared.publishRoot, path));
     }
   }
@@ -404,7 +401,6 @@ class NestedPublication {
     for (const [path] of [...this.directories].sort(
       ([left], [right]) => right.length - left.length,
     )) {
-      // Durability sync proceeds from descendants to their already-finalized parents.
       const warning = await syncDirectory(path);
       if (warning !== undefined) {
         this.stagingOwner.warnings.push(warning);

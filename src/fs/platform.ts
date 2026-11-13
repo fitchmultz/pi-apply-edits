@@ -63,7 +63,6 @@ async function executableAvailable(path: string): Promise<boolean> {
 
 async function firstExecutable(candidates: readonly string[]): Promise<string | undefined> {
   for (const candidate of candidates) {
-    // Conventional locations are tried in precedence order, stopping at the first executable.
     if (await executableAvailable(candidate)) {
       return candidate;
     }
