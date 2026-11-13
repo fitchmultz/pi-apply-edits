@@ -151,7 +151,7 @@ function isReplaceableWriter(tool: Readonly<ToolInfo>): boolean {
   );
 }
 
-/** Edit calls in one agent run reuse a macOS ACL helper, which exits once the run settles. */
+/** Edit calls in one agent run share a warm macOS ACL helper, which expires on idle or when the run settles. */
 function reuseAclHelperPerRun(pi: ExtensionAPI): void {
   const owner = {};
   let retained = false;

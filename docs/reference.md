@@ -302,7 +302,8 @@ The package name, extension entry path, and keep-builtins switches are unchanged
   preserved using native copying on macOS and Linux. macOS also uses the system
   `osascript` command to retain inherited ACL entries exactly. One `osascript` process serves
   an editing call's ACL transfers one at a time. Later editing calls in the same Pi agent
-  run reuse it, and it exits when the run settles or the session shuts down. Direct API
+  run reuse it while active, and it exits after 15 seconds idle, when the run settles, or
+  when the session shuts down. Direct API
   callers get a process that exits before each call returns. An idle process never keeps
   Pi running. Cancelling an in-flight transfer stops that process and waits for it to exit
   before the transfer's private files are cleaned up. Text formatting is preserved

@@ -22,8 +22,9 @@ type AclProcessState =
   | { readonly kind: "closed" };
 
 export const macosAclScript = fileURLToPath(new URL("../macos-acl.js", import.meta.url));
+const IDLE_HELPER_TTL_MS = 15_000;
 const sessions = new AsyncLocalStorage<MacosAclSession>();
-// Owners that keep a finished batch's helper for the next batch. Membership is idempotent:
+// Owners that keep a finished batch's helper warm for the next batch. Membership is idempotent:
 // Pi can start one run's loop more than once, and only one release follows.
 const retainers = new Set<object>();
 
@@ -31,7 +32,7 @@ export function currentMacosAclSession(): MacosAclSession | undefined {
   return sessions.getStore();
 }
 
-/** Keeps one finished batch's helper for the next batch until `owner` releases it. */
+/** Keeps one finished batch's helper warm for later batches until idle expiry or `owner` release. */
 export function retainMacosAclHelper(owner: object): void {
   retainers.add(owner);
 }
@@ -229,36 +230,72 @@ class AclProcess {
   }
 }
 
-/** Owns the one process that may serve later batches: absent, idle (unref'd), or held by a session. */
+type PoolState =
+  | { readonly kind: "empty" }
+  | { readonly kind: "idle"; readonly helper: AclProcess; readonly timer: NodeJS.Timeout }
+  | { readonly kind: "closing"; readonly helper: AclProcess; readonly closed: Promise<void> };
+
+/** Owns the one process that may serve later batches: empty, briefly idle (unref'd), or closing. */
 class HelperPool {
-  #idle: AclProcess | undefined;
+  #state: PoolState = { kind: "empty" };
 
   /** Takes the idle helper unless it exited while idle, or starts one. The caller then holds it. */
   async take(): Promise<AclProcess> {
-    const helper = this.#idle;
-    this.#idle = undefined;
-    if (helper?.usable === true) {
-      helper.reference(true);
-      return helper;
+    const state = this.#state;
+    if (state.kind === "idle") {
+      clearTimeout(state.timer);
+      this.#state = { kind: "empty" };
+      if (state.helper.usable) {
+        state.helper.reference(true);
+        return state.helper;
+      }
+      await state.helper.closed;
+    } else if (state.kind === "closing") {
+      await state.closed;
     }
-    await helper?.closed;
     return AclProcess.start();
   }
 
-  /** Parks a usable helper for the next batch while an owner retains a lease. */
+  /** Parks a usable helper briefly for the next batch while an owner retains a lease. */
   async release(helper: AclProcess): Promise<void> {
-    if (retainers.size > 0 && this.#idle === undefined) {
+    if (this.#state.kind === "closing") {
+      await this.#state.closed;
+    }
+    if (retainers.size > 0 && helper.usable && this.#state.kind === "empty") {
       helper.reference(false);
-      this.#idle = helper;
+      const timer = setTimeout(() => {
+        this.#expire(helper);
+      }, IDLE_HELPER_TTL_MS);
+      timer.unref();
+      this.#state = { kind: "idle", helper, timer };
       return;
     }
     await helper.end();
   }
 
   async releaseIdle(): Promise<void> {
-    const helper = this.#idle;
-    this.#idle = undefined;
-    await helper?.end();
+    const state = this.#state;
+    this.#state = { kind: "empty" };
+    if (state.kind === "idle") {
+      clearTimeout(state.timer);
+      await state.helper.end();
+      return;
+    }
+    if (state.kind === "closing") {
+      await state.closed;
+    }
+  }
+
+  #expire(helper: AclProcess): void {
+    if (this.#state.kind !== "idle" || this.#state.helper !== helper) {
+      return;
+    }
+    const clear = (): void => {
+      if (this.#state.kind === "closing" && this.#state.helper === helper) {
+        this.#state = { kind: "empty" };
+      }
+    };
+    this.#state = { kind: "closing", helper, closed: helper.end().then(clear, clear) };
   }
 }
 
