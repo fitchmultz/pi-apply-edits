@@ -25,8 +25,9 @@ import {
   describeBatch,
   failedExecution,
   displayPathFor,
+  unreachedMutations,
 } from "./receipts.ts";
-import { planFile, commitPlannedMutation, plannedCreate } from "./planning.ts";
+import { isEntryMutation, planFile, commitPlannedMutation, plannedCreate } from "./planning.ts";
 import { IDENTICAL_PAIR } from "./targeted.ts";
 import { validateBatch } from "./validation.ts";
 import {
@@ -130,14 +131,12 @@ class EditingBatch {
   private async resolveFile(file: MutationInput, index: number): Promise<ResolvedMutation> {
     const inputPath = resolveInputPath(file.path, this.options.cwd);
     try {
-      const entryOperation = file.delete === true || file.patch?.moveTo !== undefined;
-      const sourceKeys = entryOperation
+      const sourceKeys = isEntryMutation(file)
         ? entryMutationQueueKeys(inputPath)
         : mutationQueueKeys(inputPath);
+      const moveTo = file.kind === "patch" ? file.patch.moveTo : undefined;
       const destination =
-        file.patch?.moveTo === undefined
-          ? undefined
-          : resolveMoveDestination(file.patch.moveTo, this.options.cwd, index);
+        moveTo === undefined ? undefined : resolveMoveDestination(moveTo, this.options.cwd, index);
       const [keys] = await Promise.all([sourceKeys, destination?.catch(Boolean)]);
       return { file, inputPath, ...keys, index, destination: await destination };
     } catch (error) {
@@ -219,9 +218,7 @@ class EditingBatch {
     }
     for (const target of this.resolved.targets) {
       const input = required(this.resolved.resolved[target.index]);
-      const entrySource =
-        target.inputPath === input.inputPath &&
-        (input.file.delete === true || input.file.patch?.moveTo !== undefined);
+      const entrySource = target.inputPath === input.inputPath && isEntryMutation(input.file);
       // Native traversal is checked in request order so failures identify the first target.
       const sourceIndex = await changedLinkInPath(
         entrySource ? dirname(target.inputPath) : target.inputPath,
@@ -404,6 +401,6 @@ export async function executeFileBatch(
       return batch.register();
     });
   } catch (error) {
-    return failedExecution(error, options.preview, files, options.cwd);
+    return failedExecution(error, options.preview, unreachedMutations(files), options.cwd);
   }
 }

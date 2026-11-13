@@ -110,9 +110,6 @@ export interface WriteFilesRequest {
 }
 /** Read views of caller-owned inputs; the editing pipeline only reads them. */
 export type ReadonlyTargetedEdit = Readonly<TargetedEdit>;
-export type ReadonlyApplyEditsInput = Readonly<Omit<ApplyEditsInput, "edits">> & {
-  readonly edits?: readonly ReadonlyTargetedEdit[] | undefined;
-};
 type ReadonlyReplaceTextFile = Readonly<Omit<ReplaceTextRequest["files"][number], "edits">> & {
   readonly edits: readonly ReadonlyTargetedEdit[];
 };
@@ -122,9 +119,32 @@ export type ReadonlyReplaceTextRequest = Readonly<Omit<ReplaceTextRequest, "file
 export type ReadonlyWriteFilesRequest = Readonly<Omit<WriteFilesRequest, "files">> & {
   readonly files: readonly Readonly<WriteFilesRequest["files"][number]>[];
 };
-export interface MutationInput extends ReadonlyApplyEditsInput {
-  readonly patch?: ReadonlyPatchUpdate | undefined;
-  readonly delete?: true | undefined;
+export type MutationInput =
+  | {
+      readonly kind: "edit";
+      readonly path: string;
+      readonly edits: readonly ReadonlyTargetedEdit[];
+    }
+  | {
+      readonly kind: "write";
+      readonly path: string;
+      readonly content: string;
+      readonly mode: "create" | "replace";
+      readonly preserveFormatting?: boolean | undefined;
+    }
+  | {
+      readonly kind: "patch";
+      readonly path: string;
+      readonly patch: ReadonlyPatchUpdate;
+    }
+  | {
+      readonly kind: "delete";
+      readonly path: string;
+    };
+export interface UnreachedFile {
+  readonly path: string;
+  readonly operation: ApplyEditsDetails["operation"];
+  readonly moveTo?: string | undefined;
 }
 interface PlannedContent {
   readonly inputPath: string;

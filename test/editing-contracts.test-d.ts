@@ -1,10 +1,15 @@
-import type { PlannedMutation } from "../src/editing/contracts.ts";
+import type {
+  MutationInput,
+  PlannedMutation,
+  ReadonlyTargetedEdit,
+} from "../src/editing/contracts.ts";
 import type {
   ReadonlyEntryMovePlan,
   ReadonlyEntrySnapshot,
   ReadonlyFileSnapshot,
   ReadonlyNewFilePlan,
 } from "../src/fs/contracts.ts";
+import type { ReadonlyPatchUpdate } from "../src/patch/source.ts";
 
 declare const content: Pick<
   PlannedMutation,
@@ -20,6 +25,23 @@ declare const snapshot: ReadonlyFileSnapshot;
 declare const entry: ReadonlyEntrySnapshot;
 declare const movePlan: ReadonlyEntryMovePlan;
 declare const createPlan: ReadonlyNewFilePlan;
+declare const edits: readonly ReadonlyTargetedEdit[];
+declare const patch: ReadonlyPatchUpdate;
+
+const inputs: MutationInput[] = [
+  { kind: "edit", path: "a.ts", edits },
+  { kind: "write", path: "b.ts", content: "x", mode: "create" },
+  { kind: "write", path: "c.ts", content: "y", mode: "replace", preserveFormatting: false },
+  { kind: "patch", path: "d.ts", patch },
+  { kind: "delete", path: "e.ts" },
+];
+
+// @ts-expect-error write mutations require an explicit create or replace mode
+const missingWriteMode: MutationInput = { kind: "write", path: "b.ts", content: "x" };
+// @ts-expect-error edit mutations cannot carry whole-file write flags
+const mixedEditWrite: MutationInput = { kind: "edit", path: "a.ts", edits, mode: "replace" };
+// @ts-expect-error delete mutations cannot carry patch payloads
+const mixedDeletePatch: MutationInput = { kind: "delete", path: "e.ts", patch };
 
 const plans: PlannedMutation[] = [
   { ...content, operation: "edit", snapshot },
@@ -51,9 +73,13 @@ const noWriteDelete: PlannedMutation = {
 };
 
 void plans;
+void inputs;
 void missingCreate;
 void missingMove;
 void missingSnapshot;
 void uncheckedNoChange;
 void conflictingDelete;
 void noWriteDelete;
+void missingWriteMode;
+void mixedEditWrite;
+void mixedDeletePatch;
