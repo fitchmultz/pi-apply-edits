@@ -11,6 +11,7 @@ import {
   MAX_EDITS_PER_FILE,
   type ApplyEditsBatchDetails,
 } from "./apply-edits.ts";
+import { isRecord } from "./editing/contracts.ts";
 import { bindPatchPaths, parsePatch, PATCH_GRAMMAR } from "./patch.ts";
 import { editingResultRenderer } from "./tool-rendering.ts";
 import { receiptSchema, toolResult } from "./tool-results.ts";
@@ -340,8 +341,4 @@ function structuredCallLabel(args: {
     .slice(0, 3)
     .map((file) => file.path ?? "…")
     .join(", ")}${files.length > 3 ? `, … ${files.length - 3} more` : ""}`;
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

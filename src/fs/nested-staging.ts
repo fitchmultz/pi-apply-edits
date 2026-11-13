@@ -54,7 +54,7 @@ export async function discardPreparedNestedFiles(
   await preparedOwner(prepared).discard();
 }
 
-/** Owns private staging resources; the prepared subclass holds the caller's own values. */
+/** Non-generic runtime owner so `instanceof` narrows without introducing `any` type arguments. */
 abstract class NestedStaging {
   abstract readonly entries: readonly ReadonlyPlannedNewFile[];
   abstract readonly firstPlan: ReadonlyNewFilePlan;
@@ -102,9 +102,9 @@ abstract class NestedStaging {
   }
 
   constructor(entries: readonly ReadonlyPlannedNewFile[]) {
-    const first = entries.at(0)?.plan;
-    const missing = first?.missingDirectories.at(0);
-    if (!first || missing === undefined || missing.length === 0 || entries.length === 0) {
+    const first = entries[0]?.plan;
+    const missing = first?.missingDirectories[0];
+    if (!first || missing === undefined || missing.length === 0) {
       throw new Error("Nested create publication requires at least one valid plan");
     }
     for (const { plan } of entries) {
@@ -408,7 +408,6 @@ abstract class NestedStaging {
   }
 }
 
-/** Types the descriptor with the caller's own entries and hooks, which it keeps referencing. */
 class PreparedStaging<
   Entries extends readonly ReadonlyPlannedNewFile[],
   Hooks extends ReadonlyNewFilePublishHooks,
@@ -422,13 +421,12 @@ class PreparedStaging<
 
   constructor(entries: Entries, hooks?: Hooks) {
     super(entries);
+    const [firstEntry] = entries;
+    if (firstEntry === undefined) {
+      throw new Error("Nested create publication requires at least one valid plan");
+    }
     this.entries = entries;
-    this.firstPlan = member(member(entries, 0), "plan");
+    this.firstPlan = firstEntry.plan;
     this.hooks = hooks;
   }
-}
-
-/** A generic key keeps the caller's element and plan types instead of their readonly bounds. */
-function member<Value, Key extends keyof Value>(value: Value, key: Key): Value[Key] {
-  return value[key];
 }

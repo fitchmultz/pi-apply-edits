@@ -1,3 +1,4 @@
+import { validateText } from "../patch/source.ts";
 import {
   MAX_EDITS_PER_FILE,
   MAX_BATCH_FILES,
@@ -14,12 +15,7 @@ function validatePath(path: unknown): void {
   if (typeof path !== "string" || path.length === 0) {
     throw new Error("path must be a non-empty string");
   }
-  if (path.includes("\0")) {
-    throw new Error("path cannot contain NUL bytes");
-  }
-  if (!path.isWellFormed()) {
-    throw new Error("path must contain valid Unicode text");
-  }
+  validateText(path, "path");
 }
 function validateEdits(edits: unknown): void {
   if (!Array.isArray(edits)) {
@@ -37,16 +33,7 @@ function validateWrite(input: Extract<MutationInput, { readonly kind: "write" }>
   if (mode !== "create" && mode !== "replace") {
     throw new Error('mode must be "create" or "replace"');
   }
-  const content: unknown = input.content;
-  if (typeof content !== "string") {
-    throw new Error("content must be a string");
-  }
-  if (content.includes("\0")) {
-    throw new Error("content cannot contain NUL bytes");
-  }
-  if (!content.isWellFormed()) {
-    throw new Error("content must contain valid Unicode text");
-  }
+  validateText(input.content, "content");
   optionalBoolean(input.preserveFormatting, "preserveFormatting");
 }
 function validateMutation(input: MutationInput): void {

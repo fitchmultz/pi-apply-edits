@@ -1,3 +1,5 @@
+import { inspect } from "node:util";
+
 export class PublicationError extends Error {
   readonly modifiedFiles: string[];
   readonly uncertainFiles: string[];
@@ -50,26 +52,13 @@ export function fallbackAllowed(error: unknown): boolean {
 }
 
 export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : describeUnknown(error);
-}
-
-function describeUnknown(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
+  if (error instanceof Error) {
+    return error.message;
   }
-  if (value === null) {
-    return "null";
+  if (typeof error === "string") {
+    return error;
   }
-  if (value === undefined) {
-    return "undefined";
-  }
-  if (typeof value === "number" || typeof value === "bigint" || typeof value === "symbol") {
-    return value.toString();
-  }
-  if (typeof value === "boolean") {
-    return value ? "true" : "false";
-  }
-  return "Non-Error failure";
+  return inspect(error);
 }
 
 export function throwIfAborted(signal?: AbortSignal): void {

@@ -38,27 +38,28 @@ function validateEditStrings(edit: ReadonlyTargetedEdit, index: number): void {
 }
 function validateEdit(edit: ReadonlyTargetedEdit, index: number): void {
   validateEditStrings(edit, index);
+  validateEditOptions(edit, index);
+}
+function validateEditOptions(edit: ReadonlyTargetedEdit, index: number): void {
   if (edit.all !== undefined && typeof edit.all !== "boolean") {
     throw new Error(`edits[${index}].all must be a boolean`);
   }
   const insert: unknown = edit.insert;
-  if (insert !== undefined && insert !== "before" && insert !== "after") {
-    throw new Error(`edits[${index}].insert must be "before" or "after"`);
+  if (insert !== undefined) {
+    if (insert !== "before" && insert !== "after") {
+      throw new Error(`edits[${index}].insert must be "before" or "after"`);
+    }
+    if (edit.newText.length === 0) {
+      throw new Error(`edits[${index}].newText must not be empty when insert is set`);
+    }
   }
-  validateRangeOptions(edit, index);
-  validateEditChange(edit, index);
-}
-function validateRangeOptions(edit: ReadonlyTargetedEdit, index: number): void {
-  if (edit.endText !== undefined && edit.all === true) {
-    throw new Error(`edits[${index}].all cannot be combined with endText`);
-  }
-  if (edit.endText !== undefined && edit.insert !== undefined) {
-    throw new Error(`edits[${index}].insert cannot be combined with endText`);
-  }
-}
-function validateEditChange(edit: ReadonlyTargetedEdit, index: number): void {
-  if (edit.insert !== undefined && edit.newText.length === 0) {
-    throw new Error(`edits[${index}].newText must not be empty when insert is set`);
+  if (edit.endText !== undefined) {
+    if (edit.all === true) {
+      throw new Error(`edits[${index}].all cannot be combined with endText`);
+    }
+    if (edit.insert !== undefined) {
+      throw new Error(`edits[${index}].insert cannot be combined with endText`);
+    }
   }
 }
 /** A plain replacement by the same text changes nothing wherever it matches. */

@@ -322,12 +322,11 @@ function warningSummary(files: readonly FileReceipt[]): string {
   return diffNote + warningText;
 }
 export function describeBatch(details: ApplyEditsBatchDetails, cwd: string): EditingExecution {
-  const displayFiles = details.files.map((file) =>
-    Object.assign({}, file, {
-      path: displayPathFor(file.path, cwd),
-      moveTo: file.moveTo === undefined ? undefined : displayPathFor(file.moveTo, cwd),
-    }),
-  );
+  const displayFiles = details.files.map((file) => ({
+    ...file,
+    path: displayPathFor(file.path, cwd),
+    moveTo: file.moveTo === undefined ? undefined : displayPathFor(file.moveTo, cwd),
+  }));
   const changed = displayFiles.filter((item) => item.operation !== "no_change");
   const preview = details.preview === true;
   if (changed.length === 0) {

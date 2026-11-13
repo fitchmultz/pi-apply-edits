@@ -2,12 +2,13 @@ import { parsePatch } from "./patch.ts";
 import type { ReadonlyPatchOperation } from "./patch/source.ts";
 import { executeFileBatch } from "./editing/batch.ts";
 import { failedExecution } from "./editing/receipts.ts";
-import type {
-  ReadonlyWriteFilesRequest,
-  ReadonlyReplaceTextRequest,
-  EditingExecution,
-  MutationInput,
-  UnreachedFile,
+import {
+  isRecord,
+  type ReadonlyWriteFilesRequest,
+  type ReadonlyReplaceTextRequest,
+  type EditingExecution,
+  type MutationInput,
+  type UnreachedFile,
 } from "./editing/contracts.ts";
 
 export { applyTargetedEdits } from "./editing/targeted.ts";
@@ -27,9 +28,6 @@ export type {
   ReplaceTextRequest,
   WriteFilesRequest,
 } from "./editing/contracts.ts";
-
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Extract resolvable file paths from a malformed request without risking a secondary throw. */
 function unreachedInputs(files: unknown, fallback: "edit" | "rewrite"): UnreachedFile[] {
