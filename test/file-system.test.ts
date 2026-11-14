@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   chmod,
   lstat,
@@ -18,6 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
+import { promisify } from "node:util";
 import {
   captureEntrySnapshot,
   captureSnapshot,
@@ -33,20 +35,7 @@ import {
   publishReplacement,
 } from "../src/file-system.ts";
 
-function execText(
-  executable: string,
-  args: readonly string[],
-): Promise<{ readonly stdout: string; readonly stderr: string }> {
-  return new Promise((resolve, reject) => {
-    execFile(executable, args, (error, stdout, stderr) => {
-      if (error instanceof Error) {
-        reject(error);
-      } else {
-        resolve({ stdout, stderr });
-      }
-    });
-  });
-}
+const execText = promisify(execFile);
 
 async function fixture(run: (directory: string) => Promise<void>): Promise<void> {
   const temporary = await mkdtemp(join(tmpdir(), "pi-entry-test-"));
@@ -195,8 +184,8 @@ for (const phase of ["afterRename", "beforeRecoveryCleanup"] as const) {
               retained = recovery;
               const before = await writer.stat({ bigint: true });
               // An ordinary writer holds the original inode, without knowing the recovery path.
-              await new Promise<void>((resolve, reject) => {
-                const child = spawn(
+              const exited: readonly unknown[] = await once(
+                spawn(
                   "python3",
                   [
                     "-c",
@@ -208,16 +197,10 @@ assert libc.fsetxattr(3, b"${attribute}", value, len(value), 0, 0) == 0, ctypes.
 `,
                   ],
                   { stdio: ["ignore", "ignore", "inherit", writer.fd] },
-                );
-                child.on("error", reject);
-                child.on("exit", (code) => {
-                  if (code === 0) {
-                    resolve();
-                  } else {
-                    reject(new Error(`xattr writer exited ${String(code)}`));
-                  }
-                });
-              });
+                ),
+                "exit",
+              );
+              assert.equal(exited[0], 0);
               const after = await writer.stat({ bigint: true });
               assert.equal(after.mtimeNs, before.mtimeNs);
               assert.notEqual(after.ctimeNs, before.ctimeNs);

@@ -4,13 +4,14 @@ import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
+import { isRecord } from "../src/editing/contracts.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const policy: unknown = JSON.parse(readFileSync(join(root, ".oxlintrc.json"), "utf8"));
 export const lintExecutable = join(root, "node_modules", ".bin", "oxlint");
 const compilerPolicy: unknown = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8"));
-assert(record(compilerPolicy));
-assert(record(compilerPolicy.compilerOptions));
+assert(isRecord(compilerPolicy));
+assert(isRecord(compilerPolicy.compilerOptions));
 const compilerOptions = compilerPolicy.compilerOptions;
 
 export interface Diagnostic {
@@ -26,13 +27,9 @@ export interface ProbeResult {
   readonly stderr: string;
 }
 
-export function record(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 export function policyRule(rule: string): unknown {
-  assert(record(policy));
-  assert(record(policy.rules));
+  assert(isRecord(policy));
+  assert(isRecord(policy.rules));
   const option = policy.rules[rule];
   assert.notEqual(option, undefined, `${rule} must be configured explicitly`);
   return option;
@@ -52,7 +49,7 @@ export function focusedConfig(
 }
 
 export function effectiveConfig(): string {
-  assert(record(policy));
+  assert(isRecord(policy));
   return JSON.stringify({
     ...policy,
     jsPlugins: [{ name: "node-test", specifier: join(root, "scripts", "node-test-plugin.ts") }],
@@ -61,14 +58,16 @@ export function effectiveConfig(): string {
 
 /** Keep the repository's exact runner rule options while isolating control-flow diagnostics. */
 export function frameworkConfig(): string {
-  assert(record(policy));
+  assert(isRecord(policy));
   assert(Array.isArray(policy.overrides));
   const testRules: unknown = policy.overrides.find(
     (override: unknown) =>
-      record(override) && record(override.rules) && "node-test/expect-assertions" in override.rules,
+      isRecord(override) &&
+      isRecord(override.rules) &&
+      "node-test/expect-assertions" in override.rules,
   );
-  assert(record(testRules));
-  assert(record(testRules.rules));
+  assert(isRecord(testRules));
+  assert(isRecord(testRules.rules));
   return JSON.stringify({
     plugins: ["eslint"],
     categories: { correctness: "off" },
@@ -124,17 +123,17 @@ export function lint(directory: string, paths: readonly string[] = ["."]): Probe
   });
   assert.equal(result.error, undefined, result.stderr);
   const output: unknown = JSON.parse(result.stdout);
-  assert(record(output), result.stdout);
+  assert(isRecord(output), result.stdout);
   assert(Array.isArray(output.diagnostics), result.stdout);
   const diagnostics = output.diagnostics.map((item: unknown) => {
-    assert(record(item));
+    assert(isRecord(item));
     const identity: unknown = typeof item.code === "string" ? item.code : item.message;
     assert.equal(typeof identity, "string");
     assert.equal(typeof item.filename, "string");
     assert(Array.isArray(item.labels));
     const label: unknown = item.labels[0];
-    assert(record(label));
-    assert(record(label.span));
+    assert(isRecord(label));
+    assert(isRecord(label.span));
     assert.equal(typeof label.span.line, "number");
     assert.equal(typeof label.span.column, "number");
     if (
@@ -173,8 +172,8 @@ export function expectDiagnostics(
           ? [diagnostic.identity, diagnostic.line, diagnostic.column]
           : [diagnostic.identity, diagnostic.line],
       )
-      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
-    [...expected].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      .toSorted((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+    expected.toSorted((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
     result.stdout,
   );
 }

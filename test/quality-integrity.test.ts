@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test as nodeTest } from "node:test";
-import { inProbe, record } from "./quality-probe-support.ts";
+import { isRecord } from "../src/editing/contracts.ts";
+import { inProbe } from "./quality-probe-support.ts";
 
 const assets = Object.fromEntries(
   [
@@ -16,18 +17,18 @@ const assets = Object.fromEntries(
 const config: unknown = JSON.parse(
   readFileSync(new URL("../.oxlintrc.json", import.meta.url), "utf8"),
 );
-assert(record(config));
-assert(record(config.rules));
-assert(record(config.categories));
-assert(record(config.options));
+assert(isRecord(config));
+assert(isRecord(config.rules));
+assert(isRecord(config.categories));
+assert(isRecord(config.options));
 const rules = config.rules;
 const categories = config.categories;
 const options = config.options;
 const manifest: unknown = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 );
-assert(record(manifest));
-assert(record(manifest.scripts));
+assert(isRecord(manifest));
+assert(isRecord(manifest.scripts));
 const scripts = manifest.scripts;
 
 const cases = [

@@ -132,11 +132,8 @@ nodeTest(
     const helper = helpers[0];
     assert(helper !== undefined);
     await releaseMacosAclHelper(owner);
-    const deadline = Date.now() + 5_000;
-    while (helper.exitCode === null && Date.now() < deadline) {
-      await new Promise((resolve) => {
-        setTimeout(resolve, 25);
-      });
+    if (helper.exitCode === null) {
+      await once(helper, "close", { signal: AbortSignal.timeout(5_000) });
     }
     assert.equal(helper.exitCode, 0);
   },
