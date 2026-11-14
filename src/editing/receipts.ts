@@ -1,5 +1,5 @@
 import { sep } from "node:path";
-import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
+import { FILE_HEADERS_ONLY, formatPatch, structuredPatch } from "diff";
 import { PublicationError } from "../file-system.ts";
 import { countTextLines } from "./text.ts";
 import { resolveInputPath } from "./queue.ts";
@@ -92,9 +92,14 @@ export function displayPathFor(path: string, cwd: string): string {
   const display = path.slice(prefix.length);
   return display.length > 0 ? literalTilde(display) : ".";
 }
-function boundedPatch(path: string, oldText: string, newText: string): string | undefined {
+interface BoundedPatch {
+  readonly text: string;
+  readonly addedLines: number;
+  readonly deletedLines: number;
+}
+function boundedPatch(path: string, oldText: string, newText: string): BoundedPatch | undefined {
   if (oldText === newText) {
-    return "";
+    return { text: "", addedLines: 0, deletedLines: 0 };
   }
   if (
     Buffer.byteLength(oldText) + Buffer.byteLength(newText) > 1024 * 1024 ||
@@ -102,30 +107,20 @@ function boundedPatch(path: string, oldText: string, newText: string): string | 
   ) {
     return;
   }
-  return createTwoFilesPatch(path, path, oldText, newText, undefined, undefined, {
+  const patch = structuredPatch(path, path, oldText, newText, undefined, undefined, {
     context: 3,
-    headerOptions: FILE_HEADERS_ONLY,
     timeout: 100,
     maxEditLength: 4_000,
   });
-}
-function countPatchLines(patch: string): {
-  readonly addedLines: number;
-  readonly deletedLines: number;
-} {
-  let addedLines = 0;
-  let deletedLines = 0;
-  let inHunk = false;
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("@@")) {
-      inHunk = true;
-    } else if (inHunk && line.startsWith("+")) {
-      addedLines++;
-    } else if (inHunk && line.startsWith("-")) {
-      deletedLines++;
-    }
+  if (patch === undefined) {
+    return;
   }
-  return { addedLines, deletedLines };
+  const lines = patch.hunks.flatMap((hunk) => hunk.lines);
+  return {
+    text: formatPatch(patch, FILE_HEADERS_ONLY),
+    addedLines: lines.filter((line) => line.startsWith("+")).length,
+    deletedLines: lines.filter((line) => line.startsWith("-")).length,
+  };
 }
 function receiptContent(
   plan: PlannedMutation,
@@ -149,17 +144,16 @@ function receiptContent(
 }
 function receiptForPlan(plan: PlannedMutation, preview: boolean): ReceiptEvidence {
   const patch = boundedPatch(plan.displayPath, plan.originalText, plan.nextText);
-  const counts =
-    patch === undefined
-      ? { addedLines: undefined, deletedLines: undefined }
-      : countPatchLines(patch);
   return {
     path: plan.inputPath,
     operation: plan.operation,
     editsRequested: plan.editsRequested,
     matches: plan.matches,
-    ...receiptContent(plan, counts),
-    diff: patch ?? "[Diff omitted: input size or diff work exceeded the bounded budget.]",
+    ...receiptContent(plan, {
+      addedLines: patch?.addedLines,
+      deletedLines: patch?.deletedLines,
+    }),
+    diff: patch?.text ?? "[Diff omitted: input size or diff work exceeded the bounded budget.]",
     diffTruncated: patch === undefined,
     warnings: unchangedEditWarnings(plan),
     ...(preview ? { preview: true } : {}),
@@ -480,7 +474,7 @@ export class BatchReceipts {
     return this.failure(
       `Multi-file batch failed while publishing files[${index}] (${required(plans[index]).displayPath}) after ${verified.length} verified path change${verified.length === 1 ? "" : "s"}. ${errorMessage(error)}\n` +
         `Verified committed paths: ${verified.length > 0 ? verified.join(", ") : "none"}\nUncertain paths: ${uncertain.length > 0 ? uncertain.join(", ") : "none"}\n` +
-        `Completed: ${names(completed.sort((a, b) => a - b))}\nFailed or uncertain: ${names(failed)}\nUnattempted: ${names(unattempted)}\n` +
+        `Completed: ${names(completed.toSorted((a, b) => a - b))}\nFailed or uncertain: ${names(failed)}\nUnattempted: ${names(unattempted)}\n` +
         "Inspect failed/uncertain paths and any retained recovery files before retrying; do not replay the whole batch." +
         (earlierWarnings.length > 0
           ? ` Earlier warnings from completed files: ${earlierWarnings.join(" ")}`

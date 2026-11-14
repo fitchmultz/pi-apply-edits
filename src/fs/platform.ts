@@ -264,14 +264,14 @@ export async function readPreservableAndroidMetadata(
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .sort((left, right) => (left < right ? -1 : Number(left > right)));
+    .sort();
   if (
     acl.length !== 3 ||
     acl.some((line) => !/^(?:user::|group::|other::)[r-][w-][x-]$/.test(line))
   ) {
     throw new Error(`Refusing to replace ${path}: Termux cp cannot preserve its extended ACL`);
   }
-  return `${xattrs.sort((left, right) => (left < right ? -1 : Number(left > right))).join("\n")}\n${acl.join("\n")}`;
+  return `${xattrs.sort().join("\n")}\n${acl.join("\n")}`;
 }
 
 async function supportedReplacement(): Promise<SupportedReplacement> {

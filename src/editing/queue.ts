@@ -1,6 +1,7 @@
 import { lstat, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { isMissingPathError } from "../fs/errors.ts";
 import {
   assertNotDanglingSymbolicLink,
   nativeRealpath,
@@ -27,16 +28,6 @@ export function resolveInputPath(input: string, cwd: string): string {
     throw new Error("path must be a non-empty string");
   }
   return operationPath(input, cwd);
-}
-export function isMissingPathError(
-  error: unknown,
-): error is { readonly code: "ENOENT" | "ENOTDIR" } {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
 }
 export function normalizeLockKey(path: string): string {
   const fullPath = join(path);

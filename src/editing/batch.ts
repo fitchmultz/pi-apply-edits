@@ -6,6 +6,7 @@ import {
   throwIfAborted,
 } from "../file-system.ts";
 import type { ReadonlyPlannedNewFile, ReadonlyPreparedNestedFiles } from "../fs/contracts.ts";
+import { isMissingPathError } from "../fs/errors.ts";
 import { MacosAclSession } from "../fs/macos-acl.ts";
 import {
   registerMutation,
@@ -16,7 +17,6 @@ import {
   assertDistinctTargets,
   changedLinkInPath,
   normalizeLockKey,
-  isMissingPathError,
   type QueueTarget,
 } from "./queue.ts";
 import {
@@ -253,28 +253,26 @@ class EditingBatch {
     }
   }
   private groupCreates(plans: readonly PlannedEntry[]): readonly CreateGroup[] {
-    const groups = new Map<string, number[]>();
-    for (const [index, entry] of plans.entries()) {
-      if (entry.stagedRoot === undefined) {
-        continue;
-      }
-      const group = groups.get(entry.stagedRoot) ?? [];
-      group.push(index);
-      groups.set(entry.stagedRoot, group);
-    }
-    for (const group of groups.values()) {
+    const groups = Map.groupBy(
+      plans.flatMap((entry, index) =>
+        entry.stagedRoot === undefined ? [] : [{ root: entry.stagedRoot, index }],
+      ),
+      (entry) => entry.root,
+    );
+    return [...groups].map(([root, entries]) => {
+      const indices = entries.map((entry) => entry.index);
       const spellings = new Set(
-        group.map(
+        indices.map(
           (index) => required(plannedCreate(required(plans[index]).plan)).missingDirectories[0],
         ),
       );
       if (spellings.size > 1) {
         throw this.receipts.failure(
-          `files[${group.join(", ")}] use alias spellings for one missing directory. Use one consistent path spelling so the batch can publish it safely.`,
+          `files[${indices.join(", ")}] use alias spellings for one missing directory. Use one consistent path spelling so the batch can publish it safely.`,
         );
       }
-    }
-    return [...groups].map(([root, indices]) => ({ root, indices }));
+      return { root, indices };
+    });
   }
   private async prepareGroup(
     plans: readonly PlannedEntry[],

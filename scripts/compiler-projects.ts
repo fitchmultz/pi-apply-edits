@@ -1,6 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { realpathSync } from "node:fs";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+
+const effectiveConfigSchema = Type.Object({
+  compilerOptions: Type.Record(Type.String(), Type.Unknown()),
+});
 
 export interface CompilerProject {
   readonly files: ReadonlySet<string>;
@@ -31,7 +37,7 @@ function compilerOutput(path: string, option: "--showConfig" | "--listFilesOnly"
 /** Resolve inherited settings and the compiler's import closure, not merely its root-file globs. */
 function readProject(path: string): CompilerProject {
   const configuration: unknown = JSON.parse(compilerOutput(path, "--showConfig"));
-  if (!record(configuration) || !record(configuration.compilerOptions)) {
+  if (!Value.Check(effectiveConfigSchema, configuration)) {
     throw new Error(`Invalid effective compiler configuration for ${path}`);
   }
   for (const option of [
@@ -79,8 +85,4 @@ function readProject(path: string): CompilerProject {
       configuration.compilerOptions.allowJs === true,
     skipLibCheck: configuration.compilerOptions.skipLibCheck === true,
   };
-}
-
-function record(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
