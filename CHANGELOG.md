@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Raise the Pi floor to 1.5.2.
 - Show Pi's expand hint, with your configured key, under a collapsed result when the expanded result has more: the rest of the message, file outcomes, or diffs. A result with nothing more to show has no hint. Expanded results are unchanged.
 - Show the tool's own header and failure line for a call that never reaches the tool: arguments the tool refuses (such as `files` sent as a JSON string), a call another extension blocks, or an aborted call. Pi builds these results without a receipt, and they fell back to Pi's generic card.
 - Skip a `replace_text` edit whose `oldText` and `newText` are identical when its text is in the file and another edit in the call changes a file. The other edits apply; the summary and the file's `warnings` name the skipped edit, its `matches` entry reports zero replacements, and `editsApplied` excludes it. The call still fails without writing when every edit is such a pair, or when the pair's text is not in the file.

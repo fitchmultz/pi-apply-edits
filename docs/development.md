@@ -46,7 +46,7 @@ inside TypeBox objects.
 ## Qualify supported hosts
 
 Run the same command against each installed target host. The locked development
-cohort is official Pi 1.5.0 and TypeBox 1.3.34. CI also resolves the latest official
+cohort is official Pi 1.5.2 and TypeBox 1.3.34. CI also resolves the latest official
 Pi release and the current `fitchmultz/pi` commit. Its qualifier verifies the
 selected host's package identity and a fresh Git consumer through the actual CLI.
 
