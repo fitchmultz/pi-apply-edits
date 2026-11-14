@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { test as nodeTest } from "node:test";
+import { isRecord } from "../src/editing/contracts.ts";
 import {
   effectiveConfig,
   expectDiagnostics,
   inProbe,
   lint,
   policyRule,
-  record,
 } from "./quality-probe-support.ts";
 
 function metricConfig(rule: string): string {
   const original: unknown = JSON.parse(effectiveConfig());
-  assert(record(original));
+  assert(isRecord(original));
   return JSON.stringify({
     ...original,
     categories: {

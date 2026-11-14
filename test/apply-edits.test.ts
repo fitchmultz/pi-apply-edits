@@ -20,7 +20,9 @@ import {
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test as nodeTest } from "node:test";
+import { setImmediate as immediate, setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { applyPatch } from "diff";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
@@ -49,20 +51,7 @@ import {
   publishReplacement,
 } from "../src/file-system.ts";
 
-function execFile(
-  executable: string,
-  args: readonly string[],
-): Promise<{ readonly stdout: string; readonly stderr: string }> {
-  return new Promise((resolve, reject) => {
-    execFileCallback(executable, args, (error, stdout, stderr) => {
-      if (error instanceof Error) {
-        reject(error);
-      } else {
-        resolve({ stdout, stderr });
-      }
-    });
-  });
-}
+const execFile = promisify(execFileCallback);
 
 function filePath(value: unknown): string {
   if (typeof value === "string") {
@@ -120,29 +109,17 @@ async function inTemporaryDirectory(run: (directory: string) => Promise<void>): 
 
 import { withRacingFileSystem, withRacingEditing } from "./racing.ts";
 
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve: () => void = () => {
-    throw new Error("deferred resolver used before initialization");
-  };
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-
 async function withTimeout<T>(promise: Promise<T>, label: string, milliseconds = 3000): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const controller = new AbortController();
   try {
     return await Promise.race([
       promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`timeout: ${label}`)), milliseconds);
+      delay(milliseconds, undefined, { signal: controller.signal }).then(() => {
+        throw new Error(`timeout: ${label}`);
       }),
     ]);
   } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
+    controller.abort();
   }
 }
 
@@ -2693,8 +2670,8 @@ nodeTest(
         await writeFile(path, "one\n");
         await writeFile(sibling, "one\n");
         const canonical = await realpath(path);
-        const discovered = deferred();
-        const release = deferred();
+        const discovered: PromiseWithResolvers<void> = Promise.withResolvers();
+        const release: PromiseWithResolvers<void> = Promise.withResolvers();
         let held = false;
         await withRacingFileSystem(
           (mock) => {
@@ -2739,9 +2716,7 @@ nodeTest(
             );
             // Drain the second call's ready key lookups while the first lookup remains held.
             const finished = Promise.allSettled([firstCall, secondCall]);
-            await new Promise<void>((resolve) => {
-              setImmediate(resolve);
-            });
+            await immediate();
             release.resolve();
             const results = await withTimeout(finished, "ordered single/batch calls");
             for (const result of results) {
@@ -2770,8 +2745,8 @@ nodeTest("a blocked batch reserves its later keys without blocking unrelated fil
     const b = join(directory, "b.txt");
     const c = join(directory, "c.txt");
     await Promise.all([a, b, c].map((path) => writeFile(path, "one\n")));
-    const acquired = deferred();
-    const release = deferred();
+    const acquired: PromiseWithResolvers<void> = Promise.withResolvers();
+    const release: PromiseWithResolvers<void> = Promise.withResolvers();
     const blocker = withFileMutationQueue(a, async () => {
       acquired.resolve();
       await release.promise;
@@ -5281,18 +5256,8 @@ for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
       await inTemporaryDirectory(async (directory) => {
         const originalRm = nodeFs.promises.rm;
         let heldOnce = false;
-        let signalLinked: () => void = () => {
-          throw new Error("signal initialized by Promise executor");
-        };
-        const linked = new Promise<void>((resolve) => {
-          signalLinked = resolve;
-        });
-        let releaseTemporary: () => void = () => {
-          throw new Error("release initialized by Promise executor");
-        };
-        const held = new Promise<void>((resolve) => {
-          releaseTemporary = resolve;
-        });
+        const linked: PromiseWithResolvers<void> = Promise.withResolvers();
+        const held: PromiseWithResolvers<void> = Promise.withResolvers();
 
         await withRacingEditing(
           (mock) => {
@@ -5305,8 +5270,8 @@ for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
                 // window in which a concurrent rewrite could observe a transient hard link.
                 if (!heldOnce && filePath(path).includes(".tmpdir")) {
                   heldOnce = true;
-                  signalLinked();
-                  await held;
+                  linked.resolve();
+                  await held.promise;
                 }
                 return originalRm(...args);
               },
@@ -5317,7 +5282,7 @@ for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
               { files: [{ path: relative, content: "created\n", mode: "create" }] },
               directory,
             );
-            await linked;
+            await linked.promise;
             let rewriteSettled = false;
             const settle = <T>(value: T) => {
               rewriteSettled = true;
@@ -5332,11 +5297,9 @@ for (const relative of ["missing/target.txt", "Missing/Target.txt"]) {
                 settle(undefined);
                 throw error;
               });
-            await new Promise<void>((resolve) => {
-              setTimeout(resolve, 50);
-            });
+            await delay(50);
             assert.equal(rewriteSettled, false, "the rewrite must wait for the create lock");
-            releaseTemporary();
+            held.resolve();
             await create;
             await rewrite;
           },
@@ -5357,18 +5320,8 @@ nodeTest(
     // would expose it: the rewrite resolves its key while the target is still missing.
     await inTemporaryDirectory(async (directory) => {
       const originalLink = nodeFs.promises.link;
-      let signalBeforeLink: () => void = () => {
-        throw new Error("signal initialized by Promise executor");
-      };
-      const beforeLink = new Promise<void>((resolve) => {
-        signalBeforeLink = resolve;
-      });
-      let releaseLink: () => void = () => {
-        throw new Error("release initialized by Promise executor");
-      };
-      const released = new Promise<void>((resolve) => {
-        releaseLink = resolve;
-      });
+      const beforeLink: PromiseWithResolvers<void> = Promise.withResolvers();
+      const released: PromiseWithResolvers<void> = Promise.withResolvers();
       let holding = false;
 
       await withRacingEditing(
@@ -5380,8 +5333,8 @@ nodeTest(
               const [, to] = args;
               if (!holding && filePath(to).endsWith("Target.txt")) {
                 holding = true;
-                signalBeforeLink();
-                await released;
+                beforeLink.resolve();
+                await released.promise;
               }
               return originalLink(...args);
             },
@@ -5392,15 +5345,13 @@ nodeTest(
             { files: [{ path: "Target.txt", content: "created\n", mode: "create" }] },
             directory,
           );
-          await beforeLink;
+          await beforeLink.promise;
           const rewrite = module.writeFiles(
             { files: [{ path: "Target.txt", content: "rewritten\n", mode: "replace" }] },
             directory,
           );
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, 100);
-          });
-          releaseLink();
+          await delay(100);
+          released.resolve();
           await create;
 
           const outcome = await Promise.race([
@@ -5411,11 +5362,7 @@ nodeTest(
                 return `rejected: ${error.message}`;
               },
             ),
-            new Promise<string>((resolve) => {
-              setTimeout(() => {
-                resolve("timeout");
-              }, 2000);
-            }),
+            delay(2000, "timeout", { ref: false }),
           ]);
           assert.equal(outcome, "settled");
           assert.equal(await readFile(join(directory, "Target.txt"), "utf8"), "rewritten\n");
@@ -5649,11 +5596,7 @@ nodeTest(
             operation.then((result) =>
               result.details.error !== undefined ? `failed: ${result.details.error}` : "settled",
             ),
-            new Promise<string>((resolve) => {
-              setTimeout(() => {
-                resolve("timeout");
-              }, 1000);
-            }),
+            delay(1000, "timeout", { ref: false }),
           ]);
           assert.match(outcome, /^failed: .*Cannot mutate dangling symbolic link/);
           assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
@@ -5754,11 +5697,7 @@ nodeTest(
             operation.then((result) =>
               result.details.error !== undefined ? `failed: ${result.details.error}` : "settled",
             ),
-            new Promise<string>((resolve) => {
-              setTimeout(() => {
-                resolve("timeout");
-              }, 1000);
-            }),
+            delay(1000, "timeout", { ref: false }),
           ]);
           assert.match(outcome, /^failed: .*Cannot mutate dangling symbolic link/);
           assert.equal(injected, false, "the operation must reject before Pi acquires a queue key");
@@ -5777,10 +5716,10 @@ nodeTest("local create locks stay stable as missing ancestors are published", as
     const shiftedRoot = join(root, "y");
     await writeFile(join(directory, "sentinel.txt"), "old\n");
     const originalMkdir = nodeFs.promises.mkdir;
-    const rootReached = deferred();
-    const releaseRoot = deferred();
-    const shiftedReached = deferred();
-    const releaseShifted = deferred();
+    const rootReached: PromiseWithResolvers<void> = Promise.withResolvers();
+    const releaseRoot: PromiseWithResolvers<void> = Promise.withResolvers();
+    const shiftedReached: PromiseWithResolvers<void> = Promise.withResolvers();
+    const releaseShifted: PromiseWithResolvers<void> = Promise.withResolvers();
     let heldRoot = false;
     let heldShifted = false;
 
@@ -5825,9 +5764,7 @@ nodeTest("local create locks stay stable as missing ancestors are published", as
             },
             directory,
           );
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, 50);
-          });
+          await delay(50);
           releaseRoot.resolve();
           await withTimeout(first, "first create finishing");
           await withTimeout(shiftedReached.promise, "batch reaching r/y");
@@ -5841,9 +5778,7 @@ nodeTest("local create locks stay stable as missing ancestors are published", as
             .finally(() => {
               laterSettled = true;
             });
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, 50);
-          });
+          await delay(50);
           assert.equal(
             laterSettled,
             false,
@@ -5876,9 +5811,9 @@ nodeTest(
       const upperTarget = join(root, "b.txt");
       const originalMkdir = nodeFs.promises.mkdir;
       const originalRealpath = nodeFs.promises.realpath;
-      const rootReached = deferred();
-      const releaseRoot = deferred();
-      const releaseUpperDiscovery = deferred();
+      const rootReached: PromiseWithResolvers<void> = Promise.withResolvers();
+      const releaseRoot: PromiseWithResolvers<void> = Promise.withResolvers();
+      const releaseUpperDiscovery: PromiseWithResolvers<void> = Promise.withResolvers();
       let heldRoot = false;
       let heldUpperDiscovery = false;
 
@@ -5938,9 +5873,7 @@ nodeTest(
                   ? `failed: ${result.details.error}`
                   : "fulfilled",
               );
-            await new Promise<void>((resolve) => {
-              setTimeout(resolve, 50);
-            });
+            await delay(50);
             releaseRoot.resolve();
             await withTimeout(rootCreate, "root create finishing");
 
@@ -5967,8 +5900,8 @@ nodeTest(
       const target = join(root, "B.txt");
       await mkdir(root);
       const originalRealpath = nodeFs.promises.realpath;
-      const secondDiscoveryReached = deferred();
-      const releaseSecondDiscovery = deferred();
+      const secondDiscoveryReached: PromiseWithResolvers<void> = Promise.withResolvers();
+      const releaseSecondDiscovery: PromiseWithResolvers<void> = Promise.withResolvers();
       let targetCalls = 0;
 
       await withRacingEditing(

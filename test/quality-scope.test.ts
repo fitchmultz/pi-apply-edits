@@ -3,13 +3,8 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { test as nodeTest } from "node:test";
-import {
-  effectiveConfig,
-  expectDiagnostics,
-  inProbe,
-  lint,
-  record,
-} from "./quality-probe-support.ts";
+import { isRecord } from "../src/editing/contracts.ts";
+import { effectiveConfig, expectDiagnostics, inProbe, lint } from "./quality-probe-support.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const mainConfig = readFileSync(resolve(root, "tsconfig.json"), "utf8");
@@ -164,8 +159,8 @@ nodeTest(
   "resolved compiler membership includes inherited checked JavaScript outside root globs",
   async () => {
     const config: unknown = JSON.parse(mainConfig);
-    assert(record(config));
-    assert(record(config.compilerOptions));
+    assert(isRecord(config));
+    assert(isRecord(config.compilerOptions));
     await inProbe(
       {
         "base.json": JSON.stringify({
@@ -207,8 +202,8 @@ for (const downgrade of [
 ]) {
   nodeTest(`compiler inventory rejects effective ${downgrade.option} weakening`, async () => {
     const config: unknown = JSON.parse(mainConfig);
-    assert(record(config));
-    assert(record(config.compilerOptions));
+    assert(isRecord(config));
+    assert(isRecord(config.compilerOptions));
     await inProbe(
       {
         "tsconfig.json": JSON.stringify({

@@ -17,6 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { applyPatchToFiles, replaceTextInFiles, writeFiles } from "../src/apply-edits.ts";
 import { planNewFile, publishNewFile } from "../src/file-system.ts";
@@ -169,19 +170,13 @@ nodeTest(
   "public physical lock holds a native-addressed batch through callback completion",
   async (t) => {
     const cwd = await fixture(t);
-    let release!: () => void;
-    let entered!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
+    const held: PromiseWithResolvers<void> = Promise.withResolvers();
+    const started: PromiseWithResolvers<void> = Promise.withResolvers();
     const blocker = withFileMutationQueue(join(cwd, "actual", "target"), async () => {
-      entered();
-      await held;
+      started.resolve();
+      await held.promise;
     });
-    await started;
+    await started.promise;
     let completed = false;
     const batch = writeFiles(
       {
@@ -196,13 +191,11 @@ nodeTest(
       return result;
     });
     try {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 40);
-      });
+      await delay(40);
       assert.equal(completed, false);
       assert.equal(await readFile(join(cwd, "target"), "utf8"), "lexical\n");
     } finally {
-      release();
+      held.resolve();
     }
     await blocker;
     const result = await batch;
