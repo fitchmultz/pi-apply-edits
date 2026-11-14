@@ -41,6 +41,12 @@ export function isCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
+export function isMissingPathError(
+  error: unknown,
+): error is { readonly code: "ENOENT" | "ENOTDIR" } {
+  return isCode(error, "ENOENT") || isCode(error, "ENOTDIR");
+}
+
 /** Link and rename refusals that a filesystem or platform reports for an unsupported operation. */
 export function fallbackAllowed(error: unknown): boolean {
   return (

@@ -1,5 +1,6 @@
 import { lstat, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
+import { isCode, isMissingPathError } from "./fs/errors.ts";
 
 export function operationPath(input: string, cwd = process.cwd()): string {
   const directory = isAbsolute(cwd) ? cwd : operationPath(cwd);
@@ -11,10 +12,6 @@ export async function nativeRealpath(path: string): Promise<string> {
   // macOS realpath alone accepts file/ and file/..; stat enforces native traversal.
   await stat(path);
   return realpath(path);
-}
-
-function hasCode(error: unknown, code: string): boolean {
-  return error instanceof Error && "code" in error && error.code === code;
 }
 
 async function existingDirectory(path: string): Promise<string> {
@@ -40,7 +37,7 @@ class DirectoryDiscovery {
     try {
       return await existingDirectory(path);
     } catch (error) {
-      if (!hasCode(error, "ENOENT")) {
+      if (!isCode(error, "ENOENT")) {
         throw error;
       }
       await assertNotDanglingSymbolicLink(path);
@@ -53,7 +50,7 @@ class DirectoryDiscovery {
     try {
       return await existingDirectory(candidate);
     } catch (error) {
-      if (!hasCode(error, "ENOENT")) {
+      if (!isCode(error, "ENOENT")) {
         throw error;
       }
       await assertNotDanglingSymbolicLink(candidate);
@@ -86,7 +83,7 @@ export async function prospectiveTarget(path: string): Promise<string> {
   try {
     canonicalParent = await realpath(parent);
   } catch (error) {
-    if (!hasCode(error, "ENOENT") && !hasCode(error, "ENOTDIR")) {
+    if (!isMissingPathError(error)) {
       throw error;
     }
     await assertNotDanglingSymbolicLink(parent);
@@ -96,7 +93,7 @@ export async function prospectiveTarget(path: string): Promise<string> {
   try {
     return await realpath(candidate);
   } catch (error) {
-    if (!hasCode(error, "ENOENT") && !hasCode(error, "ENOTDIR")) {
+    if (!isMissingPathError(error)) {
       throw error;
     }
     await assertNotDanglingSymbolicLink(candidate);
@@ -106,7 +103,7 @@ export async function prospectiveTarget(path: string): Promise<string> {
 
 export async function assertNotDanglingSymbolicLink(path: string): Promise<void> {
   const entry = await lstat(path).catch((failure: unknown) => {
-    if (!hasCode(failure, "ENOENT") && !hasCode(failure, "ENOTDIR")) {
+    if (!isMissingPathError(failure)) {
       throw failure;
     }
   });

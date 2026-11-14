@@ -8,6 +8,7 @@ export interface TextLine {
   readonly number: number;
 }
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+const UTF8_ENCODER = new TextEncoder();
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 export function splitLines(text: string): TextLine[] {
   const lines: TextLine[] = [];
@@ -205,21 +206,8 @@ export function truncateUtf8(
   value: string,
   maxBytes: number,
 ): { readonly text: string; readonly truncated: boolean } {
-  // A UTF-8 prefix cannot contain more UTF-16 units than its byte budget.
-  const bytes = Buffer.from(value.slice(0, maxBytes + 1));
-  if (bytes.length <= maxBytes) {
-    return { text: value, truncated: false };
-  }
-  let end = maxBytes;
-  while (end > 0) {
-    try {
-      return {
-        text: new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end)),
-        truncated: true,
-      };
-    } catch {
-      end--;
-    }
-  }
-  return { text: "", truncated: true };
+  const { read } = UTF8_ENCODER.encodeInto(value, new Uint8Array(Math.max(0, maxBytes)));
+  return read === value.length
+    ? { text: value, truncated: false }
+    : { text: value.slice(0, read), truncated: true };
 }

@@ -1,12 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { checkSuppressions, checkExceptionInventory } from "./suppression-policy.ts";
 import { checkLanguageScope, checkSourceProfiles } from "./language-policy.ts";
 import { compilerProjects } from "./compiler-projects.ts";
 import { checkQualityConfig } from "./quality-config.ts";
 
 const help = `Usage: node scripts/check-policy.ts [--help]\n\nAudit maintained source for approved suppressions and effective compiler/language scope.\nExample: npm run policy:check\nExits 1 for violations; 0 when the policy is satisfied.\n`;
-if (process.argv.includes("--help") || process.argv.includes("-h")) {
+const { values } = parseArgs({ options: { help: { type: "boolean", short: "h" } } });
+if (values.help === true) {
   process.stdout.write(help);
 } else {
   const files = execFileSync(

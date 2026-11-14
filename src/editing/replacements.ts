@@ -1,14 +1,14 @@
 import { MAX_EDIT_EXPANSION_CHARS, type Replacement } from "./contracts.ts";
 
 export function hasOverlaps(replacements: readonly Replacement[]): boolean {
-  const ordered = [...replacements].sort((left, right) => left.matchStart - right.matchStart);
+  const ordered = replacements.toSorted((left, right) => left.matchStart - right.matchStart);
   return ordered.some(
     (item, index) => index > 0 && item.matchStart < (ordered[index - 1]?.matchEnd ?? 0),
   );
 }
 /** Selects matches left to right, skipping any that overlap an earlier selection, like `replaceAll`. */
 export function nonOverlapping(replacements: readonly Replacement[]): Replacement[] {
-  const ordered = [...replacements].sort((left, right) => left.matchStart - right.matchStart);
+  const ordered = replacements.toSorted((left, right) => left.matchStart - right.matchStart);
   const selected: Replacement[] = [];
   let end = 0;
   for (const item of ordered) {
@@ -29,7 +29,7 @@ export function applyReplacements(
   replacements: readonly Replacement[],
   maxResultLength: number,
 ): string {
-  const ordered = [...replacements].sort((left, right) => left.start - right.start);
+  const ordered = replacements.toSorted((left, right) => left.start - right.start);
   const projectedLength = ordered.reduce(
     (length, replacement) =>
       length + replacement.text.length - (replacement.end - replacement.start),
