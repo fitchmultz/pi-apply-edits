@@ -9,6 +9,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as nodeTest } from "node:test";
+import { setImmediate } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { syncBuiltinESMExports } from "node:module";
 import { promisify } from "node:util";
@@ -198,9 +199,7 @@ nodeTest(
     assert.equal(helpers.length, 1);
 
     t.mock.timers.tick(10_000);
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
+    await setImmediate();
     assert.equal(first.exitCode, null);
 
     t.mock.timers.tick(5_000);
