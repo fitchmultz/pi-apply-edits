@@ -95,7 +95,10 @@ function uniqueLinesAbove(matches: AmbiguousMatches, candidate: number): string 
     }
   }
   const first = candidate - shared - 1;
-  if (shared === LINES_ABOVE || first < matches.start) {
+  if (first < matches.start) {
+    return `Line ${candidate + 1}: nothing unique above it inside the search scope (original source lines ${matches.start + 1}-${matches.source.length}).`;
+  }
+  if (shared === LINES_ABOVE) {
     return `Line ${candidate + 1}: nothing unique within ${LINES_ABOVE} lines above it.`;
   }
   const range = shared === 0 ? `line ${candidate}` : `lines ${first + 1}-${candidate}`;

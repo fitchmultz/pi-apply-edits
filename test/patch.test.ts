@@ -426,7 +426,7 @@ for (const fixture of [
     preview: true,
     expected: [
       /Ambiguous context in chunk 2: matches at lines 2, 4\. /,
-      /\nLine 2: nothing unique within 8 lines above it\.\nAbove line 4 \(line 3\):\nmid\n/,
+      /\nLine 2: nothing unique above it inside the search scope \(original source lines 2-4\)\.\nAbove line 4 \(line 3\):\nmid\n/,
     ],
     forbidden: [/head/],
   },
@@ -437,7 +437,7 @@ for (const fixture of [
     body: "@@\n-old\n+new",
     preview: false,
     expected: [
-      /\nLine 2: nothing unique within 8 lines above it\.\nAbove line 4 \(lines 2-3\):\n old\n a \n/,
+      /\nLine 2: nothing unique above it inside the search scope \(original source lines 1-4\)\.\nAbove line 4 \(lines 2-3\):\n old\n a \n/,
     ],
     forbidden: [/Above line 2/],
   },
