@@ -392,7 +392,7 @@ for (const fixture of [
     forbidden: [/original source lines 2-1/],
   },
   {
-    // Line 12 shares its three lines above with the unlisted match at line 16.
+    // Line 12 shares four lines above with the unlisted match at line 16.
     name: "ambiguous context lists four matches with the fewest lines that select each",
     original: "a\nx\nb\nc\nx\nd\nc\nx\np\nq\nr\nx\np\nq\nr\nx\ne\nx\n",
     body: "@@\n-x\n+y",
@@ -402,9 +402,22 @@ for (const fixture of [
       /\nAbove line 2 \(line 1\):\na\n/,
       /\nAbove line 5 \(lines 3-4\):\nb\nc\n/,
       /\nAbove line 8 \(lines 6-7\):\nd\nc\n/,
-      /\nLine 12: nothing unique directly above it\.\nAdd the lines shown/,
+      /\nAbove line 12 \(lines 7-11\):\nc\nx\np\nq\nr\n/,
+      /\nAdd the lines shown/,
     ],
     forbidden: [/line 16/i, /line 18/i],
+  },
+  {
+    // Two repeats share nine identical lines above their matches: no eight-line window separates them.
+    name: "ambiguous context that shares the whole window reports the limit",
+    original: "a\nb\nc\nd\ne\nf\ng\nh\ni\nx\na\nb\nc\nd\ne\nf\ng\nh\ni\nx\n",
+    body: "@@\n-x\n+y",
+    preview: false,
+    expected: [
+      /^files\[0\]: Ambiguous context in chunk 1: matches at lines 10, 20\. /,
+      /\nLine 10: nothing unique within 8 lines above it\.\nLine 20: nothing unique within 8 lines above it\.\n/,
+    ],
+    forbidden: [/Above line/, /line 3/, /line 13/],
   },
   {
     name: "ambiguous context after an earlier chunk offers no consumed line",
@@ -413,7 +426,7 @@ for (const fixture of [
     preview: true,
     expected: [
       /Ambiguous context in chunk 2: matches at lines 2, 4\. /,
-      /\nLine 2: nothing unique directly above it\.\nAbove line 4 \(line 3\):\nmid\n/,
+      /\nLine 2: nothing unique within 8 lines above it\.\nAbove line 4 \(line 3\):\nmid\n/,
     ],
     forbidden: [/head/],
   },
@@ -424,7 +437,7 @@ for (const fixture of [
     body: "@@\n-old\n+new",
     preview: false,
     expected: [
-      /\nLine 2: nothing unique directly above it\.\nAbove line 4 \(lines 2-3\):\n old\n a \n/,
+      /\nLine 2: nothing unique within 8 lines above it\.\nAbove line 4 \(lines 2-3\):\n old\n a \n/,
     ],
     forbidden: [/Above line 2/],
   },
