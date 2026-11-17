@@ -108,10 +108,10 @@ use bare `@@` or `@@ literal source line`. A numeric-looking literal source anch
 can still match normally.
 
 Ambiguous-context errors list the first four matching lines and count the rest.
-For each listed match they print the fewest lines directly above it, up to three,
+For each listed match they print the fewest lines directly above it, up to eight,
 that no other match shares. Adding those lines as context at the start of the
 chunk selects that match; more context below the match works too. A match gets no
-lines when its nearest three are shared with another match or lie above the
+lines when its nearest eight are shared with another match or lie above the
 preceding chunk or anchor. A named anchor only removes the matches above it:
 context repeated below the anchor is still ambiguous.
 

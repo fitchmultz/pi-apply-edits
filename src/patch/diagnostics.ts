@@ -51,9 +51,10 @@ function numericHeaderHint(pattern: readonly string[], scope: DiagnosticScope): 
 }
 
 // Measured on 278 real ambiguous refusals: 80% match at most four places, and in 93% the
-// first two matches differ within three lines above them.
+// first two matches differ within three lines above them. Repeated fixtures can share more,
+// so the hint reaches as far as one excerpt can show.
 const LISTED_MATCHES = 4;
-const LINES_ABOVE = 3;
+const LINES_ABOVE = 8;
 
 interface AmbiguousMatches {
   readonly source: readonly string[];
@@ -94,8 +95,11 @@ function uniqueLinesAbove(matches: AmbiguousMatches, candidate: number): string 
     }
   }
   const first = candidate - shared - 1;
-  if (shared === LINES_ABOVE || first < matches.start) {
-    return `Line ${candidate + 1}: nothing unique directly above it.`;
+  if (first < matches.start) {
+    return `Line ${candidate + 1}: nothing unique above it inside the search scope (original source lines ${matches.start + 1}-${matches.source.length}).`;
+  }
+  if (shared === LINES_ABOVE) {
+    return `Line ${candidate + 1}: nothing unique within ${LINES_ABOVE} lines above it.`;
   }
   const range = shared === 0 ? `line ${candidate}` : `lines ${first + 1}-${candidate}`;
   return `Above line ${candidate + 1} (${range}):\n${boundedExcerpt(matches.source, first, candidate)}`;
