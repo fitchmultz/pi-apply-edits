@@ -164,7 +164,10 @@ and strict synchronous void returns. Accurate readonly contracts, direct
 parameter-mutation checks, private readonly members, unsafe-flow checks,
 floating work, and async-callback checks remain active.
 
-Stock native cycle detection is qualified for the static and type-only cases
-above. The custom patched dynamic and external cycle detection is retired and is
-not claimed as stock behavior. No replacement semantic engine is introduced.
-Appendix B records QX-001 through QX-004 and their exact remaining limits.
+Stock `import/no-cycle` was qualified at adoption time for static and type-only
+cycles; the synthetic negative probes were later retired by owner decision, and
+ongoing enforcement relies on configuration parity (`npm run policy:check`) plus
+live checks (`npm run lint`). The custom patched dynamic and external cycle
+detection is retired and is not claimed as stock behavior. No replacement
+semantic engine is introduced. Appendix B records QX-001 through QX-004 and their
+exact remaining limits.
