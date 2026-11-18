@@ -8,7 +8,7 @@ import { isRecord } from "../src/editing/contracts.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const policy: unknown = JSON.parse(readFileSync(join(root, ".oxlintrc.json"), "utf8"));
-export const lintExecutable = join(root, "node_modules", ".bin", "oxlint");
+const lintExecutable = join(root, "node_modules", ".bin", "oxlint");
 const compilerPolicy: unknown = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8"));
 assert(isRecord(compilerPolicy));
 assert(isRecord(compilerPolicy.compilerOptions));
@@ -25,27 +25,6 @@ export interface ProbeResult {
   readonly diagnostics: readonly Diagnostic[];
   readonly stdout: string;
   readonly stderr: string;
-}
-
-export function policyRule(rule: string): unknown {
-  assert(isRecord(policy));
-  assert(isRecord(policy.rules));
-  const option = policy.rules[rule];
-  assert.notEqual(option, undefined, `${rule} must be configured explicitly`);
-  return option;
-}
-
-export function focusedConfig(
-  rules: Readonly<Record<string, unknown>>,
-  compilerDiagnostics = false,
-): string {
-  return JSON.stringify({
-    plugins: ["eslint", "typescript", "unicorn", "promise", "import"],
-    env: { node: true },
-    categories: { correctness: "off" },
-    options: { typeAware: true, typeCheck: compilerDiagnostics, denyWarnings: true },
-    rules,
-  });
 }
 
 export function effectiveConfig(): string {

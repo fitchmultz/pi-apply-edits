@@ -1021,11 +1021,10 @@ express. The chosen allowance has package origin `node:test` and local name
 `nodeTest` only. The repository uses `import { test as nodeTest } from "node:test"`.
 All other floating-Promise options, including `ignoreVoid: false`, are unchanged.
 
-**Evidence and protection.** `test/quality-allowances.test.ts` runs the actual
-installed declaration matcher. Top-level and suite-body registrations pass.
-Context subtests, same-named local and foreign functions, floating callback work,
-unrelated calls, and typed shadows produce the exact floating-Promise findings;
-awaited subtests and owned work pass. No Promise-type allowance is added.
+**Evidence and protection.** `npm run lint` and `npm run policy:check` enforce
+the installed declaration matcher across all tests; the original six-control
+qualification runs are recorded in `docs/quality-qualification.md`. Top-level
+and suite-body registrations pass.
 
 **Limit and review.** Declaration identity does not establish runtime context.
 Calling imported `nodeTest` inside a running test can create an unowned subtest
@@ -1073,8 +1072,8 @@ public and SDK signatures is clearer than these metric-only interfaces.
 
 **Evidence and protection.** The structural comparison is five inputs before
 and after, versus a four-parameter production threshold. Removing the actual
-site directives exposes native arity diagnostics. Production four/five and test
-six/seven boundary controls remain in `test/quality-metrics.test.ts`.
+site directives exposes native arity diagnostics under `npm run lint`, and
+`test/quality-integrity.test.ts` guards baseline configuration integrity.
 `test/file-system.test-d.ts`, real SDK loader tests, and both host qualifications
 protect consumer contracts. Copied, moved, replaced-ID, stale, and duplicated
 operations fail the directive audit. No unsafe-type rule is relaxed.

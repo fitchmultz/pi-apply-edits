@@ -673,3 +673,110 @@ nodeTest("a collapsed card has no expand hint when expanding shows nothing more"
   assert.equal(collapsed, "✗ files must be an array");
   assert.equal(resultCard(replace, refusedCall.result, { expanded: true, theme, cwd }), collapsed);
 });
+
+nodeTest(
+  "renderers sanitize control characters and survive streaming or partial details",
+  async (t) => {
+    const { tools, session } = await harness(t);
+    const apply = tools.get("apply_patch");
+    const replace = tools.get("replace_text");
+    const write = tools.get("write_files");
+    assert(apply && replace && write);
+    assert(apply.renderCall && replace.renderCall && write.renderCall && replace.renderResult);
+    initTheme("dark", false);
+    const { theme } = session.extensionRunner.getUIContext();
+    const cwd = session.extensionRunner.createContext().cwd;
+    const streamingContext = { ...renderContext(cwd, false, false), argsComplete: false };
+
+    const partialHeader = replace.renderCall(
+      JSON.parse('{"files":[null]}'),
+      theme,
+      streamingContext,
+    );
+    assert.equal(
+      stripTerminalSequences(partialHeader.render(120).join("")).trim(),
+      "replace_text …",
+    );
+    assert(!partialHeader.render(120).join("").includes(theme.fg("error", "…")));
+
+    const patchStreaming = apply.renderCall(
+      { input: "*** Begin Patch\n*** Update File: partial" },
+      theme,
+      streamingContext,
+    );
+    assert.equal(
+      stripTerminalSequences(patchStreaming.render(120).join("")).trim(),
+      "apply_patch patch",
+    );
+    assert(!patchStreaming.render(120).join("").includes(theme.fg("error", "patch")));
+
+    const dirtyPatchPath = "dir/\x1b[31mevil\x07\tfile.txt";
+    const dirtyPath = "dir/\x1b[31mevil\x07\rfile.txt";
+    const dirtyPatchHeader = apply.renderCall(
+      { input: `*** Begin Patch\n*** Add File: ${dirtyPatchPath}\n+hi\n*** End Patch` },
+      theme,
+      renderContext(cwd, false, false),
+    );
+    const dirtyWriteHeader = write.renderCall(
+      { files: [{ path: dirtyPath, content: "hi", mode: "create" }] },
+      theme,
+      renderContext(cwd, false, false),
+    );
+    for (const component of [dirtyPatchHeader, dirtyWriteHeader]) {
+      const rendered = stripTerminalSequences(component.render(120).join(""));
+      assert(!rendered.includes("\x1b"), rendered);
+      assert(!rendered.includes("\x07"), rendered);
+      assert(!rendered.includes("\t"), rendered);
+      assert(!rendered.includes("\r"), rendered);
+      assert(rendered.includes("dir/ [31mevil file.txt"), rendered);
+    }
+
+    const partialResult = replace.renderResult(
+      { content: [{ type: "text", text: "Updating \x1b[31mfile\x07…" }], details: undefined },
+      { expanded: false, isPartial: true },
+      theme,
+      streamingContext,
+    );
+    const partialRendered = stripTerminalSequences(partialResult.render(120).join(""));
+    assert(!partialRendered.includes("\x1b"), partialRendered);
+    assert(!partialRendered.includes("\x07"), partialRendered);
+    assert(partialRendered.includes("Updating  [31mfile …"), partialRendered);
+
+    const partialFailure = resultCard(
+      replace,
+      { content: [{ type: "text", text: "Failed without files" }], details: { error: "boom" } },
+      { expanded: true, theme, cwd },
+    );
+    assert.equal(partialFailure, "✗ Failed without files");
+
+    const previewPartial = resultCard(
+      replace,
+      { content: [{ type: "text", text: "Preview only" }], details: { preview: true } },
+      { expanded: false, theme, cwd },
+    );
+    assert.equal(previewPartial, "◇ Preview only");
+
+    const warningRendered = resultCard(
+      replace,
+      {
+        content: [{ type: "text", text: "Updated \x1b[31ma.txt\x07\nWarnings:\n- note" }],
+        details: {
+          files: [
+            null,
+            {
+              path: dirtyPath,
+              warnings: ["note"],
+              diff: "@@\n+\x1b[31mtext\x07",
+            },
+          ],
+        },
+      },
+      { expanded: true, theme, cwd },
+    );
+    assert(warningRendered.startsWith("⚠ Updated  [31ma.txt"), warningRendered);
+    assert(warningRendered.includes("dir/ [31mevil file.txt (edit; unknown)"), warningRendered);
+    assert(warningRendered.includes("+ [31mtext"), warningRendered);
+    assert(!warningRendered.includes("\x1b"), warningRendered);
+    assert(!warningRendered.includes("\x07"), warningRendered);
+  },
+);

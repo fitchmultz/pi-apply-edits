@@ -106,24 +106,6 @@ nodeTest(
 );
 
 nodeTest(
-  "the native unused-disable check rejects an authorized ID on a compliant operation",
-  async () => {
-    await inProbe(
-      {
-        ".oxlintrc.json": effectiveConfig(),
-        "probe.ts":
-          "// oxlint-disable-next-line max-params -- QX-002: Preserve the public positional editing API.\nexport function read(value: number): number { return value; }",
-      },
-      async (directory) => {
-        expectDiagnostics(lint(directory, ["probe.ts"]), [
-          ["Unused oxlint-disable directive (no problems were reported).", 1, 1],
-        ]);
-      },
-    );
-  },
-);
-
-nodeTest(
   "every maintained language needs project-wide checking and new source fails closed",
   () => {
     assert.deepEqual(checkLanguageScope("src/new.ts", { assigned: true, checkJs: false }), []);

@@ -14,13 +14,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PI_AUTOMATION_REF: 9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
+  PI_AUTOMATION_REF: 3e744f52412c3669bd781ed5ea3e21567798352e # main
 
 jobs:
   resolve:
-    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
+    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@3e744f52412c3669bd781ed5ea3e21567798352e # main
     with:
-      automation-ref: 9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
+      automation-ref: 3e744f52412c3669bd781ed5ea3e21567798352e # main
 
   official:
     needs: resolve
@@ -99,6 +99,12 @@ jobs:
           ref: ${{ needs.resolve.outputs.fork-ref }}
           path: fork
           persist-credentials: false
+      - name: Cache built fork package
+        id: fork-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fork-package
+          key: fork-package-${{ runner.os }}-${{ runner.arch }}-${{ needs.resolve.outputs.fork-ref }}-${{ env.PI_AUTOMATION_REF }}-${{ hashFiles('fork/package-lock.json') }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -112,6 +118,7 @@ jobs:
           sudo apt-get install -y attr acl libcap2-bin
           command -v cc
       - name: Build the checked-out fork
+        if: steps.fork-cache.outputs.cache-hit != 'true'
         working-directory: fork
         env:
           FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
