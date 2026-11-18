@@ -99,9 +99,11 @@ compiler expectations belong only in dedicated type tests.
 Published native checks provide their documented guarantees, not universal
 immutability or effect analysis. The readonly-parameter rule is off under the
 standard, while readonly views, private-member checks, and direct parameter
-mutation checks remain. Stock `import/no-cycle` is qualified for the static and
-type-only cycles exercised by the probes. The retired custom dynamic and external
-cycle detection is not claimed as stock behavior.
+mutation checks remain. Stock `import/no-cycle` was qualified at adoption time
+for static and type-only cycles; those synthetic probes were later retired by
+owner decision, and ongoing coverage rests on configuration parity (`npm run
+policy:check`) plus `npm run lint` over maintained sources. The retired custom
+dynamic and external cycle detection is not claimed as stock behavior.
 
 The registration allowance matches declaration origin and local import name,
 not the runtime calling context. Calling imported `nodeTest` inside a running

@@ -1,6 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { replaceControlCharacters, Text } from "@earendil-works/pi-tui";
 import { Type, type Static, type TSchema } from "typebox";
 import {
   applyPatchToFiles,
@@ -176,18 +176,28 @@ function createPatchTool(getCwd: (() => string) | undefined): PatchTool {
         ),
       );
     },
-    renderCall(args, theme) {
+    renderCall(args, theme, context) {
       let paths = "patch";
-      try {
-        paths = parsePatch(args.input)
-          .operations.map((operation) => operation.path)
-          .join(", ");
-      } catch {
-        // Streaming input can be incomplete.
+      let parsed = false;
+      const rawArgs: unknown = args;
+      if (isRecord(rawArgs) && typeof rawArgs.input === "string") {
+        try {
+          const operations = parsePatch(rawArgs.input).operations;
+          if (operations.length > 0) {
+            paths = operations
+              .map((operation) => replaceControlCharacters(operation.path))
+              .join(", ");
+            parsed = true;
+          }
+        } catch {
+          // Streaming input can be incomplete.
+        }
       }
+      const previewPrefix = isRecord(rawArgs) && rawArgs.preview === true ? "preview; " : "";
+      const color = parsed || context.argsComplete ? "accent" : "muted";
       return new Text(
         theme.fg("toolTitle", theme.bold("apply_patch ")) +
-          theme.fg("accent", `${args.preview === true ? "preview; " : ""}${paths}`),
+          theme.fg(color, `${previewPrefix}${paths}`),
         0,
         0,
       );
@@ -217,13 +227,8 @@ function createReplaceTool(getCwd: (() => string) | undefined): ReplaceTool {
         }),
       );
     },
-    renderCall(args, theme) {
-      return new Text(
-        theme.fg("toolTitle", theme.bold("replace_text ")) +
-          theme.fg("accent", structuredCallLabel(args)),
-        0,
-        0,
-      );
+    renderCall(args, theme, context) {
+      return renderStructuredCall("replace_text", args, theme, context);
     },
   };
 }
@@ -250,13 +255,8 @@ function createWriteTool(getCwd: (() => string) | undefined): WriteTool {
         }),
       );
     },
-    renderCall(args, theme) {
-      return new Text(
-        theme.fg("toolTitle", theme.bold("write_files ")) +
-          theme.fg("accent", structuredCallLabel(args)),
-        0,
-        0,
-      );
+    renderCall(args, theme, context) {
+      return renderStructuredCall("write_files", args, theme, context);
     },
   };
 }
@@ -332,13 +332,44 @@ function optionalType(
  * Pi draws the header from the arguments as the model sent them, including a call that
  * `prepareArguments` then refuses: `files` can be missing, incomplete, or the array as a JSON string.
  */
-function structuredCallLabel(args: {
-  readonly files?: { readonly path?: string }[] | string;
-  readonly preview?: boolean;
-}): string {
+function structuredCallLabel(args: unknown): {
+  readonly label: string;
+  readonly hasPaths: boolean;
+} {
+  if (!isRecord(args)) {
+    return { label: "", hasPaths: false };
+  }
   const files = Array.isArray(args.files) ? args.files : [];
-  return `${args.preview === true ? "preview; " : ""}${files
+  const previewPrefix = args.preview === true ? "preview; " : "";
+  if (files.length === 0) {
+    return { label: previewPrefix, hasPaths: false };
+  }
+  let hasPaths = false;
+  const paths = files
     .slice(0, 3)
-    .map((file) => file.path ?? "…")
-    .join(", ")}${files.length > 3 ? `, … ${files.length - 3} more` : ""}`;
+    .map((file) => {
+      if (isRecord(file) && typeof file.path === "string" && file.path.length > 0) {
+        hasPaths = true;
+        return replaceControlCharacters(file.path);
+      }
+      return "…";
+    })
+    .join(", ");
+  const overflow = files.length > 3 ? `, … ${files.length - 3} more` : "";
+  return { label: `${previewPrefix}${paths}${overflow}`, hasPaths };
+}
+
+function renderStructuredCall(
+  toolName: string,
+  args: unknown,
+  theme: Theme,
+  context: { readonly argsComplete: boolean },
+): Text {
+  const title = theme.fg("toolTitle", theme.bold(`${toolName} `));
+  const { label, hasPaths } = structuredCallLabel(args);
+  if (!hasPaths) {
+    const fallback = context.argsComplete || label.endsWith("…") ? label : `${label}…`;
+    return new Text(fallback.length > 0 ? `${title}${theme.fg("muted", fallback)}` : title, 0, 0);
+  }
+  return new Text(`${title}${theme.fg("accent", label)}`, 0, 0);
 }

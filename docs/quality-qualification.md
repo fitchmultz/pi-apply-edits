@@ -67,26 +67,21 @@ compiler, the JXA compiler and declarations, all Node tests, and pack inspection
 The source inventory includes existing tracked and untracked maintained files.
 A physically deleted tracked file is not treated as existing source.
 
-| Contract                                                                                                                           | Normal regression owner                                |
-| ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Actual composed production, test, and JXA scopes                                                                                   | `test/quality-rules.test.ts`                           |
-| Native Node plugin and static or type-only cycles                                                                                  | `test/quality-rules.test.ts`                           |
-| Meaningful valid and invalid rule options, unsafe propagation, async ownership, unknown forwarding, and invalid rejections         | `test/quality-rules.test.ts`                           |
-| All six registration controls and typed shadows                                                                                    | `test/quality-allowances.test.ts`                      |
-| Both semantic and canonical project contexts, handwritten declarations, strict minima, and imported membership                     | `test/quality-scope.test.ts`                           |
-| Six production boundaries, IIFEs, long tests, and retained test limits                                                             | `test/quality-metrics.test.ts`                         |
-| Wrong file or operation, equal-count unauthorized replacement, duplication, stale records, unused directives, and literal examples | `test/quality-policy.test.ts`                          |
-| Assertion ownership and exhaustive exception eligibility                                                                           | `test/quality-flow.test.ts`                            |
-| Representative explicit, category, semantic, structural, composition, formatter, and command downgrades                            | `test/quality-integrity.test.ts`                       |
-| Public mutable and readonly consumer contracts, including explicit undefined                                                       | `test/file-system.test-d.ts` and canonical compilation |
-| Real accepted and rejected ACL worker requests and CLI behavior                                                                    | `test/macos-acl.test.ts`                               |
-| Real filesystem, cancellation, metadata, queue, loader, journal, and provider transport behavior                                   | The remaining runtime and filesystem suites            |
+| Contract                                                                                                                                               | Normal regression owner                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| Stock lint rules, semantic cycles, allowances, and structural limits (configuration parity + real source execution; synthetic negative probes retired) | `npm run lint` and `npm run policy:check`                  |
+| Compiler strict minima and inherited checked-JS membership                                                                                             | `test/quality-scope.test.ts`, `typecheck`, `typecheck:jxa` |
+| Wrong file or operation, equal-count unauthorized replacement, duplication, stale records, unused directives, and literal examples                     | `test/quality-policy.test.ts`                              |
+| Assertion ownership and exhaustive exception eligibility                                                                                               | `test/quality-flow.test.ts`                                |
+| Representative explicit, category, semantic, structural, composition, formatter, and command downgrades                                                | `test/quality-integrity.test.ts`                           |
+| Public mutable and readonly consumer contracts, including explicit undefined                                                                           | `test/file-system.test-d.ts` and canonical compilation     |
+| Real accepted and rejected ACL worker requests and CLI behavior                                                                                        | `test/macos-acl.test.ts`                                   |
+| Real filesystem, cancellation, metadata, queue, loader, journal, and provider transport behavior                                                       | The remaining runtime and filesystem suites                |
 
-The composed category control uses installed metadata, not a guessed default.
-`eslint/no-new` is suspicious, default-disabled, and absent from the explicit
-rule list. Discarding a newly constructed Error also exposes the category-enabled
-`oxc/missing-throw` diagnostic. The tests assert both identities. Test scope also
-retains the explicit floating-Promise and configured assertion findings.
+Effective rule and compiler configuration parity is enforced by `npm run policy:check`, and the
+configured rules (`eslint/no-new`, `oxc/missing-throw`, floating Promises, and allowances) are
+executed against maintained sources by `npm run lint`, `typecheck`, and `typecheck:jxa`. Synthetic
+negative compiler/linter probes were retired by owner decision.
 
 ## macOS bridge evidence
 
@@ -169,7 +164,10 @@ and strict synchronous void returns. Accurate readonly contracts, direct
 parameter-mutation checks, private readonly members, unsafe-flow checks,
 floating work, and async-callback checks remain active.
 
-Stock native cycle detection is qualified for the static and type-only cases
-above. The custom patched dynamic and external cycle detection is retired and is
-not claimed as stock behavior. No replacement semantic engine is introduced.
-Appendix B records QX-001 through QX-004 and their exact remaining limits.
+Stock `import/no-cycle` was qualified at adoption time for static and type-only
+cycles; the synthetic negative probes were later retired by owner decision, and
+ongoing enforcement relies on configuration parity (`npm run policy:check`) plus
+live checks (`npm run lint`). The custom patched dynamic and external cycle
+detection is retired and is not claimed as stock behavior. No replacement
+semantic engine is introduced. Appendix B records QX-001 through QX-004 and their
+exact remaining limits.

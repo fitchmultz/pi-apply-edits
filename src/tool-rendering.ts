@@ -1,7 +1,8 @@
 import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { replaceControlCharacters, Text } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import type { ApplyEditsBatchDetails } from "./apply-edits.ts";
+import { isRecord } from "./editing/contracts.ts";
 
 /**
  * `details` as Pi hands it to the result renderer. Only a result returned by `execute` carries a
@@ -11,17 +12,46 @@ import type { ApplyEditsBatchDetails } from "./apply-edits.ts";
 type RenderedDetails = ApplyEditsBatchDetails | { readonly files?: undefined } | undefined;
 
 /** What a card shows of a result. A result that Pi built has no file outcomes. */
-type CardReceipt = Readonly<Pick<ApplyEditsBatchDetails, "files" | "preview" | "error">>;
+interface RenderedFile {
+  readonly path: string;
+  readonly moveTo: string | undefined;
+  readonly operation: string;
+  readonly status: string;
+  readonly diff: string;
+  readonly preview: true | undefined;
+  readonly hasWarnings: boolean;
+}
 
-type RenderedFile = Readonly<
-  Pick<
-    ApplyEditsBatchDetails["files"][number],
-    "path" | "moveTo" | "operation" | "status" | "diff" | "preview"
-  >
->;
+interface CardReceipt {
+  readonly files: readonly RenderedFile[];
+  readonly preview: true | undefined;
+  readonly error: string | undefined;
+}
 
-function cardReceipt(details: RenderedDetails): CardReceipt {
-  return details?.files === undefined ? { files: [] } : details;
+function normalizeRenderedFile(file: Readonly<Record<string, unknown>>): RenderedFile {
+  return {
+    path: typeof file.path === "string" ? file.path : "unknown path",
+    moveTo: typeof file.moveTo === "string" ? file.moveTo : undefined,
+    operation: typeof file.operation === "string" ? file.operation : "edit",
+    status: typeof file.status === "string" ? file.status : "unknown",
+    diff: typeof file.diff === "string" ? file.diff : "",
+    preview: file.preview === true ? true : undefined,
+    hasWarnings: Array.isArray(file.warnings) && file.warnings.length > 0,
+  };
+}
+
+function cardReceipt(details: unknown): CardReceipt {
+  if (!isRecord(details)) {
+    return { files: [], preview: undefined, error: undefined };
+  }
+  const files = Array.isArray(details.files)
+    ? details.files.filter(isRecord).map(normalizeRenderedFile)
+    : [];
+  return {
+    files,
+    preview: details.preview === true ? true : undefined,
+    error: typeof details.error === "string" ? details.error : undefined,
+  };
 }
 
 function outcomeStyle(
@@ -34,7 +64,7 @@ function outcomeStyle(
   if (isError || receipt.error !== undefined) {
     return { color: "error", symbol: "✗" };
   }
-  if (receipt.files.some((file) => file.warnings.length > 0)) {
+  if (receipt.files.some((file) => file.hasWarnings)) {
     return { color: "warning", symbol: "⚠" };
   }
   if (receipt.preview === true) {
@@ -46,7 +76,7 @@ function outcomeStyle(
 function renderDiff(diff: string, theme: Theme): string {
   let inHunk = false;
   const lines: string[] = [];
-  for (const line of diff.replace(/\n$/, "").split("\n")) {
+  for (const line of diff.replace(/\r?\n$/, "").split(/\r?\n/)) {
     if (line.length === 0) {
       continue;
     }
@@ -59,7 +89,7 @@ function renderDiff(diff: string, theme: Theme): string {
     } else if (inHunk && line.startsWith("-")) {
       color = "toolDiffRemoved";
     }
-    lines.push(theme.fg(color, line));
+    lines.push(theme.fg(color, replaceControlCharacters(line.replaceAll("\t", "   "))));
   }
   return lines.length === 0 ? "" : `\n${lines.join("\n")}`;
 }
@@ -75,9 +105,12 @@ function renderFileStatus(file: RenderedFile, preview: boolean): string {
 }
 
 function renderFile(file: RenderedFile, preview: boolean, theme: Theme): string {
-  const destination = file.moveTo === undefined ? "" : ` → ${file.moveTo}`;
-  const status = renderFileStatus(file, preview);
-  let text = `\n${theme.fg("muted", `${file.path}${destination} (${file.operation}; ${status})`)}`;
+  const path = replaceControlCharacters(file.path);
+  const destination =
+    file.moveTo === undefined ? "" : ` → ${replaceControlCharacters(file.moveTo)}`;
+  const operation = replaceControlCharacters(file.operation);
+  const status = replaceControlCharacters(renderFileStatus(file, preview));
+  let text = `\n${theme.fg("muted", `${path}${destination} (${operation}; ${status})`)}`;
   // Failed/unattempted diffs are plans, never evidence that those bytes were published.
   if (
     !preview &&
@@ -90,14 +123,35 @@ function renderFile(file: RenderedFile, preview: boolean, theme: Theme): string 
   return text + renderDiff(file.diff, theme);
 }
 
+function sanitizeMultiline(text: string): string {
+  return text
+    .split(/\r\n|\r|\n/)
+    .map(replaceControlCharacters)
+    .join("\n");
+}
+
+function extractTextMessage(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  for (const item of content) {
+    if (isRecord(item) && item.type === "text" && typeof item.text === "string") {
+      return sanitizeMultiline(item.text);
+    }
+  }
+  return "";
+}
+
 export const editingResultRenderer: NonNullable<
   ToolDefinition<TSchema, RenderedDetails, unknown>["renderResult"]
 > = (result, options, theme, context) => {
-  const message = result.content.find((item) => item.type === "text")?.text ?? "";
+  const rawContent: unknown = result.content;
+  const message = extractTextMessage(rawContent);
   if (options.isPartial) {
     return new Text(theme.fg("muted", message.length > 0 ? message : "Planning changes…"), 0, 0);
   }
-  const receipt = cardReceipt(result.details);
+  const rawDetails: unknown = result.details;
+  const receipt = cardReceipt(rawDetails);
   const style = outcomeStyle(receipt, context.isError);
   const summary = (text: string): string => theme.fg(style.color, `${style.symbol} ${text}`);
   if (options.expanded) {
