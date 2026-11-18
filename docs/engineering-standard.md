@@ -1021,10 +1021,12 @@ express. The chosen allowance has package origin `node:test` and local name
 `nodeTest` only. The repository uses `import { test as nodeTest } from "node:test"`.
 All other floating-Promise options, including `ignoreVoid: false`, are unchanged.
 
-**Evidence and protection.** `npm run lint` and `npm run policy:check` enforce
-the installed declaration matcher across all tests; the original six-control
-qualification runs are recorded in `docs/quality-qualification.md`. Top-level
-and suite-body registrations pass.
+**Evidence and protection.** `npm run lint` runs the installed declaration matcher over the
+real test usages (`import { test as nodeTest } from "node:test"`), and `npm run policy:check`
+locks the exact `allowForKnownSafeCalls` declaration-origin entry in `.oxlintrc.json`. Synthetic
+wrong-origin/shadow compiler probes were retired by owner decision (so `npm run lint` alone does
+not exercise wrong-origin shadows; configuration parity protects the recorded entry from drift).
+Top-level and suite-body registrations pass.
 
 **Limit and review.** Declaration identity does not establish runtime context.
 Calling imported `nodeTest` inside a running test can create an unowned subtest
@@ -1131,12 +1133,12 @@ invocation only to mark it used would add meaningless or repeated execution.
 existing exact runtime-name setting as an exception. It does not turn off the
 rule or any semantic check. Config parity binds the file, option, and name.
 
-**Evidence and protection.** `test/quality-scope.test.ts` verifies that the
-entrypoint passes, an unused neighboring `orphan` fails at its real location,
-and an unused `run` in another file fails. Real macOS protocol and filesystem
-tests verify that `osascript` actually invokes the entrypoint. Detection is lost
-only for an otherwise unused binding named `run` in this file; the native runtime
-tests protect that binding's required role. Revisit after changing the script
+**Evidence and protection.** `npm run policy:check` enforces exact parity for the `src/macos-acl.js`
+`varsIgnorePattern: "^run$"` override, `npm run lint` enforces `no-unused-vars` across all other
+files and symbols, and real macOS protocol and filesystem tests (`test/macos-acl.test.ts`) verify
+that `osascript` actually invokes the `run` entrypoint (synthetic negative probes were retired by
+owner decision). Detection is lost only for an otherwise unused binding named `run` in this file;
+the native runtime tests protect that binding's required role. Revisit after changing the script
 entry contract or native unused-symbol support. This exception receives the
 same independent adoption review.
 
