@@ -1144,29 +1144,13 @@ same independent adoption review.
 
 ### QX-005: prerelease `tsrs` type-aware backend in place of stable `oxlint-tsgolint`
 
-**Finding and contract.** Section 5.1 specifies the latest stable published
-releases of Oxlint, `oxlint-tsgolint`, and Oxfmt, whereas `tsrs` publishes
-prereleases only (`dist-tags.latest` is `0.25.0-ts7.1.0-beta`; `7.1.0-beta.tsrs2`
-published `2026-11-16T11:59Z` is an untagged newer prerelease; stable
-`oxlint-tsgolint@7.0.2007` remains published on npm).
+**ID and title.** `QX-005`: adopt prerelease `tsrs@7.1.0-beta.tsrs2` as the type-aware backend in place of stable `oxlint-tsgolint` (`§5.1`, `oxlint 1.94.0`, `tsrs 7.1.0-beta.tsrs2` targeting `TypeScript 7.1.0-beta` `microsoft/TypeScript@3e9236361fa9`, `oxfmt 0.79.0`, `typescript 7.0.2`).
 
-**Comparison and adjustment.** In a matched A/B benchmark on `mitchs-m5-mbp`
-(Darwin arm64, `oxlint 1.94.0` running `oxlint --deny-warnings .`, median of 3
-warm runs each via `OXLINT_TSGOLINT_PATH`), stable `oxlint-tsgolint@7.0.2007`
-took `5.84s` wall time and `873.9 MiB` maximum RSS vs `5.69s` wall time and
-`405.0 MiB` maximum RSS with `tsrs@7.1.0-beta.tsrs2` (`2.16x` / `468.9 MiB`
-higher peak RSS; both exited `0`), while unifying the shared Pi extension fleet
-on one type-aware backend (`1.7x`–`3.4x` lower peak RSS across the 13-repo
-fleet). Owner-approved substitution of `tsrs@7.1.0-beta.tsrs2` keeps every
-Appendix A rule, `tsconfig.json` / `tsconfig.jxa.json` compiler setting, and
-`QX-001`–`QX-004` bound intact; `oxlint 1.94.0` auto-discovers
-`node_modules/.bin/tsrs-lint` and fails closed if absent.
+**Scope and contract.** Applies to `package.json` / `package-lock.json` `devDependencies` and type-aware lint execution (`oxlint` auto-discovers `node_modules/.bin/tsrs-lint`); no directive or `.oxlintrc.json` rule changes. Section 5.1 specifies latest stable published releases, whereas `tsrs` publishes prereleases only (`dist-tags.latest` is `0.25.0-ts7.1.0-beta`; `7.1.0-beta.tsrs2` published `2026-11-16T11:59Z` is an untagged newer prerelease; stable `oxlint-tsgolint@7.0.2007` remains published on npm).
 
-**Evidence and review.** Requalified on 2026-11-18 with `npm run check:compat`
-(552 passing, 0 failing, 8 platform skips, plus `policy:check`, `lint`, `format:check`,
-both compiler projects, and `pack:check`) and `npm run quality:probes` (`test/quality*.test.ts`
-native type-aware and directive controls) exiting 0. Revisit on the first stable `tsrs`
-release, any `oxlint` upgrade changing backend discovery, or any type-aware diagnostic regression.
+**Comparison and adjustment.** In a matched A/B benchmark on `mitchs-m5-mbp` (Darwin arm64, `oxlint 1.94.0` running `oxlint --deny-warnings .`, median of 3 warm runs each via `OXLINT_TSGOLINT_PATH`), stable `oxlint-tsgolint@7.0.2007` took `5.84s` wall time and `873.9 MiB` maximum RSS, whereas `tsrs@7.1.0-beta.tsrs2` took `5.69s` wall time and `405.0 MiB` maximum RSS (`tsrs` used `2.16x` / `468.9 MiB` lower peak RSS and finished slightly faster; both exited `0`). Owner-approved substitution of `tsrs@7.1.0-beta.tsrs2` keeps every Appendix A rule, `tsconfig.json` / `tsconfig.jxa.json` compiler setting, and `QX-001`–`QX-004` bound intact; `oxlint 1.94.0` auto-discovers `node_modules/.bin/tsrs-lint` and fails closed if absent.
+
+**Verification, retained protection, and assumptions.** Requalified at code/lockfile revision `63cac89` (`2026-11-18`) with `npm run check:compat` (552 passing, 0 failing, 8 platform skips, plus `policy:check`, `lint`, `format:check`, both compiler projects, and `pack:check`), `npm run quality:probes` (`test/quality*.test.ts` native type-aware and directive controls), `./node_modules/.bin/tsc --noEmit` (`7.0.2`), and `./node_modules/.bin/tsrs --noEmit` (`7.1.0-beta.tsrs2`) all exiting `0`. Lost detection and assumptions: `tsrs@7.1.0-beta.tsrs2` targets `TypeScript 7.1.0-beta` rather than pinned `TypeScript 7.0.2`, and routine `npm run check:compat` runs do not cross-check `oxlint-tsgolint`; mitigated by keeping canonical `tsc 7.0.2` (`tsconfig.json` / `tsconfig.jxa.json`) separate and authoritative. Revisit on the first stable `tsrs` release, any `oxlint` upgrade changing backend discovery, or any type-aware diagnostic regression.
 
 ## References
 

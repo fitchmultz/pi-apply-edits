@@ -170,5 +170,5 @@ cycles; the synthetic negative probes were later retired by owner decision, and
 ongoing enforcement relies on configuration parity (`npm run policy:check`) plus
 live checks (`npm run lint`). The custom patched dynamic and external cycle
 detection is retired and is not claimed as stock behavior. No replacement
-semantic engine is introduced. Appendix B records QX-001 through QX-004 and their
+semantic engine is introduced. Appendix B records QX-001 through QX-005 and their
 exact remaining limits.
