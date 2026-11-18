@@ -16,15 +16,16 @@ not this digest, establish effective enforcement.
 
 ## Tool and host identity
 
-The published registry resolved these versions on 1 November 2026:
+The published registry resolved the adoption baseline on 1 November 2026 and the
+current `tsrs` toolchain on 18 November 2026 (`tsrs@7.1.0-beta.tsrs2` under `QX-005`):
 
-| Tool            | Version  |
-| --------------- | -------- |
-| Oxlint          | 1.90.0   |
-| oxlint-tsgolint | 7.0.2005 |
-| Oxfmt           | 0.75.0   |
-| oxc-parser      | 0.156.0  |
-| TypeScript      | 7.0.2    |
+| Tool       | Version          |
+| ---------- | ---------------- |
+| Oxlint     | 1.94.0           |
+| tsrs       | 7.1.0-beta.tsrs2 |
+| Oxfmt      | 0.79.0           |
+| oxc-parser | 0.156.0          |
+| TypeScript | 7.0.2            |
 
 Local macOS qualification uses Node 24.22.1 and the declared npm 12.2.0 against
 the locked official Pi 1.0.0 and TypeBox 1.3.34 cohort. Hosted qualification
@@ -37,14 +38,14 @@ These resolved values do not substitute for executing the selected host.
 Commands use the declared npm 12.2.0. All commands below exited zero except the
 intentional faults described under disposable qualification.
 
-| Environment and command                      | Result                                                                     |
-| -------------------------------------------- | -------------------------------------------------------------------------- |
-| macOS, clean `npm ci`                        | Passed                                                                     |
-| macOS, `npm run check:compat`                | All seven gates passed; 620 tests passed, zero failed, nine platform skips |
-| Android, clean `npm ci`                      | Passed                                                                     |
-| Android, eleven runtime suites               | 301 tests passed, zero failed, 51 platform skips                           |
-| macOS, two formatter runs                    | Source bytes unchanged after each run                                      |
-| macOS, native lint fix followed by formatter | Both passed; source bytes unchanged                                        |
+| Environment and command                      | Result                                                                                                   |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| macOS, clean `npm ci`                        | Passed                                                                                                   |
+| macOS, `npm run check:compat`                | All seven gates passed; 552 tests passed, zero failed, eight platform skips (2026-11-18 requalification) |
+| Android, clean `npm ci`                      | Passed                                                                                                   |
+| Android, eleven runtime suites               | 301 tests passed, zero failed, 51 platform skips                                                         |
+| macOS, two formatter runs                    | Source bytes unchanged after each run                                                                    |
+| macOS, native lint fix followed by formatter | Both passed; source bytes unchanged                                                                      |
 
 The Android command selects the shipped runtime and filesystem boundaries, not
 the unsupported Android-native quality binaries:
@@ -169,5 +170,5 @@ cycles; the synthetic negative probes were later retired by owner decision, and
 ongoing enforcement relies on configuration parity (`npm run policy:check`) plus
 live checks (`npm run lint`). The custom patched dynamic and external cycle
 detection is retired and is not claimed as stock behavior. No replacement
-semantic engine is introduced. Appendix B records QX-001 through QX-004 and their
+semantic engine is introduced. Appendix B records QX-001 through QX-005 and their
 exact remaining limits.
