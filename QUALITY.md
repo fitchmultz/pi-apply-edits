@@ -7,7 +7,7 @@ records this repository's mappings and decisions.
 ## Acceptance
 
 Use Node 24.22.3 (24.x) or 26.13.1 and later, Git, and the npm version in `package.json` for development.
-The same Node requirements apply to the extension runtime. The published Oxlint, oxlint-tsgolint,
+The same Node requirements apply to the extension runtime. The published Oxlint, tsrs,
 and Oxfmt packages run directly from the locked dependency tree.
 
 ```sh
@@ -87,6 +87,8 @@ budget. The bounded exceptions are:
   qualify merely because another assertion executes first.
 - `QX-004`: the `run` entrypoint in `src/macos-acl.js`, invoked by `osascript`.
   Other names and files retain unused-symbol checks.
+- `QX-005`: prerelease `tsrs@7.1.0-beta.tsrs2` replacing stable `oxlint-tsgolint`
+  under Section 5.1 (documented in Appendix B).
 
 Appendix B contains the comparisons, evidence, and remaining protection.
 `scripts/quality-exceptions.json` binds each directive to its file, rule, ID,
