@@ -56,6 +56,7 @@ jobs:
       - name: Qualify official Pi and Git consumer
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           OFFICIAL_TARGET: ${{ matrix.target }}
           OFFICIAL_VERSION: ${{ needs.resolve.outputs.official-version }}
         run: |
@@ -131,6 +132,7 @@ jobs:
           git diff --exit-code
       - name: Qualify fork and Git consumer
         env:
+          GH_TOKEN: ${{ github.token }}
           PI_COMPAT_FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
         run: |
           GITHUB_STEP_SUMMARY='' node automation/scripts/qualify.mjs --repo pi-apply-edits \
