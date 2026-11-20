@@ -1,12 +1,21 @@
+import { MIN_SIMILARITY, diceSimilarityTo, normalizeForSimilarity } from "../editing/similarity.ts";
 import { truncateUtf8 } from "../editing/text.ts";
-import { findNearestScopeWindow } from "./nearest.ts";
+
+const EXCERPT_LINES = 8;
 
 interface DiagnosticScope {
   readonly start: number;
   readonly eof: boolean;
-  readonly scopedChars: number;
   readonly kind: "anchor" | "context";
   readonly chunk: number;
+}
+
+interface NearestWindow {
+  readonly start: number;
+  readonly end: number;
+  readonly matchStart: number;
+  readonly matchEnd: number;
+  readonly score: number;
 }
 
 const scopeLabel = (scope: DiagnosticScope): string => `${scope.kind} in chunk ${scope.chunk}`;
@@ -16,7 +25,7 @@ function renderExcerpt(
   start: number,
   end: number,
 ): { readonly text: string; readonly truncated: boolean } {
-  const selected = lines.slice(start, Math.min(end, start + 8));
+  const selected = lines.slice(start, Math.min(end, start + EXCERPT_LINES));
   const pieces = selected.map((line) => truncateUtf8(line, 1_200));
   const excerpt = truncateUtf8(pieces.map((piece) => piece.text).join("\n"), 1_200);
   const truncated =
@@ -31,17 +40,92 @@ function boundedExcerpt(lines: readonly string[], start: number, end: number): s
   return renderExcerpt(lines, start, end).text;
 }
 
+function trimTrailingEmpty(lines: readonly string[]): readonly string[] {
+  let end = lines.length;
+  while (end > 0 && lines[end - 1] === "") {
+    end--;
+  }
+  return end === lines.length ? lines : lines.slice(0, end);
+}
+
+function bestWindowInScope(
+  source: readonly string[],
+  scopeStart: number,
+  windowLen: number,
+  wanted: string,
+): { readonly start: number; readonly score: number } | undefined {
+  const similarity = diceSimilarityTo(wanted);
+  let best: { start: number; score: number } | undefined;
+  for (let start = scopeStart; start <= source.length - windowLen; start++) {
+    const score = similarity(
+      normalizeForSimilarity(source.slice(start, start + windowLen).join("\n")),
+    );
+    if (best === undefined || score > best.score) {
+      best = { start, score };
+    }
+  }
+  return best !== undefined && best.score >= MIN_SIMILARITY ? best : undefined;
+}
+
+function firstDifferingOffset(
+  source: readonly string[],
+  pattern: readonly string[],
+  matchStart: number,
+  windowLen: number,
+): number {
+  for (let offset = 0; offset < windowLen; offset++) {
+    if (
+      normalizeForSimilarity(source[matchStart + offset] ?? "") !==
+      normalizeForSimilarity(pattern[offset] ?? "")
+    ) {
+      return offset;
+    }
+  }
+  return 0;
+}
+
+function findNearestScopeWindow(
+  source: readonly string[],
+  pattern: readonly string[],
+  scope: DiagnosticScope,
+  fuzzyAllowed: boolean,
+): NearestWindow | undefined {
+  const scopeLen = source.length - scope.start;
+  if (!fuzzyAllowed || scope.eof || scopeLen <= EXCERPT_LINES) {
+    return undefined;
+  }
+  const effective = trimTrailingEmpty(pattern);
+  const wanted = normalizeForSimilarity(effective.join("\n"));
+  if (wanted.length === 0) {
+    return undefined;
+  }
+  const windowLen = Math.min(effective.length, scopeLen);
+  const best = bestWindowInScope(source, scope.start, windowLen, wanted);
+  if (best === undefined) {
+    return undefined;
+  }
+  const matchStart = best.start;
+  const matchEnd = matchStart + windowLen;
+  if (windowLen <= EXCERPT_LINES) {
+    return { start: matchStart, end: matchEnd, matchStart, matchEnd, score: best.score };
+  }
+  const diff = firstDifferingOffset(source, effective, matchStart, windowLen);
+  const start = matchStart + Math.max(0, Math.min(diff - 2, windowLen - EXCERPT_LINES));
+  return { start, end: start + EXCERPT_LINES, matchStart, matchEnd, score: best.score };
+}
+
 function currentScope(
   source: readonly string[],
   pattern: readonly string[],
   scope: DiagnosticScope,
+  fuzzyAllowed: boolean,
 ): string {
   const start = scope.eof ? Math.max(scope.start, source.length - pattern.length) : scope.start;
   if (start >= source.length) {
     return "\nThe original-source search scope is empty after the preceding chunk/anchor.";
   }
   const header = `\nSearch scope: original source lines ${start + 1}-${source.length}.`;
-  const nearest = findNearestScopeWindow(source, pattern, scope);
+  const nearest = findNearestScopeWindow(source, pattern, scope, fuzzyAllowed);
   if (nearest !== undefined) {
     const excerpt = renderExcerpt(source, nearest.start, nearest.end);
     const partial =
@@ -170,7 +254,7 @@ export function missingPatchMessage(
   return (
     `Could not find ${scopeLabel(scope)}${location}.${budget}` +
     `\nRequested text:\n${boundedExcerpt(pattern, 0, pattern.length)}` +
-    currentScope(source, pattern, scope) +
+    currentScope(source, pattern, scope, fuzzyAllowed) +
     numericHeaderHint(pattern, scope) +
     "\nRe-read the scoped source and retry with current, unique context."
   );

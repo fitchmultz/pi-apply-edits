@@ -1,5 +1,7 @@
 import { normalizeTypography } from "./text.ts";
 
+export const MIN_SIMILARITY = 0.35;
+
 export function normalizeForSimilarity(value: string): string {
   return normalizeTypography(value).replace(/\s+/g, " ").trim();
 }

@@ -1,4 +1,4 @@
-import { diceSimilarityTo, normalizeForSimilarity } from "./similarity.ts";
+import { MIN_SIMILARITY, diceSimilarityTo, normalizeForSimilarity } from "./similarity.ts";
 import {
   findOccurrences,
   lineNumbersAt,
@@ -120,7 +120,7 @@ function findClosestBlock(content: string, search: string): SimilarBlock | undef
       best = { start, score, text };
     }
   }
-  if (best === undefined || best.score < 0.35) {
+  if (best === undefined || best.score < MIN_SIMILARITY) {
     return;
   }
   const excerpt = truncateUtf8(best.text, 1_200);

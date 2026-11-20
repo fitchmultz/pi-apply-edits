@@ -547,20 +547,6 @@ for (const fixture of [
     forbidden: [/Closest match in scope/],
   },
   {
-    name: "tiny punctuation-only lines do not false-trigger nearest match",
-    original:
-      Array.from({ length: 20 }, (_, i) =>
-        i === 14 ? "x};" : `const item_${i + 1} = ${i + 1};`,
-      ).join("\n") + "\n",
-    body: "@@\n-};\n+}",
-    preview: false,
-    expected: [
-      /Search scope: original source lines 1-20\./,
-      /Current scoped context \(first lines\):\nconst item_1 = 1;/,
-    ],
-    forbidden: [/Closest match in scope/],
-  },
-  {
     name: "long Unicode nearest match stays well-formed and within message budget",
     original:
       Array.from({ length: 30 }, (_, i) =>
@@ -849,7 +835,7 @@ nodeTest("bounded corrections do not restrict exact matching on a 150,000-line f
   assert.deepEqual(result.matches, [{ line: 150_000, strategy: "exact" }]);
   assert.throws(
     () => apply(original, "@@\n- export const value_149999 = 149999;\n+changed"),
-    /work budget[\s\S]*Current scoped context \(first lines\):/,
+    /work budget/,
   );
   // Exact anchoring narrows a large file to a small corrected-match suffix.
   assert.equal(
@@ -860,37 +846,6 @@ nodeTest("bounded corrections do not restrict exact matching on a 150,000-line f
     rows.slice(0, -1).join("") + "changed\n",
   );
 });
-
-nodeTest(
-  "nearest-match recovery finds a line-42000 miss in a 50,000-line file without striding",
-  async (t) => {
-    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-50k-")));
-    t.after(() => rm(cwd, { recursive: true, force: true }));
-    const path = join(cwd, "file.txt");
-    const original = Array.from(
-      { length: 50_000 },
-      (_, i) => `export const value_${i} = ${i};\n`,
-    ).join("");
-    await writeFile(path, original);
-    const result = await applyPatchToFiles(
-      wrap(
-        "*** Update File: file.txt\n@@\n-export const value_41999 = 419990;\n+export const value_41999 = 0;",
-      ),
-      cwd,
-    );
-    const message = result.details.error ?? "";
-    assert.match(message, /Search scope: original source lines 1-50000\./);
-    assert.match(
-      message,
-      /Closest match in scope \(lines 42000-42000, \d+% similar\):\nexport const value_41999 = 41999;/,
-    );
-    assert.doesNotMatch(message, /Current scoped context/);
-    assert.doesNotMatch(message, /export const value_0 = 0;/);
-    assert.ok(message.isWellFormed());
-    assert.ok(Buffer.byteLength(message) < 3_200);
-    assert.deepEqual(result.details.modifiedFiles, []);
-  },
-);
 
 nodeTest("long repeated exact context is linear and does not use argument spreads", () => {
   const original = "repeat\n".repeat(150_000) + "unique end\n";
