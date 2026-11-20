@@ -449,6 +449,120 @@ for (const fixture of [
     expected: [/Requested text:/, /Current scoped context/, /excerpt truncated/i],
     forbidden: [/\uFFFD/],
   },
+  {
+    name: "deep-file single-identifier miss shows closest match around line 300",
+    original:
+      Array.from({ length: 400 }, (_, i) =>
+        i === 299 ? "  area" : `const row_${i + 1} = ${i + 1};`,
+      ).join("\n") + "\n",
+    body: "@@\n-  textarea\n+  input",
+    preview: false,
+    expected: [
+      /Could not find context in chunk 1/,
+      /Search scope: original source lines 1-400\./,
+      /Closest match in scope \(lines 300-300, 60% similar\):\n  area/,
+    ],
+    forbidden: [/Current scoped context/, /const row_1 = 1;/],
+  },
+  {
+    name: "named anchor mismatch deep in file finds closest function signature",
+    original:
+      Array.from({ length: 300 }, (_, i) =>
+        i === 249 ? "function renderArea() {" : `function helper_${i + 1}() {}`,
+      ).join("\n") + "\n",
+    body: "@@ function renderTextarea() {\n-  return null;\n+  return 1;",
+    preview: false,
+    expected: [
+      /Could not find anchor in chunk 1/,
+      /Search scope: original source lines 1-300\./,
+      /Closest match in scope \(lines 250-250, \d+% similar\):\nfunction renderArea\(\) \{/,
+    ],
+    forbidden: [/Current scoped context/, /function helper_1\(\)/],
+  },
+  {
+    name: "post-chunk mismatch never leaks a near-identical line before scope start",
+    original:
+      Array.from({ length: 40 }, (_, i) => {
+        if (i === 2) {
+          return "const targetValue = renderTextarea();";
+        }
+        if (i === 14) {
+          return 'const checkpoint = "after-chunk-1";';
+        }
+        return `const unrelated_${i + 1} = ${i + 1};`;
+      }).join("\n") + "\n",
+    body:
+      '@@\n-const checkpoint = "after-chunk-1";\n+const checkpoint = "updated";\n' +
+      "@@\n-const targetValue = renderTextareaNow();\n+const targetValue = renderInput();",
+    preview: false,
+    expected: [
+      /Could not find context in chunk 2/,
+      /Search scope: original source lines 16-40\./,
+      /Current scoped context \(first lines\):\nconst unrelated_16 = 16;/,
+    ],
+    forbidden: [/renderTextarea\(\)/, /Closest match in scope/],
+  },
+  {
+    name: "long hunk mismatch centers the 8-line excerpt around the differing line",
+    original:
+      [
+        ...Array.from({ length: 49 }, (_, i) => `// filler ${i + 1}`),
+        "function computeTotal() {",
+        ...Array.from({ length: 9 }, (_, i) => `  const step${i + 1} = load(${i + 1});`),
+        "  const step10 = loadActual(10);",
+        "  const step11 = load(11);",
+        "  return step11;",
+        "}",
+        ...Array.from({ length: 37 }, (_, i) => `// tail ${i + 1}`),
+      ].join("\n") + "\n",
+    body: [
+      "@@",
+      " function computeTotal() {",
+      ...Array.from({ length: 9 }, (_, i) => `   const step${i + 1} = load(${i + 1});`),
+      "-  const step10 = loadExpected(10);",
+      "+  const step10 = loadUpdated(10);",
+      "   const step11 = load(11);",
+      "   return step11;",
+      " }",
+    ].join("\n"),
+    preview: false,
+    expected: [
+      /Search scope: original source lines 1-100\./,
+      /Closest match in scope \(lines 56-63, \d+% similar\):\n  const step6 = load\(6\);/,
+      /  const step10 = loadActual\(10\);/,
+      /\[Showing lines 56-63 of matched lines 50-63\.\]/,
+    ],
+    forbidden: [/Closest match in scope[^\n]*\nfunction computeTotal\(\)/, /\/\/ filler 1\b/],
+  },
+  {
+    name: "completely unrelated request falls back to current scoped context",
+    original:
+      Array.from({ length: 30 }, (_, i) => `const alpha_${i + 1} = ${i + 1};`).join("\n") + "\n",
+    body: "@@\n-zzzzz qqqqq xxxxx\n+replaced",
+    preview: false,
+    expected: [
+      /Search scope: original source lines 1-30\./,
+      /Current scoped context \(first lines\):\nconst alpha_1 = 1;/,
+    ],
+    forbidden: [/Closest match in scope/],
+  },
+  {
+    name: "long Unicode nearest match stays well-formed and within message budget",
+    original:
+      Array.from({ length: 30 }, (_, i) =>
+        i === 19
+          ? `const unicodeTarget = "${"🙂".repeat(500)}";`
+          : `const filler_${i + 1} = ${i + 1};`,
+      ).join("\n") + "\n",
+    body: `@@\n-const unicodeTargets = "${"🙂".repeat(500)}";\n+const unicodeTargets = "";`,
+    preview: false,
+    expected: [
+      /Closest match in scope \(lines 20-20, \d+% similar\):/,
+      /const unicodeTarget =/,
+      /\[Excerpt truncated\.\]/,
+    ],
+    forbidden: [/\uFFFD/, /const filler_1 = 1;/],
+  },
 ]) {
   nodeTest(`patch recovery: ${fixture.name}`, async (t) => {
     const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-recovery-")));

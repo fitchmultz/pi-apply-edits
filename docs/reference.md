@@ -101,11 +101,16 @@ terminating newline. When a chunk ending with one does not match, it is retried
 once without that line and without a final empty new line. If no old line remains,
 the chunk follows the additions-only rule above.
 
-Missing-match errors show bounded requested text, the original-source search
-scope, and its first lines (or actual tail for EOF matching). Clipped excerpts are
-marked. Numeric unified-diff headers such as `@@ -1 +1 @@` are not line selectors;
-use bare `@@` or `@@ literal source line`. A numeric-looking literal source anchor
-can still match normally.
+Missing-match errors show bounded requested text and the original-source search
+scope. When a non-EOF scope is longer than eight lines and within the corrective
+matching work budget, they show the closest matching window in scope (`Closest
+match in scope (lines X-Y, N% similar):`), centering an 8-line slice around the
+first differing line and noting `[Showing lines X-Y of matched lines A-B.]` when
+a longer match is sliced. Otherwise, or when no window is sufficiently similar,
+they fall back to the scope's first lines (or actual tail for EOF matching).
+Clipped excerpts are marked. Numeric unified-diff headers such as `@@ -1 +1 @@`
+are not line selectors; use bare `@@` or `@@ literal source line`. A
+numeric-looking literal source anchor can still match normally.
 
 Ambiguous-context errors list the first four matching lines and count the rest.
 For each listed match they print the fewest lines directly above it, up to eight,
