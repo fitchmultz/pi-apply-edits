@@ -1,21 +1,34 @@
 import { truncateUtf8 } from "../editing/text.ts";
+import { findNearestScopeWindow } from "./nearest.ts";
 
 interface DiagnosticScope {
   readonly start: number;
   readonly eof: boolean;
+  readonly scopedChars: number;
   readonly kind: "anchor" | "context";
   readonly chunk: number;
 }
 
 const scopeLabel = (scope: DiagnosticScope): string => `${scope.kind} in chunk ${scope.chunk}`;
 
-function boundedExcerpt(lines: readonly string[], start: number, end: number): string {
+function renderExcerpt(
+  lines: readonly string[],
+  start: number,
+  end: number,
+): { readonly text: string; readonly truncated: boolean } {
   const selected = lines.slice(start, Math.min(end, start + 8));
   const pieces = selected.map((line) => truncateUtf8(line, 1_200));
   const excerpt = truncateUtf8(pieces.map((piece) => piece.text).join("\n"), 1_200);
   const truncated =
     end - start > selected.length || pieces.some((piece) => piece.truncated) || excerpt.truncated;
-  return `${excerpt.text}${truncated ? "\n[Excerpt truncated.]" : ""}`;
+  return {
+    text: `${excerpt.text}${truncated ? "\n[Excerpt truncated.]" : ""}`,
+    truncated,
+  };
+}
+
+function boundedExcerpt(lines: readonly string[], start: number, end: number): string {
+  return renderExcerpt(lines, start, end).text;
 }
 
 function currentScope(
@@ -27,9 +40,24 @@ function currentScope(
   if (start >= source.length) {
     return "\nThe original-source search scope is empty after the preceding chunk/anchor.";
   }
+  const header = `\nSearch scope: original source lines ${start + 1}-${source.length}.`;
+  const nearest = findNearestScopeWindow(source, pattern, scope);
+  if (nearest !== undefined) {
+    const excerpt = renderExcerpt(source, nearest.start, nearest.end);
+    const partial =
+      !excerpt.truncated && nearest.matchEnd - nearest.matchStart > nearest.end - nearest.start
+        ? `\n[Showing lines ${nearest.start + 1}-${nearest.end} of matched lines ${nearest.matchStart + 1}-${nearest.matchEnd}.]`
+        : "";
+    return (
+      header +
+      `\nClosest match in scope (lines ${nearest.start + 1}-${nearest.end}, ${Math.round(nearest.score * 100)}% similar):\n` +
+      excerpt.text +
+      partial
+    );
+  }
   const location = scope.eof ? "at the tail" : "first lines";
   return (
-    `\nSearch scope: original source lines ${start + 1}-${source.length}.` +
+    header +
     `\nCurrent scoped context (${location}):\n${boundedExcerpt(source, start, source.length)}`
   );
 }

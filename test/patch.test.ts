@@ -449,6 +449,134 @@ for (const fixture of [
     expected: [/Requested text:/, /Current scoped context/, /excerpt truncated/i],
     forbidden: [/\uFFFD/],
   },
+  {
+    name: "deep-file single-identifier miss shows closest match around line 300",
+    original:
+      Array.from({ length: 400 }, (_, i) =>
+        i === 299 ? "  area" : `const row_${i + 1} = ${i + 1};`,
+      ).join("\n") + "\n",
+    body: "@@\n-  textarea\n+  input",
+    preview: false,
+    expected: [
+      /Could not find context in chunk 1/,
+      /Search scope: original source lines 1-400\./,
+      /Closest match in scope \(lines 300-300, 60% similar\):\n  area/,
+    ],
+    forbidden: [/Current scoped context/, /const row_1 = 1;/],
+  },
+  {
+    name: "named anchor mismatch deep in file finds closest function signature",
+    original:
+      Array.from({ length: 300 }, (_, i) =>
+        i === 249 ? "function renderArea() {" : `function helper_${i + 1}() {}`,
+      ).join("\n") + "\n",
+    body: "@@ function renderTextarea() {\n-  return null;\n+  return 1;",
+    preview: false,
+    expected: [
+      /Could not find anchor in chunk 1/,
+      /Search scope: original source lines 1-300\./,
+      /Closest match in scope \(lines 250-250, \d+% similar\):\nfunction renderArea\(\) \{/,
+    ],
+    forbidden: [/Current scoped context/, /function helper_1\(\)/],
+  },
+  {
+    name: "post-chunk mismatch never leaks a near-identical line before scope start",
+    original:
+      Array.from({ length: 40 }, (_, i) => {
+        if (i === 2) {
+          return "const targetValue = renderTextarea();";
+        }
+        if (i === 14) {
+          return 'const checkpoint = "after-chunk-1";';
+        }
+        return `const unrelated_${i + 1} = ${i + 1};`;
+      }).join("\n") + "\n",
+    body:
+      '@@\n-const checkpoint = "after-chunk-1";\n+const checkpoint = "updated";\n' +
+      "@@\n-const targetValue = renderTextareaNow();\n+const targetValue = renderInput();",
+    preview: false,
+    expected: [
+      /Could not find context in chunk 2/,
+      /Search scope: original source lines 16-40\./,
+      /Current scoped context \(first lines\):\nconst unrelated_16 = 16;/,
+    ],
+    forbidden: [/renderTextarea\(\)/, /Closest match in scope/],
+  },
+  {
+    name: "long hunk mismatch centers the 8-line excerpt around the differing line",
+    original:
+      [
+        ...Array.from({ length: 49 }, (_, i) => `// filler ${i + 1}`),
+        "function computeTotal() {",
+        ...Array.from({ length: 9 }, (_, i) => `  const step${i + 1} = load(${i + 1});`),
+        "  const step10 = loadActual(10);",
+        "  const step11 = load(11);",
+        "  return step11;",
+        "}",
+        ...Array.from({ length: 37 }, (_, i) => `// tail ${i + 1}`),
+      ].join("\n") + "\n",
+    body: [
+      "@@",
+      " function computeTotal() {",
+      ...Array.from({ length: 9 }, (_, i) => `   const step${i + 1} = load(${i + 1});`),
+      "-  const step10 = loadExpected(10);",
+      "+  const step10 = loadUpdated(10);",
+      "   const step11 = load(11);",
+      "   return step11;",
+      " }",
+    ].join("\n"),
+    preview: false,
+    expected: [
+      /Search scope: original source lines 1-100\./,
+      /Closest match in scope \(lines 56-63, \d+% similar\):\n  const step6 = load\(6\);/,
+      /  const step10 = loadActual\(10\);/,
+      /\[Showing lines 56-63 of matched lines 50-63\.\]/,
+    ],
+    forbidden: [/Closest match in scope[^\n]*\nfunction computeTotal\(\)/, /\/\/ filler 1\b/],
+  },
+  {
+    name: "completely unrelated request falls back to current scoped context",
+    original:
+      Array.from({ length: 30 }, (_, i) => `const alpha_${i + 1} = ${i + 1};`).join("\n") + "\n",
+    body: "@@\n-zzzzz qqqqq xxxxx\n+replaced",
+    preview: false,
+    expected: [
+      /Search scope: original source lines 1-30\./,
+      /Current scoped context \(first lines\):\nconst alpha_1 = 1;/,
+    ],
+    forbidden: [/Closest match in scope/],
+  },
+  {
+    name: "tiny punctuation-only lines do not false-trigger nearest match",
+    original:
+      Array.from({ length: 20 }, (_, i) =>
+        i === 14 ? "x};" : `const item_${i + 1} = ${i + 1};`,
+      ).join("\n") + "\n",
+    body: "@@\n-};\n+}",
+    preview: false,
+    expected: [
+      /Search scope: original source lines 1-20\./,
+      /Current scoped context \(first lines\):\nconst item_1 = 1;/,
+    ],
+    forbidden: [/Closest match in scope/],
+  },
+  {
+    name: "long Unicode nearest match stays well-formed and within message budget",
+    original:
+      Array.from({ length: 30 }, (_, i) =>
+        i === 19
+          ? `const unicodeTarget = "${"🙂".repeat(500)}";`
+          : `const filler_${i + 1} = ${i + 1};`,
+      ).join("\n") + "\n",
+    body: `@@\n-const unicodeTargets = "${"🙂".repeat(500)}";\n+const unicodeTargets = "";`,
+    preview: false,
+    expected: [
+      /Closest match in scope \(lines 20-20, \d+% similar\):/,
+      /const unicodeTarget =/,
+      /\[Excerpt truncated\.\]/,
+    ],
+    forbidden: [/\uFFFD/, /const filler_1 = 1;/],
+  },
 ]) {
   nodeTest(`patch recovery: ${fixture.name}`, async (t) => {
     const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-recovery-")));
@@ -721,7 +849,7 @@ nodeTest("bounded corrections do not restrict exact matching on a 150,000-line f
   assert.deepEqual(result.matches, [{ line: 150_000, strategy: "exact" }]);
   assert.throws(
     () => apply(original, "@@\n- export const value_149999 = 149999;\n+changed"),
-    /work budget/,
+    /work budget[\s\S]*Current scoped context \(first lines\):/,
   );
   // Exact anchoring narrows a large file to a small corrected-match suffix.
   assert.equal(
@@ -732,6 +860,37 @@ nodeTest("bounded corrections do not restrict exact matching on a 150,000-line f
     rows.slice(0, -1).join("") + "changed\n",
   );
 });
+
+nodeTest(
+  "nearest-match recovery finds a line-42000 miss in a 50,000-line file without striding",
+  async (t) => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-50k-")));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    const path = join(cwd, "file.txt");
+    const original = Array.from(
+      { length: 50_000 },
+      (_, i) => `export const value_${i} = ${i};\n`,
+    ).join("");
+    await writeFile(path, original);
+    const result = await applyPatchToFiles(
+      wrap(
+        "*** Update File: file.txt\n@@\n-export const value_41999 = 419990;\n+export const value_41999 = 0;",
+      ),
+      cwd,
+    );
+    const message = result.details.error ?? "";
+    assert.match(message, /Search scope: original source lines 1-50000\./);
+    assert.match(
+      message,
+      /Closest match in scope \(lines 42000-42000, \d+% similar\):\nexport const value_41999 = 41999;/,
+    );
+    assert.doesNotMatch(message, /Current scoped context/);
+    assert.doesNotMatch(message, /export const value_0 = 0;/);
+    assert.ok(message.isWellFormed());
+    assert.ok(Buffer.byteLength(message) < 3_200);
+    assert.deepEqual(result.details.modifiedFiles, []);
+  },
+);
 
 nodeTest("long repeated exact context is linear and does not use argument spreads", () => {
   const original = "repeat\n".repeat(150_000) + "unique end\n";
