@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Recover numeric `apply_patch` headers using unique original-file context or a trailing literal anchor. Numeric coordinates never select a line or turn an additions-only hunk into an append.
+- Accept bare blank context lines in Update File and let adjacent chunks share untouched trailing context. Actual edits still apply in original-file order.
+- Keep normalized `apply_patch` matching available when only the similarity scan is over budget. Failed matches no longer report 100% similarity, and later patch misses name the last consumed original line.
 - Raise the tested Pi floor to 1.6.1.
 - Show Pi's expand hint, with your configured key, under a collapsed result when the expanded result has more: the rest of the message, file outcomes, or diffs. A result with nothing more to show has no hint. Expanded results are unchanged.
 - Show the tool's own header and failure line for a call that never reaches the tool: arguments the tool refuses (such as `files` sent as a JSON string), a call another extension blocks, or an aborted call. Pi builds these results without a receipt, and they fell back to Pi's generic card.

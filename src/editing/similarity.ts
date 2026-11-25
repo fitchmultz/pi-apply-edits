@@ -2,6 +2,11 @@ import { normalizeTypography } from "./text.ts";
 
 export const MIN_SIMILARITY = 0.35;
 
+/** Normalization, bigram counts, and rounding can give a failed match a perfect score. */
+export function failedMatchPercentage(score: number): number {
+  return Math.min(99, Math.round(score * 100));
+}
+
 export function normalizeForSimilarity(value: string): string {
   return normalizeTypography(value).replace(/\s+/g, " ").trim();
 }

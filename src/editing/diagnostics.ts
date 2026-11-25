@@ -1,4 +1,9 @@
-import { MIN_SIMILARITY, diceSimilarityTo, normalizeForSimilarity } from "./similarity.ts";
+import {
+  MIN_SIMILARITY,
+  diceSimilarityTo,
+  failedMatchPercentage,
+  normalizeForSimilarity,
+} from "./similarity.ts";
 import {
   findOccurrences,
   lineNumbersAt,
@@ -42,7 +47,7 @@ function closestBlockHint(block: SimilarBlock, field: "oldText" | "endText"): st
   const retry = block.truncated
     ? `[Excerpt truncated.] Read or reconstruct the full block for lines ${block.startLine}-${block.endLine} before retrying; do not use this partial excerpt as ${field}.`
     : `Use the actual block above as ${field} and retry.`;
-  return `\n${label} is lines ${block.startLine}-${block.endLine} (${Math.round(block.score * 100)}% similar):\n${block.excerpt}\n${retry}`;
+  return `\n${label} is lines ${block.startLine}-${block.endLine} (${failedMatchPercentage(block.score)}% similar):\n${block.excerpt}\n${retry}`;
 }
 function fileHeadHint(content: string): string {
   if (content.length === 0) {

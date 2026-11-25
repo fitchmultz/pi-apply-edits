@@ -24,7 +24,7 @@ change: (change_line+ chunk* | chunk+) eof?
 chunk: anchor+ change_line+
 anchor: ("@@" | "@@ " PATH) NL
 add_line: "+" TEXT? NL
-change_line: ("+" | "-" | " ") TEXT? NL
+change_line: ("+" | "-" | " ") TEXT? NL | NL
 eof: "*** End of File" NL
 PATH: /[^\r\n\x00]+/
 TEXT: /[^\r\n\x00]+/
@@ -141,7 +141,9 @@ class PatchParser {
     while (this.hasBody()) {
       const line = this.current();
       if (!line.text.startsWith("+")) {
-        this.fail("Add File lines must start with '+'");
+        this.fail(
+          "Add File lines must start with '+' (including blank lines); do not use @@ headers",
+        );
       }
       this.consume();
       content.push(line.text.slice(1), line.ending);
@@ -223,10 +225,10 @@ class PatchParser {
     if (text.startsWith("-")) {
       return { kind: "delete", text: text.slice(1) };
     }
-    if (text.startsWith(" ")) {
+    if (text === "" || text.startsWith(" ")) {
       return { kind: "context", text: text.slice(1) };
     }
-    return this.fail("update lines must start with ' ', '+', '-', or '@@'");
+    return this.fail("Update File lines must start with ' ', '+', or '-'");
   }
 }
 
