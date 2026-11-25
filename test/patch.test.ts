@@ -157,8 +157,7 @@ nodeTest("parse and update results are fresh values that callers may revise", ()
 });
 
 nodeTest("requires a strict envelope and rejects malformed or duplicate structural markers", () => {
-  // Deliberate deviations: no heredoc wrapper, padded marker, empty patch,
-  // environment ID, or unprefixed empty context line accepted by lenient Codex.
+  // Deliberate deviations: no heredoc wrapper, padded marker, empty patch, or environment ID.
   for (const patch of [
     "",
     "*** Begin Patch\n*** End Patch",
@@ -182,7 +181,6 @@ nodeTest("requires a strict envelope and rejects malformed or duplicate structur
     wrap("*** Update File: f"),
     wrap("*** Update File: f\n@@"),
     wrap("*** Update File: f\n@@ \n-old\n+new"),
-    wrap("*** Update File: f\n\n-old\n+new"),
     wrap("*** Update File: f\n@@\nold\n+new"),
     wrap("*** Update File: f\n*** End of File"),
     wrap("*** Update File: f\n-old\n+new\n*** End of File\n*** End of File"),
@@ -194,17 +192,19 @@ nodeTest("requires a strict envelope and rejects malformed or duplicate structur
 
 nodeTest("body parse failures name the offending line", () => {
   // Advancing before validation used to report the following line.
-  assert.throws(
-    () => parsePatch(wrap("*** Add File: f\nbad")),
-    /Invalid patch at line 3: Add File lines must start with '\+'/,
-  );
+  for (const line of ["bad", "", "@@"]) {
+    assert.throws(
+      () => parsePatch(wrap(`*** Add File: f\n${line}`)),
+      /Invalid patch at line 3: Add File lines must start with '\+' \(including blank lines\); do not use @@/,
+    );
+  }
   assert.throws(
     () => parsePatch(wrap("*** Update File: \n-old\n+new")),
     /Invalid patch at line 2: path must be non-empty/,
   );
   assert.throws(
     () => parsePatch(wrap("*** Update File: f\n@@\nold\n+new")),
-    /Invalid patch at line 4: update lines must start with/,
+    /Invalid patch at line 4: Update File lines must start with ' ', '\+', or '-'/,
   );
   assert.throws(
     () => parsePatch(wrap("*** Delete File: ")),
@@ -343,6 +343,13 @@ nodeTest(
   },
 );
 
+const correctionContext = Array.from({ length: 120 }, (_, i) => `"step ${i + 1}"`);
+const correctedContext = correctionContext
+  .map((line) => `  ${line.replaceAll('"', "“")}`)
+  .join("\n");
+const correctionPadding = "// unchanged filler\n".repeat(1_000);
+const correctionBody = `@@\n${correctionContext.map((line) => ` ${line}`).join("\n")}\n-old\n+new`;
+
 for (const fixture of [
   {
     name: "missing context shows only the remaining original-source suffix",
@@ -358,17 +365,58 @@ for (const fixture of [
     forbidden: [/outside-only/, /const answer = 41;/],
   },
   {
-    name: "numeric unified hunk header explains literal anchor syntax",
+    name: "addition-only numeric hunk puts anchor guidance before excerpts",
     original: "const value = 1;\n",
-    body: "@@ -1 +1 @@\n-const value = 1;\n+const value = 2;",
+    body: "@@ -1 +1 @@\n+const value = 2;",
     preview: true,
     expected: [
       /Could not find anchor in chunk 1/,
-      /Requested text:\n-1 \+1 @@/,
-      /numeric.*hunk headers.*not supported/i,
-      /bare @@.*literal source line/i,
+      /unified-diff.*bare @@.*literal source line.*\nRequested text:\n-1 \+1 @@/i,
       /Current scoped context.*\nconst value = 1;/,
     ],
+    forbidden: [],
+  },
+  {
+    name: "a missing trailing numeric anchor is not silently discarded",
+    original: "const value = 1;\n",
+    body: "@@ -1,1\t+1,1 @@  missing section  \n-const value = 1;\n+const value = 2;",
+    preview: false,
+    expected: [
+      /Could not find anchor in chunk 1/,
+      /unified-diff.*bare @@.*literal source line.*\nRequested text:\nmissing section/i,
+    ],
+    forbidden: [],
+  },
+  {
+    name: "a numeric hunk cannot append after losing its only old line to newline recovery",
+    original: "const value = 1;\n",
+    body: "@@ -1,0 +2,1 @@\n\n+const added = true;",
+    preview: false,
+    expected: [/Could not find context in chunk 1/],
+    forbidden: [],
+  },
+  {
+    name: "a numeric header cannot disambiguate repeated context using its line numbers",
+    original: "old\nseparator\nold\n",
+    body: "@@ -3 +3 @@\n-old\n+new",
+    preview: false,
+    expected: [/Ambiguous context in chunk 1: matches at lines 1, 3/],
+    forbidden: [],
+  },
+  {
+    name: "a numeric header cannot bypass ambiguity in the literal or recovered anchor",
+    original: "-4 +4 @@ section\n-4 +4 @@ section\nsection\nold\n",
+    body: "@@ -4 +4 @@ section\n-old\n+new",
+    preview: false,
+    expected: [/Ambiguous anchor in chunk 1: matches at lines 1, 2/],
+    forbidden: [],
+  },
+  {
+    name: "a recovered trailing anchor still requires a unique match",
+    original: "section\nuntouched\nsection\nold\n",
+    body: "@@ -4 +4 @@   section   \n-old\n+new",
+    preview: false,
+    expected: [/Ambiguous anchor in chunk 1: matches at lines 1, 3/, /unified-diff.*bare @@/i],
     forbidden: [],
   },
   {
@@ -492,15 +540,41 @@ for (const fixture of [
         return `const unrelated_${i + 1} = ${i + 1};`;
       }).join("\n") + "\n",
     body:
-      '@@\n-const checkpoint = "after-chunk-1";\n+const checkpoint = "updated";\n' +
+      '@@\n-const checkpoint = "after-chunk-1";\n+const checkpoint = "updated";\n const unrelated_16 = 16;\n' +
       "@@\n-const targetValue = renderTextareaNow();\n+const targetValue = renderInput();",
     preview: false,
     expected: [
       /Could not find context in chunk 2/,
+      /Last consumed original line: 15\./,
+      /Merge overlapping chunks or reorder.*original file/i,
       /Search scope: original source lines 16-40\./,
       /Current scoped context \(first lines\):\nconst unrelated_16 = 16;/,
     ],
     forbidden: [/renderTextarea\(\)/, /Closest match in scope/],
+  },
+  {
+    name: "the similarity work limit skips only closest-match scanning",
+    original: `${correctionPadding}${correctionContext.join("\n")}\nmissing\n`,
+    body: correctionBody,
+    preview: false,
+    expected: [/Closest-match scan was skipped because its work budget was exceeded/],
+    forbidden: [/Corrected matching was skipped/, /Closest match in scope/],
+  },
+  {
+    name: "normalized matching still refuses ambiguity above the similarity work limit",
+    original: `${correctionPadding}${correctedContext}\n  old\n${correctedContext}\n  old\n`,
+    body: correctionBody,
+    preview: false,
+    expected: [/Ambiguous context in chunk 1: matches at lines 1001, 1122/],
+    forbidden: [],
+  },
+  {
+    name: "reordered lines never show a perfect similarity score on a miss",
+    original: `begin\nalpha\nbegin\nbeta\nbegin\n${"filler\n".repeat(5)}`,
+    body: "@@\n-begin\n-beta\n-begin\n-alpha\n-begin\n+new",
+    preview: false,
+    expected: [/Closest match in scope \(lines 1-5, 99% similar\)/],
+    forbidden: [/100% similar/],
   },
   {
     name: "long hunk mismatch centers the 8-line excerpt around the differing line",
@@ -644,6 +718,84 @@ nodeTest("patch recovery does not reject a numeric-looking literal source anchor
   assert.deepEqual(result.details.modifiedFiles, [path]);
   assert.equal(result.details.files[0]?.status, "applied");
   assert.equal(await readFile(path, "utf8"), "-1 +1 @@\nnew\n");
+});
+
+for (const fixture of [
+  {
+    name: "numeric coordinates are ignored when unique context follows",
+    original: "head\nold\n",
+    body: "@@ -29,2\t+30,2  @@ \n head\n-old\n+new",
+    expected: "head\nnew\n",
+  },
+  {
+    name: "trailing numeric header text acts as a literal anchor",
+    original: "section one\nold\nsection two\nold\n",
+    body: "@@ -1 +8 @@   section two  \n-old\n+new",
+    expected: "section one\nold\nsection two\nnew\n",
+  },
+  {
+    name: "bare blank context selects the correct repeated block",
+    original: "head\r\nold\r\ntail\r\nhead\r\n\r\nold\r\ntail\r\n",
+    body: "@@\n head\n\n-old\n+new\n tail",
+    expected: "head\r\nold\r\ntail\r\nhead\r\n\r\nnew\r\ntail\r\n",
+  },
+  {
+    name: "adjacent replacement chunks may share untouched trailing context",
+    original: "a\nb\nc\nd\ne\n",
+    body: "@@\n-a\n+A\n b\n c\n d\n@@\n b\n c\n-d\n+D\n e",
+    expected: "A\nb\nc\nD\ne\n",
+  },
+  {
+    name: "adjacent insertion chunks may share context and insert at the same boundary",
+    original: "head\r\nboundary\r\ntail",
+    body: "@@ head\n+first\n boundary\n tail\n@@\n+second\n boundary\n+third\n tail",
+    expected: "head\r\nfirst\r\nsecond\r\nboundary\r\nthird\r\ntail",
+  },
+  {
+    name: "the similarity work limit does not block normalized matching",
+    original: `${correctionPadding}${correctedContext}\n  old\n`,
+    body: correctionBody,
+    expected: `${correctionPadding}${correctedContext}\nnew\n`,
+  },
+]) {
+  nodeTest(`patch applies: ${fixture.name}`, async (t) => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-apply-")));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    const path = join(cwd, "file.txt");
+    await writeFile(path, fixture.original);
+    const result = await applyPatchToFiles(wrap(`*** Update File: file.txt\n${fixture.body}`), cwd);
+    assert.equal(result.details.error, undefined, result.summary);
+    assert.deepEqual(result.details.modifiedFiles, [path]);
+    assert.equal(result.details.files[0]?.status, "applied");
+    assert.equal(await readFile(path, "utf8"), fixture.expected);
+  });
+}
+
+nodeTest("a refused addition-only numeric hunk leaves the whole patch unpublished", async (t) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-patch-recovery-")));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const path = join(cwd, "file.txt");
+  await writeFile(path, "section\nold\n");
+  const result = await applyPatchToFiles(
+    wrap(
+      "*** Add File: before.txt\n+before\n" +
+        "*** Update File: file.txt\n@@ -2,0 +3,1 @@ section\n+added\n" +
+        "*** Add File: after.txt\n+after",
+    ),
+    cwd,
+  );
+  assert.match(result.details.error ?? "", /Could not find anchor.*\nUnified-diff/);
+  assert.deepEqual(result.details.modifiedFiles, []);
+  assert.deepEqual(
+    result.details.files.map((file) => [file.path, file.status]),
+    [
+      [join(cwd, "before.txt"), "unattempted"],
+      [path, "failed"],
+      [join(cwd, "after.txt"), "unattempted"],
+    ],
+  );
+  assert.equal(await readFile(path, "utf8"), "section\nold\n");
+  assert.deepEqual(await readdir(cwd), ["file.txt"]);
 });
 
 nodeTest("matching prioritizes exact, trailing-whitespace, trimmed, then punctuation", () => {
@@ -812,10 +964,12 @@ nodeTest("EOF matches the actual tail and never falls back to an unrelated inter
   assert.equal(apply("old\n\n", "@@\n-old\n+new\n \n*** End of File").text, "new\n\n");
 });
 
-nodeTest("chunks consume non-overlapping original blocks in source order", () => {
+nodeTest("actual edits and context-only chunks consume original lines in source order", () => {
   for (const patch of [
     "@@\n-b\n+B\n@@\n-a\n+A", // reversed
-    "@@\n a\n-b\n+B\n@@\n b\n-c\n+C", // overlapping context
+    "@@\n a\n-b\n+B\n@@\n b\n-c\n+C", // context overlaps a consumed edit
+    "@@\n a\n b\n@@\n-b\n+B", // a context-only chunk still advances
+    "@@\n b\n+insert\n c\n@@\n-a\n+A", // cannot edit before a pure insertion
     "@@\n-a\n+A\n@@\n-A\n+again", // cannot match newly produced text
     "@@\n+tail\n@@\n-a\n+A", // cannot return to the interior after append
   ]) {
@@ -835,7 +989,7 @@ nodeTest("bounded corrections do not restrict exact matching on a 150,000-line f
   assert.deepEqual(result.matches, [{ line: 150_000, strategy: "exact" }]);
   assert.throws(
     () => apply(original, "@@\n- export const value_149999 = 149999;\n+changed"),
-    /work budget/,
+    /Corrected matching was skipped because its size limits were exceeded/,
   );
   // Exact anchoring narrows a large file to a small corrected-match suffix.
   assert.equal(

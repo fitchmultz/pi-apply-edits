@@ -1,5 +1,10 @@
 import type { MatchStrategy, PatchMatch } from "./source.ts";
-import { ambiguousPatchMessage, missingPatchMessage } from "./diagnostics.ts";
+import {
+  ambiguousPatchMessage,
+  missingPatchMessage,
+  type DiagnosticLimit,
+  type DiagnosticScope,
+} from "./diagnostics.ts";
 
 // Corrected-match ceilings mirror targeted edits; exact matching has no size ceiling.
 const FUZZY_PATTERN_BYTES = 64 * 1024;
@@ -57,15 +62,8 @@ function occurrences(
   return found;
 }
 
-export type MatchScopeKind = "anchor" | "context";
-
-export interface MatchScope {
-  readonly start: number;
-  readonly eof: boolean;
+export interface MatchScope extends DiagnosticScope {
   readonly scopedChars: number;
-  readonly kind: MatchScopeKind;
-  /** One-based chunk number, used only to render diagnostics. */
-  readonly chunk: number;
 }
 interface NormalizationPass {
   readonly normalize: (text: string) => string;
@@ -94,19 +92,11 @@ export class PatchMatcher {
     this.#bom = bom;
   }
 
-  find(pattern: readonly string[], scope: MatchScope): ContextMatch {
-    const found = this.search(pattern, scope);
-    if (found === undefined) {
-      throw this.missing(pattern, scope);
-    }
-    return found;
-  }
-
   /** Returns undefined when nothing matches; ambiguity still throws. */
   search(pattern: readonly string[], scope: MatchScope): ContextMatch | undefined {
-    const fuzzyAllowed = this.fuzzyAllowed(pattern, scope);
+    const normalizationAllowed = this.normalizationAllowed(pattern, scope);
     for (const pass of passes) {
-      if (pass.strategy !== "exact" && !fuzzyAllowed) {
+      if (pass.strategy !== "exact" && !normalizationAllowed) {
         break;
       }
       const candidates = this.candidates(pattern, scope, pass);
@@ -127,17 +117,27 @@ export class PatchMatcher {
 
   missing(pattern: readonly string[], scope: MatchScope): Error {
     return new Error(
-      missingPatchMessage(this.#source, pattern, scope, this.fuzzyAllowed(pattern, scope)),
+      missingPatchMessage(this.#source, pattern, scope, this.diagnosticLimit(pattern, scope)),
     );
   }
 
-  private fuzzyAllowed(pattern: readonly string[], scope: MatchScope): boolean {
+  private diagnosticLimit(
+    pattern: readonly string[],
+    scope: MatchScope,
+  ): DiagnosticLimit | undefined {
+    if (!this.normalizationAllowed(pattern, scope)) {
+      return "size";
+    }
+    // Only the diagnostic scan scores each candidate window; normalized KMP is linear.
+    return scope.scopedChars * pattern.length > FUZZY_WORK ? "work" : undefined;
+  }
+
+  private normalizationAllowed(pattern: readonly string[], scope: MatchScope): boolean {
     return (
       pattern.length <= FUZZY_PATTERN_LINES &&
       Buffer.byteLength(pattern.join("\n")) <= FUZZY_PATTERN_BYTES &&
       this.#source.length - scope.start <= FUZZY_CONTENT_LINES &&
-      scope.scopedChars <= FUZZY_CONTENT_CHARS &&
-      scope.scopedChars * pattern.length <= FUZZY_WORK
+      scope.scopedChars <= FUZZY_CONTENT_CHARS
     );
   }
 

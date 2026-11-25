@@ -29,7 +29,7 @@ export const patchSchema = Type.Object(
   {
     input: Type.String({
       description:
-        "Patch between *** Begin Patch and *** End Patch. Headers: *** Add File:, *** Update File: (optional *** Move to:), *** Delete File:. Prefix context with one space, removals with -, additions with +; @@ starts a chunk.",
+        "Patch between *** Begin Patch and *** End Patch. Headers: *** Add File:, *** Update File: (optional *** Move to:), *** Delete File:. Use bare @@ or @@ <literal source line>, never unified-diff line numbers. Put chunks in original-file order. Prefix context with one space, removals with -, and additions with +. In Add File, prefix every line (including blank lines) with +; no @@.",
     }),
     preview: previewSchema,
   },
@@ -72,7 +72,12 @@ export const replaceTextSchema = Type.Object(
               },
               { additionalProperties: false },
             ),
-            { minItems: 1, maxItems: MAX_EDITS_PER_FILE },
+            {
+              minItems: 1,
+              maxItems: MAX_EDITS_PER_FILE,
+              description:
+                "Edits apply sequentially to the in-memory file. Each oldText sees the result of preceding edits.",
+            },
           ),
         },
         { additionalProperties: false },

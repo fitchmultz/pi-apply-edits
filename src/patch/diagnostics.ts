@@ -1,14 +1,26 @@
-import { MIN_SIMILARITY, diceSimilarityTo, normalizeForSimilarity } from "../editing/similarity.ts";
+import {
+  MIN_SIMILARITY,
+  diceSimilarityTo,
+  failedMatchPercentage,
+  normalizeForSimilarity,
+} from "../editing/similarity.ts";
 import { truncateUtf8 } from "../editing/text.ts";
 
 const EXCERPT_LINES = 8;
+const NUMERIC_HEADER_HINT =
+  "\nUnified-diff line numbers are not anchors. Use bare @@ with unique context or @@ followed by a literal source line.";
 
-interface DiagnosticScope {
+export interface DiagnosticScope {
+  /** Zero-based search start and one-based number of the last consumed line. */
   readonly start: number;
   readonly eof: boolean;
   readonly kind: "anchor" | "context";
+  /** One-based chunk number. */
   readonly chunk: number;
+  readonly numericHeader?: boolean;
 }
+
+export type DiagnosticLimit = "size" | "work";
 
 interface NearestWindow {
   readonly start: number;
@@ -84,14 +96,18 @@ function firstDifferingOffset(
   return 0;
 }
 
+function canScanForSimilarity(sourceLength: number, scope: DiagnosticScope): boolean {
+  return !scope.eof && sourceLength - scope.start > EXCERPT_LINES;
+}
+
 function findNearestScopeWindow(
   source: readonly string[],
   pattern: readonly string[],
   scope: DiagnosticScope,
-  fuzzyAllowed: boolean,
+  withinBudget: boolean,
 ): NearestWindow | undefined {
   const scopeLen = source.length - scope.start;
-  if (!fuzzyAllowed || scope.eof || scopeLen <= EXCERPT_LINES) {
+  if (!withinBudget || !canScanForSimilarity(source.length, scope)) {
     return undefined;
   }
   const effective = trimTrailingEmpty(pattern);
@@ -118,14 +134,14 @@ function currentScope(
   source: readonly string[],
   pattern: readonly string[],
   scope: DiagnosticScope,
-  fuzzyAllowed: boolean,
+  withinBudget: boolean,
 ): string {
   const start = scope.eof ? Math.max(scope.start, source.length - pattern.length) : scope.start;
   if (start >= source.length) {
     return "\nThe original-source search scope is empty after the preceding chunk/anchor.";
   }
   const header = `\nSearch scope: original source lines ${start + 1}-${source.length}.`;
-  const nearest = findNearestScopeWindow(source, pattern, scope, fuzzyAllowed);
+  const nearest = findNearestScopeWindow(source, pattern, scope, withinBudget);
   if (nearest !== undefined) {
     const excerpt = renderExcerpt(source, nearest.start, nearest.end);
     const partial =
@@ -134,7 +150,7 @@ function currentScope(
         : "";
     return (
       header +
-      `\nClosest match in scope (lines ${nearest.start + 1}-${nearest.end}, ${Math.round(nearest.score * 100)}% similar):\n` +
+      `\nClosest match in scope (lines ${nearest.start + 1}-${nearest.end}, ${failedMatchPercentage(nearest.score)}% similar):\n` +
       excerpt.text +
       partial
     );
@@ -146,20 +162,30 @@ function currentScope(
   );
 }
 
-function numericHeaderHint(pattern: readonly string[], scope: DiagnosticScope): string {
-  const anchor = pattern[0] ?? "";
-  if (
-    scope.kind !== "anchor" ||
-    pattern.length !== 1 ||
-    anchor.length > 1_200 ||
-    !/^-\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?: .*)?$/.test(anchor)
-  ) {
+function orderingHint(scope: DiagnosticScope): string {
+  if (scope.chunk === 1) {
     return "";
   }
-  return (
-    "\nThis looks like a unified-diff numeric @@ header. Numeric hunk headers are not supported: " +
-    "use bare @@ or @@ followed by a literal source line."
-  );
+  const consumed =
+    scope.start === 0
+      ? "No original lines have been consumed."
+      : `Last consumed original line: ${scope.start}.`;
+  return `\n${consumed} Merge overlapping chunks or reorder them against the original file.`;
+}
+
+function budgetHint(
+  sourceLength: number,
+  scope: DiagnosticScope,
+  limit: DiagnosticLimit | undefined,
+): string {
+  const canScan = canScanForSimilarity(sourceLength, scope);
+  if (limit === "size") {
+    const scan = canScan ? " The closest-match scan was also skipped for the same reason." : "";
+    return `\nCorrected matching was skipped because its size limits were exceeded for the requested text.${scan} Use exact context or narrow the search.`;
+  }
+  return limit === "work" && canScan
+    ? "\nClosest-match scan was skipped because its work budget was exceeded."
+    : "";
 }
 
 // Measured on 278 real ambiguous refusals: 80% match at most four places, and in 93% the
@@ -228,6 +254,9 @@ export function ambiguousPatchMessage(
   const more = candidates.length - listed.length;
   const header = `Ambiguous ${scopeLabel(scope)}: matches at lines ${listed.map((line) => line + 1).join(", ")}${more > 0 ? ` and ${more} more` : ""}.`;
   if (scope.kind === "anchor") {
+    if (scope.numericHeader === true) {
+      return header + NUMERIC_HEADER_HINT;
+    }
     return `${header} Add unique anchors or surrounding context.`;
   }
   const matches = { source, candidates, start: scope.start, normalize };
@@ -245,17 +274,17 @@ export function missingPatchMessage(
   source: readonly string[],
   pattern: readonly string[],
   scope: DiagnosticScope,
-  fuzzyAllowed: boolean,
+  limit: DiagnosticLimit | undefined,
 ): string {
   const location = scope.eof ? " at end of file" : " after the preceding chunk/anchor";
-  const budget = fuzzyAllowed
-    ? ""
-    : " Corrected matching exceeded its work budget; use exact context.";
+  const numeric = scope.numericHeader === true ? NUMERIC_HEADER_HINT : "";
   return (
-    `Could not find ${scopeLabel(scope)}${location}.${budget}` +
+    `Could not find ${scopeLabel(scope)}${location}.` +
+    numeric +
+    orderingHint(scope) +
+    budgetHint(source.length, scope, limit) +
     `\nRequested text:\n${boundedExcerpt(pattern, 0, pattern.length)}` +
-    currentScope(source, pattern, scope, fuzzyAllowed) +
-    numericHeaderHint(pattern, scope) +
+    currentScope(source, pattern, scope, limit === undefined) +
     "\nRe-read the scoped source and retry with current, unique context."
   );
 }

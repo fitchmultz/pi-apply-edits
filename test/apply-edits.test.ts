@@ -393,7 +393,8 @@ nodeTest(
       );
       assert.match(result.details.error ?? "", /corrected matching was skipped.*budget/i);
       assert.match(result.details.error ?? "", /use exact oldText/i);
-      assert.match(result.details.error ?? "", /100% similar/);
+      assert.match(result.details.error ?? "", /99% similar/);
+      assert.doesNotMatch(result.details.error ?? "", /100% similar/);
       assert.deepEqual(result.details.modifiedFiles, []);
       assert.deepEqual(
         result.details.files.map((file) => [file.path, file.status]),
@@ -610,21 +611,26 @@ nodeTest("indent correction does not replace caller tabs with a known space-only
   assert.equal(result.text, "    if (ready) {\n\t  new();\n    }\n");
 });
 
-nodeTest("ordered edits can match prior CRLF output with LF anchors", () => {
-  const result = applyTargetedEdits(
-    "one\r\ntwo\r\n",
-    [
+nodeTest("ordered edits can match prior CRLF output with LF anchors", async () => {
+  await inTemporaryDirectory(async (directory) => {
+    const cwd = await realpath(directory);
+    const path = join(cwd, "windows.txt");
+    await writeFile(path, "one\r\ntwo\r\n");
+    const edits = [
       { oldText: "one", newText: "ONE\nadded" },
       { oldText: "ONE\nadded", newText: "done" },
-    ],
-    "windows.txt",
-  );
+    ];
+    const result = await replaceTextInFiles({ files: [{ path, edits }] }, cwd);
 
-  assert.equal(result.text, "done\r\ntwo\r\n");
-  assert.deepEqual(
-    result.matches.map((match) => match.strategy),
-    ["exact", "exact"],
-  );
+    assert.deepEqual(result.details.modifiedFiles, [path]);
+    assert.equal(result.details.files[0]?.status, "applied");
+    const details = singleDetails(result.details);
+    assert.deepEqual(
+      details.matches.map((match) => match.strategy),
+      ["exact", "exact"],
+    );
+    assert.equal(await readFile(path, "utf8"), "done\r\ntwo\r\n");
+  });
 });
 
 nodeTest("ambiguous normalized matches fail without choosing one", () => {
@@ -661,6 +667,13 @@ for (const fixture of [
     edits: [{ oldText: "const answer = 41;", newText: "const answer = 43;" }],
     expected: [/Closest block is lines 2-2 \(88% similar\):\nconst answer = 42;\n/],
     forbidden: [],
+  },
+  {
+    name: "reordered lines do not appear to be a perfect match",
+    original: "begin\nalpha\nbegin\nbeta\nbegin\n",
+    edits: [{ oldText: "begin\nbeta\nbegin\nalpha\nbegin", newText: "new" }],
+    expected: [/Closest block is lines 1-5 \(99% similar\)/],
+    forbidden: [/100% similar/],
   },
   {
     name: "clipped nearby block is not a complete retry anchor",

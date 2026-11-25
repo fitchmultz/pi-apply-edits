@@ -87,30 +87,40 @@ section, or `write_files` with `mode: "replace"` for a full rewrite.
 
 Patches preserve existing BOMs, local mixed line endings, final-newline state, and
 untouched/context bytes. Added indentation is literal. Exact matching is tried
-before bounded whitespace and typography correction. Named `@@ anchor` lines
-must each be unique in the remaining source suffix and advance past that line;
-stacked anchors are supported. The old/context block must also be unique in the
-remaining suffix. `*** End of File` restricts the final chunk to the actual tail.
+before bounded whitespace and typography correction. Use bare `@@` or
+`@@ literal source line`. Named anchors must each be unique in the remaining
+source suffix and advance past that line; stacked anchors are supported. The
+old/context block must also be unique in the remaining suffix.
+`*** End of File` restricts the final chunk to the actual tail.
 An unanchored additions-only chunk appends; a named-anchor additions-only chunk
 inserts after its anchor (EOF explicitly appends). Chunks refer to the original
-file in order. Deleting an unterminated tail transfers its missing final newline
+file in order. Adjacent chunks may share untouched trailing context, but cannot
+start before an earlier edit. A context-only chunk advances past its last
+matched line. Deleting an unterminated tail transfers its missing final newline
 to the retained last line.
+
+A numeric-looking anchor still matches as a literal source line first. If it
+doesn't match, an Update chunk with old lines can recover from a unified-diff
+header such as `@@ -1 +1 @@`: the numbers are ignored and any trailing text
+must resolve as a unique anchor. A chunk with only additions cannot use this
+fallback.
 
 As in Codex, a final empty context or deletion line can stand for the file's
 terminating newline. When a chunk ending with one does not match, it is retried
 once without that line and without a final empty new line. If no old line remains,
-the chunk follows the additions-only rule above.
+the chunk follows the additions-only rule above unless it used numeric-header
+recovery, which still requires a match on old lines.
 
 Missing-match errors show bounded requested text and the original-source search
-scope. When a non-EOF scope is longer than eight lines and within the corrective
-matching work budget, they show the closest matching window in scope (`Closest
+scope. Later chunks also report the last original line consumed by the search.
+When a non-EOF scope is longer than eight lines and within the size and similarity
+scan limits, failures show the closest matching window in scope (`Closest
 match in scope (lines X-Y, N% similar):`), centering an 8-line slice around the
 first differing line and noting `[Showing lines X-Y of matched lines A-B.]` when
 a longer match is sliced. Otherwise, or when no window is sufficiently similar,
 they fall back to the scope's first lines (or actual tail for EOF matching).
-Clipped excerpts are marked. Numeric unified-diff headers such as `@@ -1 +1 @@`
-are not line selectors; use bare `@@` or `@@ literal source line`. A
-numeric-looking literal source anchor can still match normally.
+Clipped excerpts are marked. The similarity work budget limits suggestions
+without skipping normalized matching.
 
 Ambiguous-context errors list the first four matching lines and count the rest.
 For each listed match they print the fewest lines directly above it, up to eight,
@@ -122,8 +132,9 @@ context repeated below the anchor is still ambiguous.
 
 Parser portions are covered by [Apache-2.0](../LICENSE-codex). Strict envelopes,
 ambiguity rejection, stacked anchors, anchored insertion, and byte-format
-preservation are part of the parser's behavior. Blank
-context lines require their leading space; stripped prefixes are not repaired.
+preservation are part of the parser's behavior. Update accepts a bare blank
+context line. In Add File, every line starts with `+`, including blank lines;
+there are no `@@` headers.
 
 ### Compact replacements and ranges
 

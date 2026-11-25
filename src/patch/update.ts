@@ -11,7 +11,12 @@ import {
 } from "./source.ts";
 
 const MAX_EXPANSION = 8 * 1024 * 1024;
+const UNIFIED_DIFF_ANCHOR = /^-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s*@@(?:\s+(\S.*)?)?$/;
 type ChunkLine = ReadonlyPatchChunk["lines"][number];
+interface LocatedAnchor {
+  readonly match?: ContextMatch;
+  readonly recoveredNumericHeader: boolean;
+}
 interface LocatedChunk {
   readonly lines: readonly ChunkLine[];
   readonly start: ContextMatch;
@@ -92,7 +97,7 @@ class PatchUpdater {
       throw new Error(`update cannot contain more than ${MAX_CHUNKS} chunks`);
     }
     for (const [index, chunk] of operation.chunks.entries()) {
-      this.applyChunk(chunk, index);
+      this.applyChunk(chunk, index + 1);
     }
     return { text: this.reconstruct(), matches: this.#matches };
   }
@@ -115,16 +120,53 @@ class PatchUpdater {
     };
   }
 
-  private applyChunk(chunk: ReadonlyPatchChunk, index: number): void {
-    for (const anchor of chunk.anchors) {
-      const found = this.#matcher.find([anchor], this.scope("anchor", false, index + 1));
-      this.#matches.push({ line: found.index + 1, strategy: found.strategy });
-      this.#cursor = found.index + 1;
+  private locateAnchor(anchor: string, scope: MatchScope, hasContext: boolean): LocatedAnchor {
+    const literal = this.#matcher.search([anchor], scope);
+    if (literal !== undefined) {
+      return { match: literal, recoveredNumericHeader: false };
     }
-    const { lines, start } = this.locate(chunk, index);
+    const numeric = UNIFIED_DIFF_ANCHOR.exec(anchor);
+    if (numeric === null || !hasContext) {
+      throw this.#matcher.missing([anchor], { ...scope, numericHeader: numeric !== null });
+    }
+    const trailing = numeric[1]?.trim() ?? "";
+    if (trailing.length === 0) {
+      return { recoveredNumericHeader: true };
+    }
+    const trailingScope = { ...scope, numericHeader: true };
+    const match = this.#matcher.search([trailing], trailingScope);
+    if (match === undefined) {
+      throw this.#matcher.missing([trailing], trailingScope);
+    }
+    return { match, recoveredNumericHeader: true };
+  }
+
+  private applyAnchors(
+    anchors: readonly string[],
+    chunkNumber: number,
+    hasContext: boolean,
+  ): boolean {
+    let recovered = false;
+    for (const anchor of anchors) {
+      const scope = this.scope("anchor", false, chunkNumber);
+      const { match, recoveredNumericHeader } = this.locateAnchor(anchor, scope, hasContext);
+      recovered ||= recoveredNumericHeader;
+      if (match !== undefined) {
+        this.#matches.push({ line: match.index + 1, strategy: match.strategy });
+        this.#cursor = match.index + 1;
+      }
+    }
+    return recovered;
+  }
+
+  private applyChunk(chunk: ReadonlyPatchChunk, chunkNumber: number): void {
+    const context = oldSide(chunk.lines);
+    const recoveredAnchor = this.applyAnchors(chunk.anchors, chunkNumber, context.length > 0);
+    const { lines, start } = this.locate(chunk, context, chunkNumber, recoveredAnchor);
     this.#matches.push({ line: start.index + 1, strategy: start.strategy });
     let position = start.index;
     let runStart = position;
+    let lastEditEnd: number | undefined;
     let added: string[] = [];
     for (const line of lines) {
       if (line.kind === "context") {
@@ -134,20 +176,27 @@ class PatchUpdater {
         added = [];
       } else if (line.kind === "delete") {
         position++;
+        lastEditEnd = position;
       } else {
         added.push(line.text);
+        lastEditEnd = position;
       }
     }
     this.replace({ start: runStart, end: position, added, includesBom: start.includesBom });
-    this.#cursor = position;
+    // Trailing context can be reused; an insertion consumes no original line at its boundary.
+    this.#cursor = lastEditEnd ?? position;
   }
 
-  private locate(chunk: ReadonlyPatchChunk, index: number): LocatedChunk {
-    const context = oldSide(chunk.lines);
+  private locate(
+    chunk: ReadonlyPatchChunk,
+    context: readonly string[],
+    chunkNumber: number,
+    recoveredAnchor: boolean,
+  ): LocatedChunk {
     if (context.length === 0) {
       return { lines: chunk.lines, start: this.additionStart(chunk) };
     }
-    const scope = this.scope("context", chunk.endOfFile, index + 1);
+    const scope = this.scope("context", chunk.endOfFile, chunkNumber);
     const found = this.#matcher.search(context, scope);
     if (found !== undefined) {
       return { lines: chunk.lines, start: found };
@@ -157,6 +206,10 @@ class PatchUpdater {
       throw this.#matcher.missing(context, scope);
     }
     const retryContext = oldSide(lines);
+    // A recovered numeric anchor must never substitute for matching an old source line.
+    if (recoveredAnchor && retryContext.length === 0) {
+      throw this.#matcher.missing(context, scope);
+    }
     const start =
       retryContext.length === 0
         ? this.additionStart(chunk)
@@ -255,7 +308,7 @@ class PatchUpdater {
   }
 }
 
-/** Anchors advance the original-source suffix; chunks cannot overlap consumed blocks. */
+/** Anchors and edits advance the original-source suffix; untouched trailing context can overlap. */
 export function applyPatchUpdate(
   original: string,
   operation: ReadonlyPatchUpdate,
